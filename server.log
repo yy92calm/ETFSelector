@@ -1,0 +1,25 @@
+2026-01-19 22:43:43,896 - app - INFO - 静态文件挂载: /Users/davidyang/Desktop/projects/ETFSelector/static
+INFO:     Will watch for changes in these directories: ['/Users/davidyang/Desktop/projects/ETFSelector']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [41379] using StatReload
+2026-01-19 22:43:44,274 - app - INFO - 静态文件挂载: /Users/davidyang/Desktop/projects/ETFSelector/static
+INFO:     Started server process [41435]
+INFO:     Waiting for application startup.
+2026-01-19 22:43:44,284 - app - INFO - 应用启动...
+2026-01-19 22:43:44,284 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-01-19 22:43:44,284 - sqlalchemy.engine.Engine - INFO - BEGIN (implicit)
+2026-01-19 22:43:44,284 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("etf_basic")
+2026-01-19 22:43:44,284 - sqlalchemy.engine.Engine - INFO - PRAGMA main.table_info("etf_basic")
+2026-01-19 22:43:44,284 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-01-19 22:43:44,284 - sqlalchemy.engine.Engine - INFO - [raw sql] ()
+2026-01-19 22:43:44,285 INFO sqlalchemy.engine.Engine PRAGMA main.table_info("etf_quotation")
+2026-01-19 22:43:44,285 - sqlalchemy.engine.Engine - INFO - PRAGMA main.table_info("etf_quotation")
+2026-01-19 22:43:44,285 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-01-19 22:43:44,285 - sqlalchemy.engine.Engine - INFO - [raw sql] ()
+2026-01-19 22:43:44,285 INFO sqlalchemy.engine.Engine COMMIT
+2026-01-19 22:43:44,285 - sqlalchemy.engine.Engine - INFO - COMMIT
+2026-01-19 22:43:44,285 - app - INFO - 数据库初始化成功
+INFO:     Application startup complete.
+数据库初始化成功!
+INFO:     127.0.0.1:54366 - "GET /index.html HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54389 - "GET /health HTTP/1.1" 200 OK

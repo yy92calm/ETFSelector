@@ -1,0 +1,183 @@
+/* 全局样式 */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    line-height: 1.6;
+    color: #333;
+    background-color: #f5f5f5;
+}
+
+/* 头部 */
+header {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 2rem 1rem;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+header h1 {
+    margin-bottom: 1rem;
+}
+
+nav ul {
+    list-style: none;
+    display: flex;
+    gap: 2rem;
+}
+
+nav a {
+    color: white;
+    text-decoration: none;
+    transition: opacity 0.3s;
+}
+
+nav a:hover {
+    opacity: 0.8;
+}
+
+/* 主容器 */
+main {
+    max-width: 1200px;
+    margin: 2rem auto;
+    padding: 0 1rem;
+}
+
+.section {
+    background: white;
+    padding: 2rem;
+    margin-bottom: 2rem;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    display: none;
+}
+
+.section.active {
+    display: block;
+}
+
+.section h2 {
+    color: #667eea;
+    margin-bottom: 1rem;
+    border-bottom: 2px solid #667eea;
+    padding-bottom: 0.5rem;
+}
+
+/* 控制区域 */
+.quote-controls {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+}
+
+.quote-controls input {
+    flex: 1;
+    padding: 0.75rem;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 1rem;
+}
+
+.quote-controls button {
+    padding: 0.75rem 2rem;
+    background: #667eea;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
+    transition: background 0.3s;
+}
+
+.quote-controls button:hover {
+    background: #764ba2;
+}
+
+/* 结果显示 */
+.quote-result {
+    margin-top: 1rem;
+}
+
+.quote-item {
+    background: #f9f9f9;
+    padding: 1rem;
+    border-radius: 4px;
+    border-left: 4px solid #667eea;
+}
+
+.quote-item h3 {
+    color: #333;
+    margin-bottom: 0.5rem;
+}
+
+.quote-item p {
+    margin: 0.25rem 0;
+    color: #666;
+}
+
+.quote-item .price {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: #667eea;
+}
+
+.quote-item .change {
+    font-size: 1.1rem;
+    font-weight: bold;
+}
+
+.quote-item .change.up {
+    color: #f56666;
+}
+
+.quote-item .change.down {
+    color: #34a853;
+}
+
+/* 状态指示器 */
+#status-indicator {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #999;
+    margin-right: 0.5rem;
+}
+
+#status-indicator.online {
+    background: #34a853;
+}
+
+#status-indicator.offline {
+    background: #f56666;
+}
+
+/* 页脚 */
+footer {
+    background: #333;
+    color: #999;
+    text-align: center;
+    padding: 2rem;
+    margin-top: 3rem;
+}
+
+/* 响应式设计 */
+@media (max-width: 768px) {
+    nav ul {
+        flex-wrap: wrap;
+        gap: 1rem;
+    }
+
+    .quote-controls {
+        flex-direction: column;
+    }
+
+    main {
+        margin: 1rem auto;
+    }
+}
