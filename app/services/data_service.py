@@ -14,28 +14,221 @@ from app.db.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
-# 常见的上证市场ETF代码
-SHANGHAI_ETFS = [
-    "sh510050",  # 华夏上证50ETF
-    "sh510300",  # 华夏沪深300ETF
-    "sh510500",  # 华夏中证500ETF
-    "sh510610",  # 易方达消费行业
-    "sh510180",  # 上海50
-    "sh511800",  # 易方达易利
-]
 
-# 常见的深证市场ETF代码
-SHENZHEN_ETFS = [
-    "sz150018",  # 鹏华创业板
-    "sz159915",  # 易方达创业板
-    "sz159920",  # 小康证券300
-    "sz159949",  # 华夏创业板
-    "sz159935",  # 广发创业板
-    "sz159999",  # 易方达创业板B
-]
+class ETFMarketManager:
+    """ETF市场管理器 - 管理不同市场的ETF代码列表"""
+    
+    def __init__(self):
+        # 常见的上证市场ETF代码
+        self.shanghai_etfs = [
+            "sh510050",  # 华夏上证50ETF
+            "sh510300",  # 华夏沪深300ETF
+            "sh510500",  # 华夏中证500ETF
+            "sh510610",  # 易方达消费行业
+            "sh510180",  # 上海50
+            "sh511800",  # 易方达易利
+        ]
 
-# 所有主流ETF代码（包括上深市场）
-ALL_MAIN_ETFS = SHANGHAI_ETFS + SHENZHEN_ETFS
+        # 常见的深证市场ETF代码
+        self.shenzhen_etfs = [
+            "sz150018",  # 鹏华创业板
+            "sz159915",  # 易方达创业板
+            "sz159920",  # 小康证券300
+            "sz159949",  # 华夏创业板
+            "sz159935",  # 广发创业板
+            "sz159999",  # 易方达创业板B
+        ]
+
+        # 所有主流ETF代码（包括上深市场）
+        self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
+        
+        # 全市场ETF代码列表（包含所有ETF，不仅限于预定义列表）
+        self.all_etfs = set(self.all_main_etfs)
+    
+    async def update_all_etfs_from_api(self) -> int:
+        """从API更新全市场ETF列表"""
+        try:
+            api_client = get_api_client()
+            # 获取全市场ETF列表
+            all_etf_codes = await api_client.get_all_etfs_list()
+            
+            if all_etf_codes:
+                # 更新全市场ETF列表
+                for code in all_etf_codes:
+                    self.all_etfs.add(code)
+                
+                # 同时更新市场分类
+                for code in all_etf_codes:
+                    if code.startswith("sh") and code not in self.shanghai_etfs:
+                        self.shanghai_etfs.append(code)
+                    elif code.startswith("sz") and code not in self.shenzhen_etfs:
+                        self.shenzhen_etfs.append(code)
+                
+                # 更新all_main_etfs
+                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
+                
+                logger.info(f"从API更新全市场ETF列表成功，共 {len(self.all_etfs)} 个ETF")
+                return len(self.all_etfs)
+            else:
+                logger.warning("从API获取ETF列表失败，使用数据库中的ETF列表")
+                # 如果API获取失败，使用数据库中的ETF列表
+                from app.db.database import SessionLocal
+                db = SessionLocal()
+                try:
+                    etf_codes = db.query(ETFBasic.etf_code).all()
+                    etf_codes = [item.etf_code for item in etf_codes]
+                    
+                    # 更新全市场ETF列表
+                    for code in etf_codes:
+                        self.all_etfs.add(code)
+                    
+                    # 同时更新市场分类
+                    for code in etf_codes:
+                        if code.startswith("sh") and code not in self.shanghai_etfs:
+                            self.shanghai_etfs.append(code)
+                        elif code.startswith("sz") and code not in self.shenzhen_etfs:
+                            self.shenzhen_etfs.append(code)
+                    
+                    # 更新all_main_etfs
+                    self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
+                    
+                    return len(self.all_etfs)
+                finally:
+                    db.close()
+        except Exception as e:
+            logger.error(f"从API更新全市场ETF列表失败: {e}")
+            return len(self.all_etfs)
+    
+    def get_market_etfs(self, market_type: str) -> List[str]:
+        """根据市场类型获取ETF代码列表"""
+        if market_type == "shanghai":
+            return self.shanghai_etfs
+        elif market_type == "shenzhen":
+            return self.shenzhen_etfs
+        elif market_type == "all":
+            return self.all_main_etfs
+        elif market_type == "all_etfs":
+            # 返回全市场ETF列表
+            return list(self.all_etfs)
+        else:
+            return []
+    
+    def add_etf_to_market(self, etf_code: str, market_type: str) -> bool:
+        """向指定市场添加ETF代码"""
+        if market_type == "shanghai":
+            if etf_code not in self.shanghai_etfs:
+                self.shanghai_etfs.append(etf_code)
+                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
+                self.all_etfs.add(etf_code)
+                return True
+        elif market_type == "shenzhen":
+            if etf_code not in self.shenzhen_etfs:
+                self.shenzhen_etfs.append(etf_code)
+                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
+                self.all_etfs.add(etf_code)
+                return True
+        elif market_type == "all":
+            # 对于all类型，我们将其添加到对应市场
+            if etf_code.startswith("sh"):
+                return self.add_etf_to_market(etf_code, "shanghai")
+            elif etf_code.startswith("sz"):
+                return self.add_etf_to_market(etf_code, "shenzhen")
+        elif market_type == "all_etfs":
+            # 添加到全市场列表
+            if etf_code not in self.all_etfs:
+                self.all_etfs.add(etf_code)
+                # 同时添加到对应市场
+                if etf_code.startswith("sh"):
+                    return self.add_etf_to_market(etf_code, "shanghai")
+                elif etf_code.startswith("sz"):
+                    return self.add_etf_to_market(etf_code, "shenzhen")
+                else:
+                    # 如果不是sh或sz开头，也添加到全市场列表
+                    self.all_etfs.add(etf_code)
+                    return True
+        return False
+    
+    def remove_etf_from_market(self, etf_code: str, market_type: str) -> bool:
+        """从指定市场移除ETF代码"""
+        if market_type == "shanghai":
+            if etf_code in self.shanghai_etfs:
+                self.shanghai_etfs.remove(etf_code)
+                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
+                return True
+        elif market_type == "shenzhen":
+            if etf_code in self.shenzhen_etfs:
+                self.shenzhen_etfs.remove(etf_code)
+                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
+                return True
+        elif market_type == "all":
+            # 对于all类型，尝试从所有市场移除
+            removed = False
+            if etf_code in self.shanghai_etfs:
+                self.shanghai_etfs.remove(etf_code)
+                removed = True
+            if etf_code in self.shenzhen_etfs:
+                self.shenzhen_etfs.remove(etf_code)
+                removed = True
+            if removed:
+                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
+            return removed
+        elif market_type == "all_etfs":
+            # 从全市场列表移除
+            if etf_code in self.all_etfs:
+                self.all_etfs.remove(etf_code)
+                # 同时从具体市场移除
+                removed = False
+                if etf_code in self.shanghai_etfs:
+                    self.shanghai_etfs.remove(etf_code)
+                    removed = True
+                if etf_code in self.shenzhen_etfs:
+                    self.shenzhen_etfs.remove(etf_code)
+                    removed = True
+                if removed:
+                    self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
+                return True
+        return False
+    
+    def add_etf_to_all_etfs(self, etf_code: str) -> bool:
+        """向全市场ETF列表添加ETF代码"""
+        if etf_code not in self.all_etfs:
+            self.all_etfs.add(etf_code)
+            return True
+        return False
+    
+    def get_all_etfs_count(self) -> int:
+        """获取全市场ETF总数"""
+        return len(self.all_etfs)
+    
+    def update_all_etfs_from_db(self, db: Session) -> int:
+        """从数据库更新全市场ETF列表"""
+        try:
+            # 从数据库获取所有ETF代码
+            etf_codes = db.query(ETFBasic.etf_code).all()
+            etf_codes = [item.etf_code for item in etf_codes]
+            
+            # 更新全市场ETF列表
+            for code in etf_codes:
+                self.all_etfs.add(code)
+            
+            # 同时更新市场分类
+            for code in etf_codes:
+                if code.startswith("sh") and code not in self.shanghai_etfs:
+                    self.shanghai_etfs.append(code)
+                elif code.startswith("sz") and code not in self.shenzhen_etfs:
+                    self.shenzhen_etfs.append(code)
+            
+            # 更新all_main_etfs
+            self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
+            
+            return len(self.all_etfs)
+        except Exception as e:
+            logger.error(f"从数据库更新全市场ETF列表失败: {e}")
+            return len(self.all_etfs)
+
+
+# 创建全局市场管理器实例
+market_manager = ETFMarketManager()
 
 
 class ETFDataService:
@@ -117,6 +310,7 @@ class ETFDataService:
             # 从API批量获取数据
             quotes_data = await self.api_client.get_etf_quotes_batch(etf_codes)
             
+            # 批量处理数据，减少数据库操作次数
             for etf_code in etf_codes:
                 if etf_code not in quotes_data:
                     results["fail_count"] += 1
@@ -151,6 +345,7 @@ class ETFDataService:
                 db.add(quotation)
                 results["success_count"] += 1
             
+            # 批量提交
             db.commit()
             logger.info(f"批量保存行情数据成功: {results['success_count']} 个成功，{results['fail_count']} 个失败")
         except Exception as e:
@@ -213,8 +408,9 @@ class ETFDataService:
         Returns:
             包含成功和失败数量的字典
         """
-        logger.info(f"开始获取上证市场 {len(SHANGHAI_ETFS)} 个ETF行情")
-        return await self.fetch_and_save_etf_quotes_batch(SHANGHAI_ETFS)
+        etf_codes = market_manager.get_market_etfs("shanghai")
+        logger.info(f"开始获取上证市场 {len(etf_codes)} 个ETF行情")
+        return await self.fetch_and_save_etf_quotes_batch(etf_codes)
     
     async def fetch_and_save_shenzhen_market_quotes(self) -> dict:
         """
@@ -223,8 +419,9 @@ class ETFDataService:
         Returns:
             包含成功和失败数量的字典
         """
-        logger.info(f"开始获取深证市场 {len(SHENZHEN_ETFS)} 个ETF行情")
-        return await self.fetch_and_save_etf_quotes_batch(SHENZHEN_ETFS)
+        etf_codes = market_manager.get_market_etfs("shenzhen")
+        logger.info(f"开始获取深证市场 {len(etf_codes)} 个ETF行情")
+        return await self.fetch_and_save_etf_quotes_batch(etf_codes)
     
     async def fetch_and_save_all_market_quotes(self) -> dict:
         """
@@ -233,9 +430,28 @@ class ETFDataService:
         Returns:
             包含成功和失败数量的字典
         """
-        logger.info(f"开始获取上深全市场 {len(ALL_MAIN_ETFS)} 个ETF行情")
-        return await self.fetch_and_save_etf_quotes_batch(ALL_MAIN_ETFS)
+        etf_codes = market_manager.get_market_etfs("all")
+        logger.info(f"开始获取上深全市场 {len(etf_codes)} 个ETF行情")
+        return await self.fetch_and_save_etf_quotes_batch(etf_codes)
     
+    async def fetch_and_save_market_quotes(self, market_type: str) -> dict:
+        """
+        获取指定市场所有ETF行情数据并保存到数据库
+        
+        Args:
+            market_type: 市场类型 ('shanghai', 'shenzhen', 'all')
+            
+        Returns:
+            包含成功和失败数量的字典
+        """
+        etf_codes = market_manager.get_market_etfs(market_type)
+        if not etf_codes:
+            logger.warning(f"未知的市场类型: {market_type}")
+            return {"success_count": 0, "fail_count": 0, "failed_codes": []}
+        
+        logger.info(f"开始获取 {market_type} 市场 {len(etf_codes)} 个ETF行情")
+        return await self.fetch_and_save_etf_quotes_batch(etf_codes)
+
     def get_market_etf_quotes(self, market_type: str, db: Session) -> List[Dict[str, Any]]:
         """
         从数据库获取指定市场的所有ETF最新行情
@@ -249,13 +465,8 @@ class ETFDataService:
         """
         try:
             # 选择ETF代码列表
-            if market_type == "shanghai":
-                etf_codes = SHANGHAI_ETFS
-            elif market_type == "shenzhen":
-                etf_codes = SHENZHEN_ETFS
-            elif market_type == "all":
-                etf_codes = ALL_MAIN_ETFS
-            else:
+            etf_codes = market_manager.get_market_etfs(market_type)
+            if not etf_codes:
                 logger.warning(f"未知的市场类型: {market_type}")
                 return []
             

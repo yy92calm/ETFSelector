@@ -15,7 +15,7 @@ from app.schemas.etf_schemas import (
     FetchQuoteRequest,
     APIResponse
 )
-from app.services.data_service import get_etf_data_service
+from app.services.data_service import get_etf_data_service, market_manager
 from app.models.etf_basic import ETFBasic
 from app.models.etf_quotation import ETFQuotation
 
@@ -217,6 +217,100 @@ async def fetch_all_market_quotes():
         raise HTTPException(status_code=500, detail=f"获取上深全市场行情失败: {str(e)}")
 
 
+@router.post("/market/{market_type}", response_model=APIResponse)
+async def fetch_market_quotes(market_type: str):
+    """
+    获取指定市场所有ETF行情数据
+    支持的市场类型: shanghai, shenzhen, all
+    """
+    try:
+        data_service = get_etf_data_service()
+        results = await data_service.fetch_and_save_market_quotes(market_type)
+        
+        return APIResponse(
+            code=200,
+            message=f"{market_type}市场行情获取成功",
+            data=results
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取{market_type}市场行情失败: {str(e)}")
+
+
+@router.get("/market/{market_type}/etfs", response_model=APIResponse)
+async def get_market_etfs(market_type: str, db: Session = Depends(get_db)):
+    """
+    获取指定市场的ETF代码列表
+    支持的市场类型: shanghai, shenzhen, all, all_etfs
+    """
+    try:
+        from app.services.data_service import market_manager
+        etf_codes = market_manager.get_market_etfs(market_type)
+        
+        # 如果是all_etfs类型，从数据库更新全市场ETF列表
+        if market_type == "all_etfs":
+            market_manager.update_all_etfs_from_db(db)
+            etf_codes = market_manager.get_market_etfs(market_type)
+        
+        if not etf_codes:
+            raise HTTPException(status_code=404, detail=f"未知的市场类型: {market_type}")
+        
+        return APIResponse(
+            code=200,
+            message=f"获取{market_type}市场ETF列表成功",
+            data={"etf_codes": etf_codes, "count": len(etf_codes)}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取{market_type}市场ETF列表失败: {str(e)}")
+
+
+@router.post("/market/{market_type}/etfs", response_model=APIResponse)
+async def add_etf_to_market(market_type: str, request: FetchQuoteRequest):
+    """
+    向指定市场添加ETF代码
+    支持的市场类型: shanghai, shenzhen, all
+    """
+    try:
+        from app.services.data_service import market_manager
+        added_count = 0
+        
+        for etf_code in request.etf_codes:
+            if market_manager.add_etf_to_market(etf_code, market_type):
+                added_count += 1
+        
+        return APIResponse(
+            code=200,
+            message=f"成功向{market_type}市场添加{added_count}个ETF代码",
+            data={"added_count": added_count, "total_count": len(market_manager.get_market_etfs(market_type))}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"向{market_type}市场添加ETF代码失败: {str(e)}")
+
+
+@router.delete("/market/{market_type}/etfs", response_model=APIResponse)
+async def remove_etf_from_market(market_type: str, request: FetchQuoteRequest):
+    """
+    从指定市场移除ETF代码
+    支持的市场类型: shanghai, shenzhen, all
+    """
+    try:
+        from app.services.data_service import market_manager
+        removed_count = 0
+        
+        for etf_code in request.etf_codes:
+            if market_manager.remove_etf_from_market(etf_code, market_type):
+                removed_count += 1
+        
+        return APIResponse(
+            code=200,
+            message=f"成功从{market_type}市场移除{removed_count}个ETF代码",
+            data={"removed_count": removed_count, "total_count": len(market_manager.get_market_etfs(market_type))}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"从{market_type}市场移除ETF代码失败: {str(e)}")
+
+
 @router.get("/market/shanghai/quotes", response_model=APIResponse)
 async def get_shanghai_market_quotes(db: Session = Depends(get_db)):
     """
@@ -269,3 +363,66 @@ async def get_all_market_quotes(db: Session = Depends(get_db)):
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取上深全市场行情失败: {str(e)}")
+
+
+@router.get("/market/all_etfs", response_model=APIResponse)
+async def get_all_etfs_list(db: Session = Depends(get_db)):
+    """
+    获取全市场ETF列表（从API获取最新数据）
+    """
+    try:
+        # 从API获取最新的全市场ETF列表
+        count = await market_manager.update_all_etfs_from_api()
+        
+        # 获取更新后的ETF列表
+        etf_codes = market_manager.get_market_etfs("all_etfs")
+        
+        return APIResponse(
+            code=200,
+            message="获取全市场ETF列表成功",
+            data={"etf_codes": etf_codes, "count": len(etf_codes)}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"获取全市场ETF列表失败: {str(e)}")
+
+
+@router.post("/scheduler/{action}", response_model=APIResponse)
+async def manage_scheduler(action: str):
+    """
+    管理定时任务调度器
+    支持的操作: start, stop, status
+    """
+    try:
+        from app.tasks.scheduler import get_etf_scheduler
+        scheduler = get_etf_scheduler()
+        
+        if action == "start":
+            scheduler.start()
+            return APIResponse(
+                code=200,
+                message="调度器已启动",
+                data={"status": "started"}
+            )
+        elif action == "stop":
+            scheduler.shutdown()
+            return APIResponse(
+                code=200,
+                message="调度器已停止",
+                data={"status": "stopped"}
+            )
+        elif action == "status":
+            # 检查调度器是否正在运行
+            is_running = bool(scheduler.scheduler.running)
+            jobs = []
+            if is_running:
+                jobs = [job.id for job in scheduler.scheduler.get_jobs()]
+            
+            return APIResponse(
+                code=200,
+                message="调度器状态",
+                data={"status": "running" if is_running else "stopped", "jobs_count": len(jobs), "jobs": jobs}
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"不支持的操作: {action}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"调度器管理失败: {str(e)}")

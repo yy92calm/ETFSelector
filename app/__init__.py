@@ -12,6 +12,7 @@ from pathlib import Path
 from app.config import get_settings
 from app.db.database import init_db
 from app.routes import etf_routes
+from app.tasks.scheduler import get_etf_scheduler
 
 # 配置日志
 logging.basicConfig(
@@ -56,14 +57,27 @@ async def startup_event():
     try:
         init_db()
         logger.info("数据库初始化成功")
+        
+        # 启动ETF行情更新调度器
+        scheduler = get_etf_scheduler()
+        scheduler.start()
+        logger.info("ETF行情更新调度器已启动")
     except Exception as e:
-        logger.error(f"数据库初始化失败: {e}")
+        logger.error(f"应用启动失败: {e}")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """应用关闭事件"""
     logger.info("应用关闭...")
+    
+    # 关闭ETF行情更新调度器
+    try:
+        scheduler = get_etf_scheduler()
+        scheduler.shutdown()
+        logger.info("ETF行情更新调度器已关闭")
+    except Exception as e:
+        logger.error(f"关闭调度器失败: {e}")
 
 
 @app.get("/")

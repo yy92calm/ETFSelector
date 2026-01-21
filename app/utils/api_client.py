@@ -63,9 +63,149 @@ class QtradeAPIClient:
         Returns:
             各ETF的行情数据字典
         """
+        # 优化：使用单个API请求获取所有ETF数据
+        try:
+            # 构建查询参数，将所有ETF代码合并到一个请求中
+            codes_str = ','.join(etf_codes)
+            url = f"{self.base_url}/q"
+            params = {
+                "u": "qstock",
+                "q": codes_str,
+                "r": "0"
+            }
+            
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.text()
+                        results = self._parse_batch_response(data, etf_codes)
+                        return results
+                    else:
+                        logger.warning(f"批量获取行情失败，状态码: {response.status}")
+        except Exception as e:
+            logger.error(f"批量获取行情异常: {e}")
+        
+        # 如果批量请求失败，回退到逐个请求
+        logger.info("批量请求失败，回退到逐个请求模式")
         results = {}
         for code in etf_codes:
             quote = await self.get_etf_quote(code)
+            if quote:
+                results[code] = quote
+        return results
+    
+    async def get_all_etfs_list(self) -> List[str]:
+        """
+        获取全市场ETF列表
+        
+        Returns:
+            ETF代码列表
+        """
+        try:
+            # 尝试从API获取ETF列表
+            # 使用Qtrade的分类查询功能获取ETF列表
+            url = f"{self.base_url}/q"
+            params = {
+                "u": "qstock",
+                "q": "type_51",  # ETF分类代码
+                "r": "0"
+            }
+            
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.text()
+                        etf_codes = self._parse_etf_list_response(data)
+                        if etf_codes:
+                            logger.info(f"从API获取到 {len(etf_codes)} 个ETF代码")
+                            return etf_codes
+                    logger.warning(f"获取ETF列表失败，状态码: {response.status}")
+        except Exception as e:
+            logger.error(f"获取ETF列表异常: {e}")
+        
+        # 如果API获取失败，返回空列表
+        return []
+    
+    async def get_etf_list_by_market(self, market: str = "all") -> List[str]:
+        """
+        根据市场获取ETF列表
+        
+        Args:
+            market: 市场类型 ('shanghai', 'shenzhen', 'all')
+            
+        Returns:
+            ETF代码列表
+        """
+        try:
+            # 根据市场类型获取ETF列表
+            if market == "shanghai":
+                query = "type_51_1"  # 上海市场ETF
+            elif market == "shenzhen":
+                query = "type_51_2"  # 深圳市场ETF
+            else:
+                query = "type_51"  # 全市场ETF
+            
+            url = f"{self.base_url}/q"
+            params = {
+                "u": "qstock",
+                "q": query,
+                "r": "0"
+            }
+            
+            async with aiohttp.ClientSession(timeout=self.timeout) as session:
+                async with session.get(url, params=params) as response:
+                    if response.status == 200:
+                        data = await response.text()
+                        etf_codes = self._parse_etf_list_response(data)
+                        if etf_codes:
+                            logger.info(f"从API获取到 {len(etf_codes)} 个{market}市场ETF代码")
+                            return etf_codes
+                    logger.warning(f"获取{market}市场ETF列表失败，状态码: {response.status}")
+        except Exception as e:
+            logger.error(f"获取{market}市场ETF列表异常: {e}")
+        
+        # 如果API获取失败，返回空列表
+        return []
+    
+    def _parse_etf_list_response(self, response_text: str) -> List[str]:
+        """
+        解析ETF列表API响应
+        
+        Args:
+            response_text: API返回的文本
+            
+        Returns:
+            ETF代码列表
+        """
+        try:
+            # Qtrade ETF列表响应格式可能为: v_type_51="sh510050,sh510300,sz159915,..."
+            # 查找ETF列表数据
+            import re
+            # 尝试匹配ETF代码格式 (sh/sz + 数字)
+            etf_pattern = r'(?:sh|sz)\d{6}'
+            matches = re.findall(etf_pattern, response_text)
+            
+            # 去重并返回
+            unique_etfs = list(set(matches))
+            return unique_etfs
+        except Exception as e:
+            logger.error(f"解析ETF列表响应异常: {e}")
+            return []
+    
+    def _parse_batch_response(self, response_text: str, etf_codes: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        解析批量API响应
+        
+        Args:
+            response_text: API返回的文本
+            etf_codes: ETF代码列表
+            
+        Returns:
+            解析后的行情数据字典
+        """
+        results = {}
+        for code in etf_codes:
+            quote = self._parse_response(response_text, code)
             if quote:
                 results[code] = quote
         return results
