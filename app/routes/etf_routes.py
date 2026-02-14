@@ -1,428 +1,111 @@
-"""
-ETF相关的API路由
-"""
+"""ETF数据相关API"""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from typing import List
 from datetime import date
 
 from app.db.database import get_db
-from app.schemas.etf_schemas import (
-    ETFBasicSchema, 
-    ETFQuotationSchema, 
-    ETFDetailSchema,
-    FetchQuoteRequest,
-    APIResponse
-)
-from app.services.data_service import get_etf_data_service, market_manager
-from app.models.etf_basic import ETFBasic
-from app.models.etf_quotation import ETFQuotation
+from app.schemas.schemas import APIResponse
+from app.services.data_service import get_data_service
 
-router = APIRouter(prefix="/api/etf", tags=["ETF"])
+router = APIRouter(prefix="/api/etf", tags=["ETF数据"])
 
 
 @router.get("/list", response_model=APIResponse)
-async def get_etf_list(db: Session = Depends(get_db)):
-    """
-    获取所有ETF列表
-    """
-    try:
-        etfs = db.query(ETFBasic).all()
-        return APIResponse(
-            code=200,
-            message="获取ETF列表成功",
-            data={"etfs": [ETFBasicSchema.model_validate(etf) for etf in etfs]}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取ETF列表失败: {str(e)}")
+def get_etf_list(db: Session = Depends(get_db)):
+    """获取数据库中所有ETF列表"""
+    svc = get_data_service()
+    etfs = svc.get_etf_list(db)
+    return APIResponse(
+        data={
+            "etfs": [{"etf_code": e.etf_code, "etf_name": e.etf_name} for e in etfs],
+            "count": len(etfs),
+        }
+    )
 
 
-@router.get("/latest/{etf_code}", response_model=APIResponse)
-async def get_etf_latest_quote(etf_code: str, db: Session = Depends(get_db)):
-    """
-    获取ETF最新行情
-    """
-    try:
-        # 获取ETF基础信息
-        etf_basic = db.query(ETFBasic).filter(ETFBasic.etf_code == etf_code).first()
-        if not etf_basic:
-            raise HTTPException(status_code=404, detail=f"ETF代码 {etf_code} 不存在")
-        
-        # 获取最新行情
-        quotation = db.query(ETFQuotation).filter(
-            ETFQuotation.etf_code == etf_code
-        ).order_by(ETFQuotation.trade_date.desc()).first()
-        
-        if not quotation:
-            raise HTTPException(status_code=404, detail=f"未找到 {etf_code} 的行情数据")
-        
-        return APIResponse(
-            code=200,
-            message="获取最新行情成功",
-            data={
-                "quote": ETFQuotationSchema.model_validate(quotation)
-            }
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取最新行情失败: {str(e)}")
+@router.post("/sync-list", response_model=APIResponse)
+def sync_etf_list(db: Session = Depends(get_db)):
+    """从AKShare同步全市场ETF列表"""
+    svc = get_data_service()
+    count = svc.sync_etf_list(db)
+    return APIResponse(message=f"同步完成，新增/更新 {count} 条", data={"count": count})
+
+
+@router.get("/overview", response_model=APIResponse)
+def get_market_overview(
+    limit: int = Query(500, ge=1, le=1000), db: Session = Depends(get_db)
+):
+    """获取全市场最新行情概览（按成交额排序）"""
+    svc = get_data_service()
+    data = svc.get_market_overview(db, limit=limit)
+    return APIResponse(data={"quotes": data, "count": len(data)})
 
 
 @router.get("/history/{etf_code}", response_model=APIResponse)
-async def get_etf_history(
-    etf_code: str,
-    start_date: date,
-    end_date: date,
-    db: Session = Depends(get_db)
+def get_etf_history(
+    etf_code: str, start_date: date, end_date: date, db: Session = Depends(get_db)
 ):
-    """
-    获取ETF历史行情
-    """
-    try:
-        # 验证ETF是否存在
-        etf_basic = db.query(ETFBasic).filter(ETFBasic.etf_code == etf_code).first()
-        if not etf_basic:
-            raise HTTPException(status_code=404, detail=f"ETF代码 {etf_code} 不存在")
-        
-        # 获取历史行情
-        quotations = db.query(ETFQuotation).filter(
-            ETFQuotation.etf_code == etf_code,
-            ETFQuotation.trade_date >= start_date,
-            ETFQuotation.trade_date <= end_date
-        ).order_by(ETFQuotation.trade_date.asc()).all()
-        
-        return APIResponse(
-            code=200,
-            message="获取历史行情成功",
-            data={
-                "quotations": [ETFQuotationSchema.model_validate(q) for q in quotations]
-            }
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取历史行情失败: {str(e)}")
+    """获取指定ETF的历史行情"""
+    svc = get_data_service()
+    rows = svc.get_history(etf_code, start_date, end_date, db)
+    return APIResponse(
+        data={
+            "etf_code": etf_code,
+            "quotations": [
+                {
+                    "trade_date": r.trade_date.isoformat(),
+                    "open": r.open_price,
+                    "close": r.close_price,
+                    "high": r.high_price,
+                    "low": r.low_price,
+                    "volume": r.volume,
+                    "amount": r.amount,
+                    "change_pct": r.change_pct,
+                }
+                for r in rows
+            ],
+            "count": len(rows),
+        }
+    )
 
 
-@router.post("/fetch-quotes", response_model=APIResponse)
-async def fetch_etf_quotes(request: FetchQuoteRequest):
-    """
-    从Qtrade API获取并保存ETF行情数据
-    """
-    try:
-        data_service = get_etf_data_service()
-        results = await data_service.fetch_and_save_etf_quotes_batch(request.etf_codes)
-        
-        return APIResponse(
-            code=200,
-            message="行情数据获取成功",
-            data=results
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取行情数据失败: {str(e)}")
+@router.post("/fetch/{etf_code}", response_model=APIResponse)
+def fetch_etf_data(
+    etf_code: str, start_date: str = Query("20200101"), db: Session = Depends(get_db)
+):
+    """从AKShare拉取指定ETF历史行情并存储"""
+    svc = get_data_service()
+    df = svc.fetch_etf_daily(etf_code, start_date=start_date)
+    if df.empty:
+        raise HTTPException(status_code=404, detail=f"未获取到 {etf_code} 的行情数据")
+
+    # 确保ETF在基础表中
+    from app.models.etf import ETFBasic
+
+    existing = db.query(ETFBasic).filter(ETFBasic.etf_code == etf_code).first()
+    if not existing:
+        db.add(ETFBasic(etf_code=etf_code, etf_name=etf_code))
+        db.commit()
+
+    added = svc.save_daily_quotes(etf_code, df, db)
+    return APIResponse(
+        message=f"拉取完成",
+        data={"etf_code": etf_code, "new_records": added, "total_rows": len(df)},
+    )
 
 
-@router.get("/detail/{etf_code}", response_model=APIResponse)
-async def get_etf_detail(etf_code: str, db: Session = Depends(get_db)):
-    """
-    获取ETF详细信息（包含基础信息和最新行情）
-    """
-    try:
-        # 获取ETF基础信息
-        etf_basic = db.query(ETFBasic).filter(ETFBasic.etf_code == etf_code).first()
-        if not etf_basic:
-            raise HTTPException(status_code=404, detail=f"ETF代码 {etf_code} 不存在")
-        
-        # 获取最新行情
-        quotation = db.query(ETFQuotation).filter(
-            ETFQuotation.etf_code == etf_code
-        ).order_by(ETFQuotation.trade_date.desc()).first()
-        
-        if not quotation:
-            raise HTTPException(status_code=404, detail=f"未找到 {etf_code} 的行情数据")
-        
-        detail = ETFDetailSchema(
-            etf_code=etf_basic.etf_code,
-            etf_name=etf_basic.etf_name,
-            last_price=quotation.close_price,
-            change_rate=quotation.change_rate,
-            volume=quotation.volume,
-            amount=quotation.amount
-        )
-        
-        return APIResponse(
-            code=200,
-            message="获取ETF详细信息成功",
-            data={"detail": detail}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取ETF详细信息失败: {str(e)}")
+@router.post("/update-today", response_model=APIResponse)
+def update_today_quotes(db: Session = Depends(get_db)):
+    """手动触发更新全市场最新交易日行情"""
+    svc = get_data_service()
+    result = svc.update_today_quotes(db)
+    return APIResponse(message="行情更新完成", data=result)
 
 
-@router.post("/market/shanghai", response_model=APIResponse)
-async def fetch_shanghai_market_quotes():
-    """
-    获取上证市场所有主流ETF行情数据
-    """
-    try:
-        data_service = get_etf_data_service()
-        results = await data_service.fetch_and_save_shanghai_market_quotes()
-        
-        return APIResponse(
-            code=200,
-            message="上证市场行情获取成功",
-            data=results
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取上证市场行情失败: {str(e)}")
-
-
-@router.post("/market/shenzhen", response_model=APIResponse)
-async def fetch_shenzhen_market_quotes():
-    """
-    获取深证市场所有主流ETF行情数据
-    """
-    try:
-        data_service = get_etf_data_service()
-        results = await data_service.fetch_and_save_shenzhen_market_quotes()
-        
-        return APIResponse(
-            code=200,
-            message="深证市场行情获取成功",
-            data=results
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取深证市场行情失败: {str(e)}")
-
-
-@router.post("/market/all", response_model=APIResponse)
-async def fetch_all_market_quotes():
-    """
-    获取上深全市场所有主流ETF行情数据
-    """
-    try:
-        data_service = get_etf_data_service()
-        results = await data_service.fetch_and_save_all_market_quotes()
-        
-        return APIResponse(
-            code=200,
-            message="上深全市场行情获取成功",
-            data=results
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取上深全市场行情失败: {str(e)}")
-
-
-@router.post("/market/{market_type}", response_model=APIResponse)
-async def fetch_market_quotes(market_type: str):
-    """
-    获取指定市场所有ETF行情数据
-    支持的市场类型: shanghai, shenzhen, all
-    """
-    try:
-        data_service = get_etf_data_service()
-        results = await data_service.fetch_and_save_market_quotes(market_type)
-        
-        return APIResponse(
-            code=200,
-            message=f"{market_type}市场行情获取成功",
-            data=results
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取{market_type}市场行情失败: {str(e)}")
-
-
-@router.get("/market/{market_type}/etfs", response_model=APIResponse)
-async def get_market_etfs(market_type: str, db: Session = Depends(get_db)):
-    """
-    获取指定市场的ETF代码列表
-    支持的市场类型: shanghai, shenzhen, all, all_etfs
-    """
-    try:
-        from app.services.data_service import market_manager
-        etf_codes = market_manager.get_market_etfs(market_type)
-        
-        # 如果是all_etfs类型，从数据库更新全市场ETF列表
-        if market_type == "all_etfs":
-            market_manager.update_all_etfs_from_db(db)
-            etf_codes = market_manager.get_market_etfs(market_type)
-        
-        if not etf_codes:
-            raise HTTPException(status_code=404, detail=f"未知的市场类型: {market_type}")
-        
-        return APIResponse(
-            code=200,
-            message=f"获取{market_type}市场ETF列表成功",
-            data={"etf_codes": etf_codes, "count": len(etf_codes)}
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取{market_type}市场ETF列表失败: {str(e)}")
-
-
-@router.post("/market/{market_type}/etfs", response_model=APIResponse)
-async def add_etf_to_market(market_type: str, request: FetchQuoteRequest):
-    """
-    向指定市场添加ETF代码
-    支持的市场类型: shanghai, shenzhen, all
-    """
-    try:
-        from app.services.data_service import market_manager
-        added_count = 0
-        
-        for etf_code in request.etf_codes:
-            if market_manager.add_etf_to_market(etf_code, market_type):
-                added_count += 1
-        
-        return APIResponse(
-            code=200,
-            message=f"成功向{market_type}市场添加{added_count}个ETF代码",
-            data={"added_count": added_count, "total_count": len(market_manager.get_market_etfs(market_type))}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"向{market_type}市场添加ETF代码失败: {str(e)}")
-
-
-@router.delete("/market/{market_type}/etfs", response_model=APIResponse)
-async def remove_etf_from_market(market_type: str, request: FetchQuoteRequest):
-    """
-    从指定市场移除ETF代码
-    支持的市场类型: shanghai, shenzhen, all
-    """
-    try:
-        from app.services.data_service import market_manager
-        removed_count = 0
-        
-        for etf_code in request.etf_codes:
-            if market_manager.remove_etf_from_market(etf_code, market_type):
-                removed_count += 1
-        
-        return APIResponse(
-            code=200,
-            message=f"成功从{market_type}市场移除{removed_count}个ETF代码",
-            data={"removed_count": removed_count, "total_count": len(market_manager.get_market_etfs(market_type))}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"从{market_type}市场移除ETF代码失败: {str(e)}")
-
-
-@router.get("/market/shanghai/quotes", response_model=APIResponse)
-async def get_shanghai_market_quotes(db: Session = Depends(get_db)):
-    """
-    获取上证市场所有主流ETF的最新行情
-    """
-    try:
-        data_service = get_etf_data_service()
-        quotes = data_service.get_market_etf_quotes("shanghai", db)
-        
-        return APIResponse(
-            code=200,
-            message="获取上证市场行情成功",
-            data={"quotes": quotes, "count": len(quotes)}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取上证市场行情失败: {str(e)}")
-
-
-@router.get("/market/shenzhen/quotes", response_model=APIResponse)
-async def get_shenzhen_market_quotes(db: Session = Depends(get_db)):
-    """
-    获取深证市场所有主流ETF的最新行情
-    """
-    try:
-        data_service = get_etf_data_service()
-        quotes = data_service.get_market_etf_quotes("shenzhen", db)
-        
-        return APIResponse(
-            code=200,
-            message="获取深证市场行情成功",
-            data={"quotes": quotes, "count": len(quotes)}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取深证市场行情失败: {str(e)}")
-
-
-@router.get("/market/all/quotes", response_model=APIResponse)
-async def get_all_market_quotes(db: Session = Depends(get_db)):
-    """
-    获取上深全市场所有主流ETF的最新行情
-    """
-    try:
-        data_service = get_etf_data_service()
-        quotes = data_service.get_market_etf_quotes("all", db)
-        
-        return APIResponse(
-            code=200,
-            message="获取上深全市场行情成功",
-            data={"quotes": quotes, "count": len(quotes)}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取上深全市场行情失败: {str(e)}")
-
-
-@router.get("/market/all_etfs", response_model=APIResponse)
-async def get_all_etfs_list(db: Session = Depends(get_db)):
-    """
-    获取全市场ETF列表（从API获取最新数据）
-    """
-    try:
-        # 从API获取最新的全市场ETF列表
-        count = await market_manager.update_all_etfs_from_api()
-        
-        # 获取更新后的ETF列表
-        etf_codes = market_manager.get_market_etfs("all_etfs")
-        
-        return APIResponse(
-            code=200,
-            message="获取全市场ETF列表成功",
-            data={"etf_codes": etf_codes, "count": len(etf_codes)}
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"获取全市场ETF列表失败: {str(e)}")
-
-
-@router.post("/scheduler/{action}", response_model=APIResponse)
-async def manage_scheduler(action: str):
-    """
-    管理定时任务调度器
-    支持的操作: start, stop, status
-    """
-    try:
-        from app.tasks.scheduler import get_etf_scheduler
-        scheduler = get_etf_scheduler()
-        
-        if action == "start":
-            scheduler.start()
-            return APIResponse(
-                code=200,
-                message="调度器已启动",
-                data={"status": "started"}
-            )
-        elif action == "stop":
-            scheduler.shutdown()
-            return APIResponse(
-                code=200,
-                message="调度器已停止",
-                data={"status": "stopped"}
-            )
-        elif action == "status":
-            # 检查调度器是否正在运行
-            is_running = bool(scheduler.scheduler.running)
-            jobs = []
-            if is_running:
-                jobs = [job.id for job in scheduler.scheduler.get_jobs()]
-            
-            return APIResponse(
-                code=200,
-                message="调度器状态",
-                data={"status": "running" if is_running else "stopped", "jobs_count": len(jobs), "jobs": jobs}
-            )
-        else:
-            raise HTTPException(status_code=400, detail=f"不支持的操作: {action}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"调度器管理失败: {str(e)}")
+@router.post("/init-sample", response_model=APIResponse)
+def initialize_sample_data(db: Session = Depends(get_db)):
+    """初始化热门ETF样本数据"""
+    svc = get_data_service()
+    result = svc.initialize_sample_data(db)
+    return APIResponse(message="样本数据初始化完成", data=result)

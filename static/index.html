@@ -3,57 +3,265 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>智能ETF选择系统</title>
+    <title>ETF量化选择系统</title>
     <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
 </head>
 <body>
-    <div id="app">
-        <header>
-            <h1>智能ETF选择系统</h1>
-            <nav>
-                <ul>
-                    <li><a href="#home">首页</a></li>
-                    <li><a href="#quotation">行情</a></li>
-                    <li><a href="#analysis">分析</a></li>
-                    <li><a href="#trade">交易</a></li>
-                </ul>
-            </nav>
-        </header>
 
-        <main>
-            <section id="home" class="section active">
-                <h2>欢迎使用智能ETF选择系统</h2>
-                <p>系统提供最新的ETF行情数据、技术指标分析和虚拟交易功能。</p>
-                <div id="api-status">
-                    <p>API 状态: <span id="status-indicator">检查中...</span></p>
-                </div>
-            </section>
+<!-- 导航栏 -->
+<nav class="navbar">
+    <h1>ETF量化选择系统</h1>
+    <div class="nav-links">
+        <a href="#" class="active" data-tab="market">行情看板</a>
+        <a href="#" data-tab="strategy">策略管理</a>
+        <a href="#" data-tab="backtest">策略回测</a>
+        <a href="#" data-tab="portfolio">实盘模拟</a>
+    </div>
+</nav>
 
-            <section id="quotation" class="section">
-                <h2>ETF行情</h2>
-                <div class="quote-controls">
-                    <input type="text" id="etf-code" placeholder="输入ETF代码 (如: sh510050)" value="sh510050">
-                    <button onclick="fetchQuote()">获取行情</button>
-                </div>
-                <div id="quote-result" class="quote-result"></div>
-            </section>
+<div class="container">
 
-            <section id="analysis" class="section">
-                <h2>技术分析</h2>
-                <p>技术指标分析功能开发中...</p>
-            </section>
+    <!-- ====== 行情看板 ====== -->
+    <div id="tab-market" class="tab-content active">
+        <div class="toolbar">
+            <button class="btn btn-primary" onclick="syncETFList()">同步ETF列表</button>
+            <button class="btn btn-success" onclick="updateTodayQuotes()">更新今日行情</button>
+            <span id="market-count" style="color:var(--text-secondary);font-size:13px;"></span>
+        </div>
+        
+        <!-- 市场分类标签 -->
+        <div class="market-tabs">
+            <button class="market-tab active" data-market="all">全部</button>
+            <button class="market-tab" data-market="sh">上交所</button>
+            <button class="market-tab" data-market="sz">深交所</button>
+            <button class="market-tab" data-market="cy">创业板</button>
+            <button class="market-tab" data-market="kc">科创板</button>
+            <button class="market-tab" data-market="hot">热门ETF</button>
+        </div>
 
-            <section id="trade" class="section">
-                <h2>虚拟交易</h2>
-                <p>虚拟交易功能开发中...</p>
-            </section>
-        </main>
+        <!-- 行情统计 -->
+        <div class="stats-mini" id="market-stats" style="display:none;">
+            <div class="stat-item">
+                <span class="stat-label">总市值</span>
+                <span class="stat-value" id="total-market-value">-</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">上涨</span>
+                <span class="stat-value text-success" id="up-count">-</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">下跌</span>
+                <span class="stat-value text-danger" id="down-count">-</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">平盘</span>
+                <span class="stat-value" id="flat-count">-</span>
+            </div>
+        </div>
 
-        <footer>
-            <p>&copy; 2024 智能ETF选择系统. 版本 0.1.0</p>
-        </footer>
+        <div class="card">
+            <div class="card-title" id="market-title">全市场ETF行情</div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>代码</th>
+                            <th>名称</th>
+                            <th class="text-right">收盘价</th>
+                            <th class="text-right">涨跌幅</th>
+                            <th class="text-right">成交量</th>
+                            <th class="text-right">成交额</th>
+                            <th>日期</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="market-table"></tbody>
+                </table>
+            </div>
+            <div id="market-empty" class="empty-state" style="display:none;">
+                <div class="icon">📊</div>
+                <p>暂无行情数据，请先"同步ETF列表"然后"更新今日行情"</p>
+            </div>
+            
+            <!-- 分页控件 -->
+            <div class="pagination" id="market-pagination" style="display:none;">
+                <button class="btn btn-outline btn-sm" onclick="changePage(-1)">上一页</button>
+                <span class="page-info">第 <span id="current-page">1</span> 页，共 <span id="total-pages">1</span> 页</span>
+                <button class="btn btn-outline btn-sm" onclick="changePage(1)">下一页</button>
+            </div>
+        </div>
     </div>
 
-    <script src="/static/js/main.js"></script>
+    <!-- ====== 策略管理 ====== -->
+    <div id="tab-strategy" class="tab-content">
+        <div class="toolbar">
+            <button class="btn btn-primary" onclick="showCreateStrategyModal()">+ 创建模板策略</button>
+            <button class="btn btn-success" onclick="showAIStrategyModal()">AI 生成策略</button>
+        </div>
+        <div class="card">
+            <div class="card-title">我的策略</div>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>名称</th>
+                            <th>类型</th>
+                            <th>ETF</th>
+                            <th>初始资金</th>
+                            <th>状态</th>
+                            <th>创建时间</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="strategy-table"></tbody>
+                </table>
+            </div>
+            <div id="strategy-empty" class="empty-state" style="display:none;">
+                <div class="icon">🧠</div>
+                <p>暂无策略，点击上方按钮创建</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====== 策略回测 ====== -->
+    <div id="tab-backtest" class="tab-content">
+        <div class="card">
+            <div class="card-title">回测配置</div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>选择策略</label>
+                    <select id="bt-strategy"></select>
+                </div>
+                <div class="form-group">
+                    <label>开始日期</label>
+                    <input type="date" id="bt-start" value="2024-01-01">
+                </div>
+                <div class="form-group">
+                    <label>结束日期</label>
+                    <input type="date" id="bt-end">
+                </div>
+                <div class="form-group">
+                    <label>初始资金</label>
+                    <input type="number" id="bt-capital" value="100000">
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="runBacktest()" id="bt-run-btn">开始回测</button>
+        </div>
+
+        <div id="bt-result" style="display:none;">
+            <div class="stats-grid" id="bt-stats"></div>
+            <div class="card">
+                <div class="card-title">收益曲线</div>
+                <div id="bt-chart" style="height:400px;"></div>
+            </div>
+            <div class="card">
+                <div class="card-title">交易记录</div>
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr><th>日期</th><th>ETF</th><th>方向</th><th class="text-right">价格</th><th class="text-right">数量</th><th class="text-right">金额</th><th>原因</th></tr>
+                        </thead>
+                        <tbody id="bt-trades"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====== 实盘模拟 ====== -->
+    <div id="tab-portfolio" class="tab-content">
+        <div class="form-row" style="margin-bottom:16px;">
+            <div class="form-group">
+                <label>选择策略</label>
+                <select id="pf-strategy" onchange="loadPortfolio()"></select>
+            </div>
+        </div>
+        <div id="pf-content" style="display:none;">
+            <div class="toolbar">
+                <button class="btn btn-warning" onclick="catchUpStrategy()">补跑策略</button>
+                <span id="pf-info" style="font-size:13px;color:var(--text-secondary);"></span>
+            </div>
+            <div class="stats-grid" id="pf-stats"></div>
+            <div class="card">
+                <div class="card-title">资产曲线</div>
+                <div id="pf-chart" style="height:360px;"></div>
+            </div>
+            <div class="card">
+                <div class="card-title">当前持仓</div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>ETF代码</th><th class="text-right">数量</th><th class="text-right">均价</th><th class="text-right">现价</th><th class="text-right">市值</th></tr></thead>
+                        <tbody id="pf-holdings"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title">交易记录</div>
+                <div class="table-wrap">
+                    <table>
+                        <thead><tr><th>日期</th><th>ETF</th><th>方向</th><th class="text-right">价格</th><th class="text-right">数量</th><th class="text-right">金额</th><th>原因</th></tr></thead>
+                        <tbody id="pf-trades"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<!-- 创建模板策略 Modal -->
+<div class="modal-overlay" id="modal-create-strategy">
+    <div class="modal">
+        <div class="modal-title">创建模板策略</div>
+        <div class="form-group">
+            <label>策略名称</label>
+            <input type="text" id="cs-name" placeholder="如: 沪深300双均线策略">
+        </div>
+        <div class="form-group">
+            <label>策略模板</label>
+            <select id="cs-template"></select>
+        </div>
+        <div id="cs-params-area"></div>
+        <div class="form-group">
+            <label>ETF代码（逗号分隔）</label>
+            <input type="text" id="cs-etfs" placeholder="如: 510300,159915">
+        </div>
+        <div class="form-group">
+            <label>初始资金</label>
+            <input type="number" id="cs-capital" value="100000">
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeModal('modal-create-strategy')">取消</button>
+            <button class="btn btn-primary" onclick="submitCreateStrategy()">创建</button>
+        </div>
+    </div>
+</div>
+
+<!-- AI策略 Modal -->
+<div class="modal-overlay" id="modal-ai-strategy">
+    <div class="modal">
+        <div class="modal-title">AI 生成策略</div>
+        <div class="form-group">
+            <label>策略描述（用自然语言描述你的交易逻辑）</label>
+            <textarea id="ai-desc" rows="4" placeholder="例如：当5日均线上穿20日均线时买入，下穿时卖出；同时RSI低于30时加仓，高于70时减仓"></textarea>
+        </div>
+        <div class="form-group">
+            <label>ETF代码（逗号分隔）</label>
+            <input type="text" id="ai-etfs" placeholder="如: 510300,159915">
+        </div>
+        <div class="form-group">
+            <label>初始资金</label>
+            <input type="number" id="ai-capital" value="100000">
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-outline" onclick="closeModal('modal-ai-strategy')">取消</button>
+            <button class="btn btn-success" onclick="submitAIStrategy()" id="ai-submit-btn">生成策略</button>
+        </div>
+    </div>
+</div>
+
+<script src="/static/js/app.js"></script>
 </body>
 </html>

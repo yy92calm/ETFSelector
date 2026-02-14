@@ -1,37 +1,30 @@
-"""
-FastAPI应用初始化和配置
-"""
+"""FastAPI 应用初始化"""
 
+import logging
+from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-import logging
-from pathlib import Path
 
 from app.config import get_settings
 from app.db.database import init_db
-from app.routes import etf_routes
-from app.tasks.scheduler import get_etf_scheduler
+from app.routes import etf_routes, strategy_routes, backtest_routes, portfolio_routes
 
-# 配置日志
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
-
 settings = get_settings()
 
-# 创建FastAPI应用
 app = FastAPI(
     title=settings.app_name,
-    description="智能ETF选择系统 - 提供ETF行情分析、虚拟交易和策略回测功能",
-    version="0.1.0",
-    debug=settings.debug
+    description="ETF量化选择系统 — 行情获取 · 策略回测 · 模拟实盘",
+    version="0.2.0",
 )
 
-# 配置CORS
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -40,83 +33,51 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 挂载静态文件
-static_path = Path(__file__).parent.parent / "static"
-if static_path.exists():
-    app.mount("/static", StaticFiles(directory=str(static_path)), name="static")
-    logger.info(f"静态文件挂载: {static_path}")
+# 静态文件
+static_dir = Path(__file__).parent.parent / "static"
+if static_dir.exists():
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
 # 注册路由
 app.include_router(etf_routes.router)
+app.include_router(strategy_routes.router)
+app.include_router(backtest_routes.router)
+app.include_router(portfolio_routes.router)
 
 
 @app.on_event("startup")
-async def startup_event():
-    """应用启动事件"""
-    logger.info("应用启动...")
-    try:
-        init_db()
-        logger.info("数据库初始化成功")
-        
-        # 启动ETF行情更新调度器
-        scheduler = get_etf_scheduler()
+def startup():
+    logger.info("应用启动 ...")
+    init_db()
+    logger.info("数据库初始化成功")
+
+    from app.tasks.scheduler import get_scheduler
+    scheduler = get_scheduler()
+    if not scheduler.running:
         scheduler.start()
-        logger.info("ETF行情更新调度器已启动")
-    except Exception as e:
-        logger.error(f"应用启动失败: {e}")
+        logger.info(f"定时任务已启动 (每日 {settings.scheduler_hour}:{settings.scheduler_minute:02d})")
 
 
 @app.on_event("shutdown")
-async def shutdown_event():
-    """应用关闭事件"""
-    logger.info("应用关闭...")
-    
-    # 关闭ETF行情更新调度器
+def shutdown():
+    from app.tasks.scheduler import get_scheduler
     try:
-        scheduler = get_etf_scheduler()
-        scheduler.shutdown()
-        logger.info("ETF行情更新调度器已关闭")
-    except Exception as e:
-        logger.error(f"关闭调度器失败: {e}")
+        scheduler = get_scheduler()
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+    except Exception:
+        pass
+    logger.info("应用已关闭")
 
 
 @app.get("/")
-async def root():
-    """根路径 - 返回index.html"""
-    static_path = Path(__file__).parent.parent / "static" / "index.html"
-    if static_path.exists():
-        return FileResponse(str(static_path))
-    return {
-        "message": "欢迎使用智能ETF选择系统",
-        "version": "0.1.0",
-        "docs": "/docs",
-        "openapi": "/openapi.json"
-    }
-
-
-@app.get("/index.html")
-async def index():
-    """返回index.html"""
-    static_path = Path(__file__).parent.parent / "static" / "index.html"
-    if static_path.exists():
-        return FileResponse(str(static_path))
-    return {"error": "index.html not found"}
+def root():
+    index = static_dir / "index.html"
+    if index.exists():
+        return FileResponse(str(index))
+    return {"message": settings.app_name, "docs": "/docs"}
 
 
 @app.get("/health")
-async def health_check():
-    """健康检查"""
-    return {
-        "status": "healthy",
-        "environment": settings.app_env
-    }
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        reload=settings.debug
-    )
+def health():
+    return {"status": "ok", "env": settings.app_env}

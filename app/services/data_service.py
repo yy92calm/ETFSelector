@@ -1,510 +1,330 @@
 """
-数据获取服务模块
-负责从Qtrade API获取行情数据并存储到数据库
+AKShare 数据获取服务
+负责从AKShare获取全市场ETF列表和日K线行情
 """
 
 import logging
-from datetime import datetime
-from typing import Optional, List, Dict, Any
+from datetime import date, datetime, timedelta
+from typing import List, Optional, Dict
+
+import akshare as ak
+import pandas as pd
 from sqlalchemy.orm import Session
-from app.utils.api_client import get_api_client
-from app.models.etf_basic import ETFBasic
-from app.models.etf_quotation import ETFQuotation
+from sqlalchemy import func
+
+from app.models.etf import ETFBasic, ETFQuotation
 from app.db.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 
 
-class ETFMarketManager:
-    """ETF市场管理器 - 管理不同市场的ETF代码列表"""
-    
-    def __init__(self):
-        # 常见的上证市场ETF代码
-        self.shanghai_etfs = [
-            "sh510050",  # 华夏上证50ETF
-            "sh510300",  # 华夏沪深300ETF
-            "sh510500",  # 华夏中证500ETF
-            "sh510610",  # 易方达消费行业
-            "sh510180",  # 上海50
-            "sh511800",  # 易方达易利
-        ]
+class DataService:
+    """ETF数据获取与存储服务"""
 
-        # 常见的深证市场ETF代码
-        self.shenzhen_etfs = [
-            "sz150018",  # 鹏华创业板
-            "sz159915",  # 易方达创业板
-            "sz159920",  # 小康证券300
-            "sz159949",  # 华夏创业板
-            "sz159935",  # 广发创业板
-            "sz159999",  # 易方达创业板B
-        ]
-
-        # 所有主流ETF代码（包括上深市场）
-        self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
-        
-        # 全市场ETF代码列表（包含所有ETF，不仅限于预定义列表）
-        self.all_etfs = set(self.all_main_etfs)
-    
-    async def update_all_etfs_from_api(self) -> int:
-        """从API更新全市场ETF列表"""
+    # ------------------------------------------------------------------ #
+    #  全市场 ETF 列表
+    # ------------------------------------------------------------------ #
+    def fetch_etf_list(self) -> pd.DataFrame:
+        """
+        从AKShare获取全市场ETF列表
+        返回DataFrame包含: symbol, name 等字段
+        """
         try:
-            api_client = get_api_client()
-            # 获取全市场ETF列表
-            all_etf_codes = await api_client.get_all_etfs_list()
-            
-            if all_etf_codes:
-                # 更新全市场ETF列表
-                for code in all_etf_codes:
-                    self.all_etfs.add(code)
-                
-                # 同时更新市场分类
-                for code in all_etf_codes:
-                    if code.startswith("sh") and code not in self.shanghai_etfs:
-                        self.shanghai_etfs.append(code)
-                    elif code.startswith("sz") and code not in self.shenzhen_etfs:
-                        self.shenzhen_etfs.append(code)
-                
-                # 更新all_main_etfs
-                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
-                
-                logger.info(f"从API更新全市场ETF列表成功，共 {len(self.all_etfs)} 个ETF")
-                return len(self.all_etfs)
+            # 获取上交所ETF
+            df_sh = ak.fund_etf_spot_em()
+            logger.info(f"获取到 {len(df_sh)} 条ETF记录")
+            return df_sh
+        except Exception as e:
+            logger.error(f"获取ETF列表失败: {e}")
+            return pd.DataFrame()
+
+    def sync_etf_list(self, db: Session) -> int:
+        """将全市场ETF列表同步到数据库，返回新增/更新数量"""
+        df = self.fetch_etf_list()
+        if df.empty:
+            return 0
+
+        count = 0
+        for _, row in df.iterrows():
+            code = str(row.get("代码", ""))
+            name = str(row.get("名称", ""))
+            if not code:
+                continue
+
+            existing = db.query(ETFBasic).filter(ETFBasic.etf_code == code).first()
+            if existing:
+                if existing.etf_name != name:
+                    existing.etf_name = name
+                    existing.update_time = datetime.utcnow()
+                    count += 1
             else:
-                logger.warning("从API获取ETF列表失败，使用数据库中的ETF列表")
-                # 如果API获取失败，使用数据库中的ETF列表
-                from app.db.database import SessionLocal
-                db = SessionLocal()
-                try:
-                    etf_codes = db.query(ETFBasic.etf_code).all()
-                    etf_codes = [item.etf_code for item in etf_codes]
-                    
-                    # 更新全市场ETF列表
-                    for code in etf_codes:
-                        self.all_etfs.add(code)
-                    
-                    # 同时更新市场分类
-                    for code in etf_codes:
-                        if code.startswith("sh") and code not in self.shanghai_etfs:
-                            self.shanghai_etfs.append(code)
-                        elif code.startswith("sz") and code not in self.shenzhen_etfs:
-                            self.shenzhen_etfs.append(code)
-                    
-                    # 更新all_main_etfs
-                    self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
-                    
-                    return len(self.all_etfs)
-                finally:
-                    db.close()
-        except Exception as e:
-            logger.error(f"从API更新全市场ETF列表失败: {e}")
-            return len(self.all_etfs)
-    
-    def get_market_etfs(self, market_type: str) -> List[str]:
-        """根据市场类型获取ETF代码列表"""
-        if market_type == "shanghai":
-            return self.shanghai_etfs
-        elif market_type == "shenzhen":
-            return self.shenzhen_etfs
-        elif market_type == "all":
-            return self.all_main_etfs
-        elif market_type == "all_etfs":
-            # 返回全市场ETF列表
-            return list(self.all_etfs)
-        else:
-            return []
-    
-    def add_etf_to_market(self, etf_code: str, market_type: str) -> bool:
-        """向指定市场添加ETF代码"""
-        if market_type == "shanghai":
-            if etf_code not in self.shanghai_etfs:
-                self.shanghai_etfs.append(etf_code)
-                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
-                self.all_etfs.add(etf_code)
-                return True
-        elif market_type == "shenzhen":
-            if etf_code not in self.shenzhen_etfs:
-                self.shenzhen_etfs.append(etf_code)
-                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
-                self.all_etfs.add(etf_code)
-                return True
-        elif market_type == "all":
-            # 对于all类型，我们将其添加到对应市场
-            if etf_code.startswith("sh"):
-                return self.add_etf_to_market(etf_code, "shanghai")
-            elif etf_code.startswith("sz"):
-                return self.add_etf_to_market(etf_code, "shenzhen")
-        elif market_type == "all_etfs":
-            # 添加到全市场列表
-            if etf_code not in self.all_etfs:
-                self.all_etfs.add(etf_code)
-                # 同时添加到对应市场
-                if etf_code.startswith("sh"):
-                    return self.add_etf_to_market(etf_code, "shanghai")
-                elif etf_code.startswith("sz"):
-                    return self.add_etf_to_market(etf_code, "shenzhen")
-                else:
-                    # 如果不是sh或sz开头，也添加到全市场列表
-                    self.all_etfs.add(etf_code)
-                    return True
-        return False
-    
-    def remove_etf_from_market(self, etf_code: str, market_type: str) -> bool:
-        """从指定市场移除ETF代码"""
-        if market_type == "shanghai":
-            if etf_code in self.shanghai_etfs:
-                self.shanghai_etfs.remove(etf_code)
-                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
-                return True
-        elif market_type == "shenzhen":
-            if etf_code in self.shenzhen_etfs:
-                self.shenzhen_etfs.remove(etf_code)
-                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
-                return True
-        elif market_type == "all":
-            # 对于all类型，尝试从所有市场移除
-            removed = False
-            if etf_code in self.shanghai_etfs:
-                self.shanghai_etfs.remove(etf_code)
-                removed = True
-            if etf_code in self.shenzhen_etfs:
-                self.shenzhen_etfs.remove(etf_code)
-                removed = True
-            if removed:
-                self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
-            return removed
-        elif market_type == "all_etfs":
-            # 从全市场列表移除
-            if etf_code in self.all_etfs:
-                self.all_etfs.remove(etf_code)
-                # 同时从具体市场移除
-                removed = False
-                if etf_code in self.shanghai_etfs:
-                    self.shanghai_etfs.remove(etf_code)
-                    removed = True
-                if etf_code in self.shenzhen_etfs:
-                    self.shenzhen_etfs.remove(etf_code)
-                    removed = True
-                if removed:
-                    self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
-                return True
-        return False
-    
-    def add_etf_to_all_etfs(self, etf_code: str) -> bool:
-        """向全市场ETF列表添加ETF代码"""
-        if etf_code not in self.all_etfs:
-            self.all_etfs.add(etf_code)
-            return True
-        return False
-    
-    def get_all_etfs_count(self) -> int:
-        """获取全市场ETF总数"""
-        return len(self.all_etfs)
-    
-    def update_all_etfs_from_db(self, db: Session) -> int:
-        """从数据库更新全市场ETF列表"""
-        try:
-            # 从数据库获取所有ETF代码
-            etf_codes = db.query(ETFBasic.etf_code).all()
-            etf_codes = [item.etf_code for item in etf_codes]
-            
-            # 更新全市场ETF列表
-            for code in etf_codes:
-                self.all_etfs.add(code)
-            
-            # 同时更新市场分类
-            for code in etf_codes:
-                if code.startswith("sh") and code not in self.shanghai_etfs:
-                    self.shanghai_etfs.append(code)
-                elif code.startswith("sz") and code not in self.shenzhen_etfs:
-                    self.shenzhen_etfs.append(code)
-            
-            # 更新all_main_etfs
-            self.all_main_etfs = self.shanghai_etfs + self.shenzhen_etfs
-            
-            return len(self.all_etfs)
-        except Exception as e:
-            logger.error(f"从数据库更新全市场ETF列表失败: {e}")
-            return len(self.all_etfs)
+                db.add(ETFBasic(etf_code=code, etf_name=name))
+                count += 1
 
+        db.commit()
+        logger.info(f"ETF列表同步完成，新增/更新 {count} 条")
+        return count
 
-# 创建全局市场管理器实例
-market_manager = ETFMarketManager()
-
-
-class ETFDataService:
-    """ETF数据获取服务"""
-    
-    def __init__(self):
-        self.api_client = get_api_client()
-    
-    async def fetch_and_save_etf_quote(self, etf_code: str, db: Session) -> bool:
+    # ------------------------------------------------------------------ #
+    #  获取日 K 线行情
+    # ------------------------------------------------------------------ #
+    def fetch_etf_daily(
+        self,
+        etf_code: str,
+        start_date: str = "20200101",
+        end_date: Optional[str] = None,
+    ) -> pd.DataFrame:
         """
-        获取单个ETF的行情数据并保存到数据库
-        
-        Args:
-            etf_code: ETF代码
-            db: 数据库会话
-            
-        Returns:
-            是否成功保存
+        获取单只ETF的日K线数据
+        etf_code: 纯数字代码，如 510050
         """
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y%m%d")
         try:
-            # 从API获取行情数据
-            quote_data = await self.api_client.get_etf_quote(etf_code)
-            if not quote_data:
-                logger.warning(f"无法获取 {etf_code} 的行情数据")
-                return False
-            
-            # 检查或创建ETF基础信息
-            etf_basic = db.query(ETFBasic).filter(ETFBasic.etf_code == etf_code).first()
-            if not etf_basic:
-                etf_basic = ETFBasic(
-                    etf_code=etf_code,
-                    etf_name=quote_data.get("etf_name", ""),
-                    update_time=datetime.utcnow()
-                )
-                db.add(etf_basic)
-                db.flush()
-                logger.info(f"创建新ETF基础信息: {etf_code}")
-            
-            # 保存行情数据
-            quotation = ETFQuotation(
-                etf_code=etf_code,
-                trade_date=datetime.now().date(),
-                open_price=quote_data.get("last_price", 0),
-                close_price=quote_data.get("last_price", 0),
-                high_price=quote_data.get("last_price", 0),
-                low_price=quote_data.get("last_price", 0),
-                volume=quote_data.get("volume", 0),
-                amount=quote_data.get("amount", 0),
-                change_rate=quote_data.get("change_rate", 0),
-                update_time=datetime.utcnow()
+            df = ak.fund_etf_hist_em(
+                symbol=etf_code,
+                period="daily",
+                start_date=start_date,
+                end_date=end_date,
+                adjust="qfq",  # 前复权
             )
-            db.add(quotation)
-            db.commit()
-            logger.info(f"保存 {etf_code} 行情数据成功")
-            return True
+            logger.info(
+                f"获取 {etf_code} 日K线 {len(df)} 条 ({start_date} ~ {end_date})"
+            )
+            return df
         except Exception as e:
-            db.rollback()
-            logger.error(f"保存 {etf_code} 行情数据失败: {e}")
-            return False
-    
-    async def fetch_and_save_etf_quotes_batch(self, etf_codes: List[str]) -> dict:
+            logger.error(f"获取 {etf_code} 日K线失败: {e}")
+            return pd.DataFrame()
+
+    def save_daily_quotes(self, etf_code: str, df: pd.DataFrame, db: Session) -> int:
+        """将日K线DataFrame存入数据库，自动去重，返回新增数量"""
+        if df.empty:
+            return 0
+
+        # 查已有日期
+        existing_dates = set(
+            r[0]
+            for r in db.query(ETFQuotation.trade_date)
+            .filter(ETFQuotation.etf_code == etf_code)
+            .all()
+        )
+
+        count = 0
+        for _, row in df.iterrows():
+            trade_date = pd.to_datetime(row["日期"]).date()
+            if trade_date in existing_dates:
+                continue
+            db.add(
+                ETFQuotation(
+                    etf_code=etf_code,
+                    trade_date=trade_date,
+                    open_price=float(row.get("开盘", 0)),
+                    close_price=float(row.get("收盘", 0)),
+                    high_price=float(row.get("最高", 0)),
+                    low_price=float(row.get("最低", 0)),
+                    volume=float(row.get("成交量", 0)),
+                    amount=float(row.get("成交额", 0)),
+                    change_pct=float(row.get("涨跌幅", 0)),
+                )
+            )
+            count += 1
+
+        db.commit()
+        logger.info(f"{etf_code} 新增 {count} 条日K线")
+        return count
+
+    # ------------------------------------------------------------------ #
+    #  批量更新当日行情（定时任务用）
+    # ------------------------------------------------------------------ #
+    def update_today_quotes(self, db: Session) -> Dict:
         """
-        批量获取多个ETF的行情数据并保存
-        
-        Args:
-            etf_codes: ETF代码列表
-            
-        Returns:
-            包含成功和失败数量的字典
+        获取全市场ETF最新交易日行情并存储
+        返回 {success_count, fail_count, failed_codes}
         """
-        db = SessionLocal()
-        results = {
+        # 先同步ETF列表
+        self.sync_etf_list(db)
+
+        # 获取数据库中所有ETF代码
+        etf_codes = [r[0] for r in db.query(ETFBasic.etf_code).all()]
+
+        # 计算最近的交易日（向后查找最近7天）
+        today = datetime.now()
+        target_dates = []
+        for i in range(7):
+            check_date = today - timedelta(days=i)
+            # 排除周末
+            if check_date.weekday() < 5:  # 0-4 表示周一到周五
+                target_dates.append(check_date.strftime("%Y%m%d"))
+
+        result = {
             "success_count": 0,
             "fail_count": 0,
-            "failed_codes": []
+            "failed_codes": [],
+            "target_dates": target_dates,
         }
-        
-        try:
-            # 从API批量获取数据
-            quotes_data = await self.api_client.get_etf_quotes_batch(etf_codes)
-            
-            # 批量处理数据，减少数据库操作次数
-            for etf_code in etf_codes:
-                if etf_code not in quotes_data:
-                    results["fail_count"] += 1
-                    results["failed_codes"].append(etf_code)
-                    continue
-                
-                quote_data = quotes_data[etf_code]
-                
-                # 检查或创建ETF基础信息
-                etf_basic = db.query(ETFBasic).filter(ETFBasic.etf_code == etf_code).first()
-                if not etf_basic:
-                    etf_basic = ETFBasic(
-                        etf_code=etf_code,
-                        etf_name=quote_data.get("etf_name", ""),
-                        update_time=datetime.utcnow()
+
+        for code in etf_codes:  # 更新所有ETF的行情
+            success = False
+            for target_date in target_dates:
+                try:
+                    df = self.fetch_etf_daily(
+                        code, start_date=target_date, end_date=target_date
                     )
-                    db.add(etf_basic)
-                
-                # 保存行情数据
-                quotation = ETFQuotation(
-                    etf_code=etf_code,
-                    trade_date=datetime.now().date(),
-                    open_price=quote_data.get("last_price", 0),
-                    close_price=quote_data.get("last_price", 0),
-                    high_price=quote_data.get("last_price", 0),
-                    low_price=quote_data.get("last_price", 0),
-                    volume=quote_data.get("volume", 0),
-                    amount=quote_data.get("amount", 0),
-                    change_rate=quote_data.get("change_rate", 0),
-                    update_time=datetime.utcnow()
+                    if not df.empty:
+                        added = self.save_daily_quotes(code, df, db)
+                        if added > 0:
+                            result["success_count"] += 1
+                            success = True
+                            break
+                except Exception as e:
+                    logger.debug(f"更新 {code} {target_date} 行情失败: {e}")
+                    continue
+
+            if not success:
+                result["fail_count"] += 1
+                result["failed_codes"].append(code)
+
+        logger.info(f"最新交易日行情更新完成: {result}")
+        return result
+
+    # ------------------------------------------------------------------ #
+    #  补全历史数据
+    # ------------------------------------------------------------------ #
+    def backfill_history(self, etf_code: str, start_date: str, db: Session) -> int:
+        """补全某ETF从start_date到今天的历史行情"""
+        end_date = datetime.now().strftime("%Y%m%d")
+        df = self.fetch_etf_daily(etf_code, start_date=start_date, end_date=end_date)
+        return self.save_daily_quotes(etf_code, df, db)
+
+    def initialize_sample_data(self, db: Session) -> Dict:
+        """
+        初始化热门ETF的样本数据（最近5个交易日）
+        用于演示和测试
+        """
+        # 选择热门ETF代码
+        popular_etfs = [
+            "510300",
+            "159915",
+            "510050",
+            "510500",
+            "159919",
+            "512170",
+            "512690",
+            "515000",
+        ]
+
+        # 计算最近的5个交易日
+        end_date = datetime.now()
+        valid_dates = []
+        for i in range(10):  # 往前查找10天，确保有5个交易日
+            check_date = end_date - timedelta(days=i)
+            if check_date.weekday() < 5:  # 工作日
+                valid_dates.append(check_date)
+            if len(valid_dates) >= 5:
+                break
+
+        if not valid_dates:
+            return {"success": 0, "failed": len(popular_etfs)}
+
+        start_date = min(valid_dates).strftime("%Y%m%d")
+        end_date = max(valid_dates).strftime("%Y%m%d")
+
+        result = {"success": 0, "failed": 0, "dates": f"{start_date}~{end_date}"}
+
+        for code in popular_etfs:
+            try:
+                df = self.fetch_etf_daily(
+                    code, start_date=start_date, end_date=end_date
                 )
-                db.add(quotation)
-                results["success_count"] += 1
-            
-            # 批量提交
-            db.commit()
-            logger.info(f"批量保存行情数据成功: {results['success_count']} 个成功，{results['fail_count']} 个失败")
-        except Exception as e:
-            db.rollback()
-            logger.error(f"批量保存行情数据失败: {e}")
-            results["fail_count"] = len(etf_codes) - results["success_count"]
-        finally:
-            db.close()
-        
-        return results
-    
-    def get_etf_quote_from_db(self, etf_code: str, db: Session) -> Optional[ETFQuotation]:
-        """
-        从数据库获取ETF最新行情
-        
-        Args:
-            etf_code: ETF代码
-            db: 数据库会话
-            
-        Returns:
-            行情数据或None
-        """
-        try:
-            quotation = db.query(ETFQuotation).filter(
-                ETFQuotation.etf_code == etf_code
-            ).order_by(ETFQuotation.trade_date.desc()).first()
-            return quotation
-        except Exception as e:
-            logger.error(f"从数据库获取 {etf_code} 行情失败: {e}")
-            return None
-    
-    def get_etf_history(self, etf_code: str, start_date, end_date, db: Session) -> List[ETFQuotation]:
-        """
-        从数据库获取ETF历史行情
-        
-        Args:
-            etf_code: ETF代码
-            start_date: 开始日期
-            end_date: 结束日期
-            db: 数据库会话
-            
-        Returns:
-            行情数据列表
-        """
-        try:
-            quotations = db.query(ETFQuotation).filter(
+                if not df.empty:
+                    added = self.save_daily_quotes(code, df, db)
+                    if added > 0:
+                        result["success"] += 1
+                        logger.info(f"初始化 {code} 数据：{added} 条记录")
+                else:
+                    result["failed"] += 1
+                    logger.warning(f"未获取到 {code} 的数据")
+            except Exception as e:
+                result["failed"] += 1
+                logger.error(f"初始化 {code} 数据失败: {e}")
+
+        logger.info(f"样本数据初始化完成: {result}")
+        return result
+
+    # ------------------------------------------------------------------ #
+    #  查询接口
+    # ------------------------------------------------------------------ #
+    def get_etf_list(self, db: Session) -> List[ETFBasic]:
+        return db.query(ETFBasic).order_by(ETFBasic.etf_code).all()
+
+    def get_latest_quote(self, etf_code: str, db: Session) -> Optional[ETFQuotation]:
+        return (
+            db.query(ETFQuotation)
+            .filter(ETFQuotation.etf_code == etf_code)
+            .order_by(ETFQuotation.trade_date.desc())
+            .first()
+        )
+
+    def get_history(
+        self, etf_code: str, start_date: date, end_date: date, db: Session
+    ) -> List[ETFQuotation]:
+        return (
+            db.query(ETFQuotation)
+            .filter(
                 ETFQuotation.etf_code == etf_code,
                 ETFQuotation.trade_date >= start_date,
-                ETFQuotation.trade_date <= end_date
-            ).order_by(ETFQuotation.trade_date.asc()).all()
-            return quotations
-        except Exception as e:
-            logger.error(f"从数据库获取 {etf_code} 历史行情失败: {e}")
-            return []
-    
-    async def fetch_and_save_shanghai_market_quotes(self) -> dict:
-        """
-        获取上证市场所有主流ETF行情数据
-        
-        Returns:
-            包含成功和失败数量的字典
-        """
-        etf_codes = market_manager.get_market_etfs("shanghai")
-        logger.info(f"开始获取上证市场 {len(etf_codes)} 个ETF行情")
-        return await self.fetch_and_save_etf_quotes_batch(etf_codes)
-    
-    async def fetch_and_save_shenzhen_market_quotes(self) -> dict:
-        """
-        获取深证市场所有主流ETF行情数据
-        
-        Returns:
-            包含成功和失败数量的字典
-        """
-        etf_codes = market_manager.get_market_etfs("shenzhen")
-        logger.info(f"开始获取深证市场 {len(etf_codes)} 个ETF行情")
-        return await self.fetch_and_save_etf_quotes_batch(etf_codes)
-    
-    async def fetch_and_save_all_market_quotes(self) -> dict:
-        """
-        获取上深全市场所有主流ETF行情数据
-        
-        Returns:
-            包含成功和失败数量的字典
-        """
-        etf_codes = market_manager.get_market_etfs("all")
-        logger.info(f"开始获取上深全市场 {len(etf_codes)} 个ETF行情")
-        return await self.fetch_and_save_etf_quotes_batch(etf_codes)
-    
-    async def fetch_and_save_market_quotes(self, market_type: str) -> dict:
-        """
-        获取指定市场所有ETF行情数据并保存到数据库
-        
-        Args:
-            market_type: 市场类型 ('shanghai', 'shenzhen', 'all')
-            
-        Returns:
-            包含成功和失败数量的字典
-        """
-        etf_codes = market_manager.get_market_etfs(market_type)
-        if not etf_codes:
-            logger.warning(f"未知的市场类型: {market_type}")
-            return {"success_count": 0, "fail_count": 0, "failed_codes": []}
-        
-        logger.info(f"开始获取 {market_type} 市场 {len(etf_codes)} 个ETF行情")
-        return await self.fetch_and_save_etf_quotes_batch(etf_codes)
+                ETFQuotation.trade_date <= end_date,
+            )
+            .order_by(ETFQuotation.trade_date.asc())
+            .all()
+        )
 
-    def get_market_etf_quotes(self, market_type: str, db: Session) -> List[Dict[str, Any]]:
-        """
-        从数据库获取指定市场的所有ETF最新行情
-        
-        Args:
-            market_type: 市场类型 ('shanghai', 'shenzhen', 'all')
-            db: 数据库会话
-            
-        Returns:
-            行情数据列表
-        """
-        try:
-            # 选择ETF代码列表
-            etf_codes = market_manager.get_market_etfs(market_type)
-            if not etf_codes:
-                logger.warning(f"未知的市场类型: {market_type}")
-                return []
-            
-            # 获取每个ETF的最新行情
-            results = []
-            for etf_code in etf_codes:
-                # 获取ETF基础信息
-                etf_basic = db.query(ETFBasic).filter(ETFBasic.etf_code == etf_code).first()
-                # 获取最新行情
-                quotation = db.query(ETFQuotation).filter(
-                    ETFQuotation.etf_code == etf_code
-                ).order_by(ETFQuotation.trade_date.desc()).first()
-                
-                if etf_basic and quotation:
-                    results.append({
-                        "etf_code": etf_code,
-                        "etf_name": etf_basic.etf_name,
-                        "last_price": quotation.close_price,
-                        "change_rate": quotation.change_rate,
-                        "volume": quotation.volume,
-                        "amount": quotation.amount,
-                        "trade_date": quotation.trade_date.isoformat() if quotation.trade_date else None,
-                    })
-            
-            logger.info(f"获取 {market_type} 市场 {len(results)} 个ETF行情")
-            return results
-        except Exception as e:
-            logger.error(f"获取 {market_type} 市场行情失败: {e}")
-            return []
+    def get_market_overview(self, db: Session, limit: int = 500) -> List[dict]:
+        """获取全市场最新行情概览（包含所有ETF，无论是否有行情数据）"""
+        # 找到最新交易日
+        latest_date = db.query(func.max(ETFQuotation.trade_date)).scalar()
+
+        # 获取所有ETF基础信息
+        all_etfs = db.query(ETFBasic).all()
+
+        # 如果有行情数据，获取最新交易日的行情
+        latest_quotes = {}
+        if latest_date:
+            quote_rows = (
+                db.query(ETFQuotation)
+                .filter(ETFQuotation.trade_date == latest_date)
+                .all()
+            )
+            for q in quote_rows:
+                latest_quotes[q.etf_code] = q
+
+        # 构建结果列表（所有ETF都包含）
+        result = []
+        for etf in all_etfs:
+            quote = latest_quotes.get(etf.etf_code)
+            result.append({
+                "etf_code": etf.etf_code,
+                "etf_name": etf.etf_name,
+                "close_price": quote.close_price if quote else None,
+                "change_pct": quote.change_pct if quote else None,
+                "volume": quote.volume if quote else None,
+                "amount": quote.amount if quote else 0,  # 无行情时金额为0，用于排序
+                "trade_date": quote.trade_date.isoformat() if quote else None,
+                "has_quote": quote is not None,  # 标记是否有行情数据
+            })
+
+        # 按成交额降序排列（有行情的在前，无行情的在后）
+        result.sort(key=lambda x: x["amount"] if x["amount"] else 0, reverse=True)
+
+        return result[:limit]
 
 
-# 全局服务实例
-_data_service: Optional[ETFDataService] = None
+# 单例
+_service: Optional[DataService] = None
 
 
-def get_etf_data_service() -> ETFDataService:
-    """获取数据服务单例"""
-    global _data_service
-    if _data_service is None:
-        _data_service = ETFDataService()
-    return _data_service
+def get_data_service() -> DataService:
+    global _service
+    if _service is None:
+        _service = DataService()
+    return _service

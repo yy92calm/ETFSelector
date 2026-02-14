@@ -1,0 +1,112 @@
+"""策略管理API"""
+
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.db.database import get_db
+from app.schemas.schemas import APIResponse, StrategyCreate, AIStrategyRequest
+from app.services.strategy_service import get_strategy_service
+from app.strategies.registry import list_templates
+
+router = APIRouter(prefix="/api/strategy", tags=["策略管理"])
+
+
+@router.get("/templates", response_model=APIResponse)
+def get_strategy_templates():
+    """获取所有内置策略模板"""
+    templates = list_templates()
+    return APIResponse(data={"templates": templates})
+
+
+@router.get("/list", response_model=APIResponse)
+def get_strategy_list(db: Session = Depends(get_db)):
+    """获取所有策略"""
+    svc = get_strategy_service()
+    strategies = svc.list_strategies(db)
+    return APIResponse(data={
+        "strategies": [{
+            "id": s.id,
+            "name": s.name,
+            "description": s.description,
+            "strategy_type": s.strategy_type,
+            "template_name": s.template_name,
+            "params": s.params,
+            "etf_codes": s.etf_codes,
+            "initial_capital": s.initial_capital,
+            "status": s.status,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+        } for s in strategies],
+    })
+
+
+@router.post("/create", response_model=APIResponse)
+def create_strategy(req: StrategyCreate, db: Session = Depends(get_db)):
+    """创建模板策略"""
+    svc = get_strategy_service()
+    try:
+        strategy = svc.create_template_strategy(req.model_dump(), db)
+        return APIResponse(message="策略创建成功", data={"strategy_id": strategy.id})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/create-ai", response_model=APIResponse)
+def create_ai_strategy(req: AIStrategyRequest, db: Session = Depends(get_db)):
+    """通过自然语言描述创建AI策略"""
+    svc = get_strategy_service()
+    try:
+        strategy = svc.create_ai_strategy(
+            description=req.description,
+            etf_codes=req.etf_codes,
+            initial_capital=req.initial_capital,
+            db=db,
+        )
+        return APIResponse(message="AI策略生成成功", data={
+            "strategy_id": strategy.id,
+            "code": strategy.code,
+        })
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{strategy_id}", response_model=APIResponse)
+def get_strategy_detail(strategy_id: int, db: Session = Depends(get_db)):
+    """获取策略详情"""
+    svc = get_strategy_service()
+    s = svc.get_strategy(strategy_id, db)
+    if not s:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    return APIResponse(data={
+        "id": s.id,
+        "name": s.name,
+        "description": s.description,
+        "strategy_type": s.strategy_type,
+        "template_name": s.template_name,
+        "params": s.params,
+        "code": s.code,
+        "etf_codes": s.etf_codes,
+        "initial_capital": s.initial_capital,
+        "status": s.status,
+        "created_at": s.created_at.isoformat() if s.created_at else None,
+    })
+
+
+@router.put("/{strategy_id}/status", response_model=APIResponse)
+def update_status(strategy_id: int, status: str, db: Session = Depends(get_db)):
+    """更新策略状态 (active / paused / archived)"""
+    if status not in ("active", "paused", "archived"):
+        raise HTTPException(status_code=400, detail="无效状态")
+    svc = get_strategy_service()
+    s = svc.update_strategy_status(strategy_id, status, db)
+    if not s:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    return APIResponse(message=f"策略状态已更新为 {status}")
+
+
+@router.delete("/{strategy_id}", response_model=APIResponse)
+def delete_strategy(strategy_id: int, db: Session = Depends(get_db)):
+    """删除策略"""
+    svc = get_strategy_service()
+    if svc.delete_strategy(strategy_id, db):
+        return APIResponse(message="策略已删除")
+    raise HTTPException(status_code=404, detail="策略不存在")
