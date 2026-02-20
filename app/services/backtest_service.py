@@ -85,8 +85,12 @@ class BacktestEngine:
         avg_costs: Dict[str, float] = {}   # 平均成本
         daily_data = []
         trades = []
+        daily_details = []  # 每日策略判断详情
 
         for td in trade_dates:
+            day_signals = []  # 记录当天的所有信号
+            day_decisions = []  # 记录当天的决策
+            
             # 对每个ETF生成信号
             for code in etf_codes:
                 if code not in all_data:
@@ -105,7 +109,21 @@ class BacktestEngine:
                     params=strategy_instance.params,
                 )
 
-                signals = strategy_instance.generate_signals(ctx)
+                try:
+                    signals = strategy_instance.generate_signals(ctx)
+                except Exception as e:
+                    logger.error(f"策略生成信号失败 {code} @ {td}: {e}")
+                    logger.error(f"History数据类型: {type(hist)}, 列类型: {type(hist['close']) if 'close' in hist.columns else 'N/A'}")
+                    signals = []
+                
+                # 记录策略生成的信号
+                for sig in signals:
+                    day_signals.append({
+                        "etf_code": code,
+                        "direction": sig.direction,
+                        "strength": sig.strength,
+                        "reason": sig.reason,
+                    })
 
                 for sig in signals:
                     current_price = hist.iloc[-1]["close"]
@@ -135,6 +153,15 @@ class BacktestEngine:
                                 "amount": amount,
                                 "reason": sig.reason,
                             })
+                            
+                            day_decisions.append({
+                                "etf_code": code,
+                                "action": "买入",
+                                "price": current_price,
+                                "quantity": max_qty,
+                                "amount": round(amount, 2),
+                                "reason": sig.reason,
+                            })
 
                     elif sig.direction == "sell" and holdings.get(code, 0) > 0:
                         # 全部卖出
@@ -150,6 +177,15 @@ class BacktestEngine:
                             "price": current_price,
                             "quantity": qty,
                             "amount": amount,
+                            "reason": sig.reason,
+                        })
+                        
+                        day_decisions.append({
+                            "etf_code": code,
+                            "action": "卖出",
+                            "price": current_price,
+                            "quantity": qty,
+                            "amount": round(amount, 2),
                             "reason": sig.reason,
                         })
 
@@ -171,6 +207,16 @@ class BacktestEngine:
                 "cash": round(cash, 2),
                 "market_value": round(market_value, 2),
                 "profit_pct": round(profit_pct, 4),
+            })
+            
+            # 记录每日详情
+            daily_details.append({
+                "date": td.isoformat(),
+                "signals": day_signals,
+                "decisions": day_decisions,
+                "holdings": holdings.copy(),
+                "cash": round(cash, 2),
+                "total_asset": round(total_asset, 2),
             })
 
         # 统计指标
@@ -199,6 +245,7 @@ class BacktestEngine:
             "win_rate": round(win_rate, 4) if win_rate is not None else None,
             "daily_data": daily_data,
             "trades": trades,
+            "daily_details": daily_details,
         }
 
     def _calc_max_drawdown(self, assets: List[float]) -> float:

@@ -64,6 +64,17 @@ class AIStrategyRequest(BaseModel):
     description: str = Field(..., min_length=5, max_length=1000, description="自然语言描述策略逻辑")
     etf_codes: List[str] = Field(default_factory=list)
     initial_capital: int = Field(default=100000, ge=10000)
+    model: str = Field(default="gpt-4o", description="使用的AI模型")
+
+
+class StrategyUpdate(BaseModel):
+    """策略更新请求"""
+    name: Optional[str] = Field(None, max_length=100)
+    description: Optional[str] = None
+    etf_codes: Optional[List[str]] = None
+    initial_capital: Optional[int] = Field(None, ge=10000)
+    params: Optional[dict] = None
+    code: Optional[str] = None
 
 
 # ---- 回测 ----

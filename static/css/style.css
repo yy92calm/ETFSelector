@@ -118,11 +118,35 @@ body {
     margin-top: 16px;
     padding-top: 16px;
     border-top: 1px solid var(--border);
+    position: relative;
 }
 
 .page-info {
     font-size: 13px;
     color: var(--text-secondary);
+}
+
+/* 每页显示数量选择器 */
+.page-size-selector {
+    position: absolute;
+    left: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.page-size-selector label {
+    font-size: 13px;
+    color: var(--text-secondary);
+}
+
+.page-size-selector select {
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 13px;
+    background: white;
+    cursor: pointer;
 }
 
 .navbar .nav-links a {
@@ -222,6 +246,32 @@ th {
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.5px;
+}
+
+th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: background-color 0.2s;
+}
+
+th.sortable:hover {
+    background: #e2e8f0;
+}
+
+th.sortable .sort-icon {
+    font-size: 10px;
+    margin-left: 4px;
+    opacity: 0.5;
+}
+
+th.sortable.asc .sort-icon::after {
+    content: '↑';
+    opacity: 1;
+}
+
+th.sortable.desc .sort-icon::after {
+    content: '↓';
+    opacity: 1;
 }
 
 tr:hover { background: #f8fafc; }
@@ -358,6 +408,89 @@ tr:hover { background: #f8fafc; }
 @keyframes slideIn {
     from { transform: translateX(100%); opacity: 0; }
     to { transform: translateX(0); opacity: 1; }
+}
+
+/* ETF搜索组件 */
+.etf-search-container {
+    position: relative;
+}
+
+.etf-search-container input {
+    width: 100%;
+}
+
+.etf-search-results {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    max-height: 200px;
+    overflow-y: auto;
+    background: white;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    z-index: 100;
+    display: none;
+}
+
+.etf-search-results.active {
+    display: block;
+}
+
+.etf-search-item {
+    padding: 10px 12px;
+    cursor: pointer;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.etf-search-item:hover {
+    background: #f8fafc;
+}
+
+.etf-search-item:last-child {
+    border-bottom: none;
+}
+
+.etf-search-item .code {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.etf-search-item .name {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.etf-selected-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+
+.etf-selected-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    background: var(--primary);
+    color: white;
+    border-radius: 16px;
+    font-size: 12px;
+}
+
+.etf-selected-tag .remove {
+    cursor: pointer;
+    font-weight: bold;
+    opacity: 0.8;
+}
+
+.etf-selected-tag .remove:hover {
+    opacity: 1;
 }
 
 /* 模态框 */

@@ -41,9 +41,9 @@ class StrategyService:
         return strategy
 
     def create_ai_strategy(self, description: str, etf_codes: List[str],
-                           initial_capital: int, db: Session) -> Strategy:
+                           initial_capital: int, db: Session, model: str = "gpt-4o") -> Strategy:
         """创建AI生成的策略"""
-        code = generate_strategy_code(description)
+        code = generate_strategy_code(description, model=model)
         if not code:
             raise ValueError("AI策略生成失败，请检查LLM配置或重新描述")
 
@@ -99,6 +99,29 @@ class StrategyService:
             db.commit()
             return True
         return False
+
+    def update_strategy(self, strategy_id: int, data: dict, db: Session) -> Optional[Strategy]:
+        """更新策略信息"""
+        strategy = self.get_strategy(strategy_id, db)
+        if not strategy:
+            return None
+        
+        # 如果更新了代码，需要验证代码可编译
+        if "code" in data and data["code"]:
+            from app.strategies.generator import compile_strategy
+            instance = compile_strategy(data["code"])
+            if instance is None:
+                raise ValueError("更新的策略代码无法编译执行")
+        
+        # 更新字段
+        for field, value in data.items():
+            if hasattr(strategy, field) and value is not None:
+                setattr(strategy, field, value)
+        
+        db.commit()
+        db.refresh(strategy)
+        logger.info(f"更新策略 {strategy_id}: {data.keys()}")
+        return strategy
 
 
 _service: Optional[StrategyService] = None

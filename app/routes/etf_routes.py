@@ -34,7 +34,7 @@ def sync_etf_list(db: Session = Depends(get_db)):
 
 @router.get("/overview", response_model=APIResponse)
 def get_market_overview(
-    limit: int = Query(500, ge=1, le=1000), db: Session = Depends(get_db)
+    limit: int = Query(2000, ge=1, le=5000), db: Session = Depends(get_db)
 ):
     """获取全市场最新行情概览（按成交额排序）"""
     svc = get_data_service()
@@ -109,3 +109,18 @@ def initialize_sample_data(db: Session = Depends(get_db)):
     svc = get_data_service()
     result = svc.initialize_sample_data(db)
     return APIResponse(message="样本数据初始化完成", data=result)
+
+
+@router.post("/update-range", response_model=APIResponse)
+def update_quotes_by_range(
+    start_date: str = Query(..., description="开始日期 YYYYMMDD"),
+    end_date: str = Query(..., description="结束日期 YYYYMMDD"),
+    db: Session = Depends(get_db)
+):
+    """批量更新指定日期范围内所有ETF的行情数据"""
+    svc = get_data_service()
+    result = svc.update_quotes_by_date_range(start_date, end_date, db)
+    return APIResponse(
+        message=f"行情更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}",
+        data=result
+    )

@@ -28,7 +28,8 @@ function fmtNum(n, d = 2) {
 
 function fmtPct(n) {
     if (n == null) return '-';
-    const cls = n >= 0 ? 'text-success' : 'text-danger';
+    // A股习惯：上涨红色，下跌绿色
+    const cls = n >= 0 ? 'text-danger' : 'text-success';
     return `<span class="${cls}">${n >= 0 ? '+' : ''}${fmtNum(n)}%</span>`;
 }
 
@@ -67,6 +68,8 @@ let currentMarket = 'all';
 let currentPage = 1;
 let allQuotes = [];
 let filteredQuotes = [];
+let currentSort = { field: 'amount', order: 'desc' }; // 默认按成交额降序
+let itemsPerPage = 50; // 默认每页显示数量
 
 // 初始化市场标签点击事件
 document.addEventListener('DOMContentLoaded', function() {
@@ -83,8 +86,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
 async function loadMarket() {
     try {
-        // 获取更多数据用于分类展示
-        const res = await api('/api/etf/overview?limit=500');
+        // 获取所有ETF数据用于分类展示
+        const res = await api('/api/etf/overview?limit=2000');
         allQuotes = res.data?.quotes || [];
         
         if (allQuotes.length) {
@@ -117,25 +120,27 @@ function filterQuotesByMarket(quotes, market) {
     
     return quotes.filter(q => {
         const code = q.etf_code;
-        // ETF代码规则：
-        // 51xxxx - 上交所ETF（如510300沪深300ETF）
-        // 58xxxx - 科创板ETF（如588000科创50ETF）
-        // 159xxx - 深交所ETF/创业板ETF（如159915创业板ETF）
-        // 15xxxx, 16xxxx, 18xxxx - 深交所其他ETF
+        // ETF代码规则（2024年最新）：
+        // 上交所ETF：51xxxx、56xxxx（传统+新型ETF）
+        // 科创板ETF：58xxxx（如588000科创50ETF）
+        // 创业板ETF：159xxx（如159915创业板ETF，属于深交所）
+        // 深交所主板ETF：15xxxx（除159外，目前实际较少）
+        // 港股通/跨境ETF：52xxxx
         switch(market) {
             case 'sh':
-                // 上交所：51开头 或 58开头（58也是上交所的科创板）
-                return code.startsWith('51');
+                // 上交所：51、52、53、56开头（不含58科创板）
+                return code.startsWith('51') || 
+                       code.startsWith('52') || 
+                       code.startsWith('53') || 
+                       code.startsWith('56');
             case 'sz':
-                // 深交所：15、16、18开头（不含159，159单独算创业板）
-                return code.startsWith('15') && !code.startsWith('159') || 
-                       code.startsWith('16') || 
-                       code.startsWith('18');
+                // 深交所主板：15开头（不含159创业板）
+                return code.startsWith('15') && !code.startsWith('159');
             case 'cy':
                 // 创业板ETF：159开头
                 return code.startsWith('159');
             case 'kc':
-                // 科创板ETF：58、588、589开头
+                // 科创板ETF：58开头
                 return code.startsWith('58');
             default:
                 return true;
@@ -143,17 +148,69 @@ function filterQuotesByMarket(quotes, market) {
     });
 }
 
+function sortQuotes(quotes, field, order) {
+    return quotes.sort((a, b) => {
+        let valA = a[field];
+        let valB = b[field];
+        
+        // 处理null/undefined值
+        if (valA === null || valA === undefined) valA = order === 'asc' ? Infinity : -Infinity;
+        if (valB === null || valB === undefined) valB = order === 'asc' ? Infinity : -Infinity;
+        
+        // 字符串排序（代码）
+        if (field === 'code' || field === 'etf_code') {
+            return order === 'asc' 
+                ? String(valA).localeCompare(String(valB))
+                : String(valB).localeCompare(String(valA));
+        }
+        
+        // 数字排序
+        if (order === 'asc') {
+            return valA - valB;
+        } else {
+            return valB - valA;
+        }
+    });
+}
+
+function sortTable(field) {
+    // 切换排序方向
+    if (currentSort.field === field) {
+        currentSort.order = currentSort.order === 'asc' ? 'desc' : 'asc';
+    } else {
+        currentSort.field = field;
+        currentSort.order = 'desc'; // 新字段默认降序
+    }
+    
+    // 更新表头样式
+    document.querySelectorAll('th.sortable').forEach(th => {
+        th.classList.remove('asc', 'desc');
+        if (th.dataset.sort === field) {
+            th.classList.add(currentSort.order);
+        }
+    });
+    
+    // 重新排序并显示
+    currentPage = 1;
+    filterAndDisplayQuotes();
+}
+
 function filterAndDisplayQuotes() {
-    filteredQuotes = filterQuotesByMarket(allQuotes, currentMarket);
+    // 先按市场筛选
+    let quotes = filterQuotesByMarket(allQuotes, currentMarket);
+    
+    // 再排序
+    quotes = sortQuotes(quotes, currentSort.field, currentSort.order);
+    
+    filteredQuotes = quotes;
     const totalCount = filteredQuotes.length;
-    const perPage = 50;
-    const totalPages = Math.ceil(totalCount / perPage);
+    const totalPages = Math.ceil(totalCount / itemsPerPage);
     
     if (currentPage > totalPages) currentPage = totalPages;
     if (currentPage < 1) currentPage = 1;
     
-    const startIndex = (currentPage - 1) * perPage;
-    const endIndex = startIndex + perPage;
+    const startIndex = (currentPage - 1) * itemsPerPage;
+    const endIndex = startIndex + itemsPerPage;
     const showQuotes = filteredQuotes.slice(startIndex, endIndex);
     
     const tbody = document.getElementById('market-table');
@@ -190,13 +247,20 @@ function filterAndDisplayQuotes() {
     
     // 更新分页控件
     const pagination = document.getElementById('market-pagination');
-    if (totalCount > perPage) {
+    if (totalCount > itemsPerPage) {
         pagination.style.display = 'flex';
         document.getElementById('current-page').textContent = currentPage;
         document.getElementById('total-pages').textContent = totalPages;
     } else {
         pagination.style.display = 'none';
     }
+}
+
+function changePageSize() {
+    const select = document.getElementById('page-size');
+    itemsPerPage = parseInt(select.value);
+    currentPage = 1; // 重置到第一页
+    filterAndDisplayQuotes();
 }
 
 function getMarketTitle(market) {
@@ -229,7 +293,7 @@ function updateMarketStats(quotes) {
 }
 
 function changePage(direction) {
-    const totalPages = Math.ceil(filteredQuotes.length / 50);
+    const totalPages = Math.ceil(filteredQuotes.length / itemsPerPage);
     currentPage += direction;
     if (currentPage < 1) currentPage = 1;
     if (currentPage > totalPages) currentPage = totalPages;
@@ -298,6 +362,7 @@ async function loadStrategies() {
                 <td><span class="badge badge-${s.status}">${s.status}</span></td>
                 <td>${s.created_at ? s.created_at.slice(0, 10) : '-'}</td>
                 <td>
+                    <button class="btn btn-outline btn-sm" onclick="editStrategy(${s.id})">编辑</button>
                     <button class="btn btn-outline btn-sm" onclick="deleteStrategy(${s.id})">删除</button>
                 </td>
             </tr>
@@ -305,12 +370,109 @@ async function loadStrategies() {
     } catch (e) { console.error(e); }
 }
 
+// 模板策略的ETF选择
+let csSelectedETFs = new Set();
+
 function showCreateStrategyModal() {
     const sel = document.getElementById('cs-template');
     sel.innerHTML = templates.map(t => `<option value="${t.template_name}">${t.template_name} - ${t.description}</option>`).join('');
     renderTemplateParams();
     sel.onchange = renderTemplateParams;
+    
+    // 初始化ETF搜索
+    initCSETFSearch();
+    
     openModal('modal-create-strategy');
+}
+
+function initCSETFSearch() {
+    csSelectedETFs.clear();
+    updateCSETFDisplay();
+    document.getElementById('cs-etfs').value = '';
+    
+    const searchInput = document.getElementById('cs-etf-search');
+    const resultsDiv = document.getElementById('cs-etf-results');
+    
+    searchInput.value = '';
+    
+    // 移除旧的事件监听器（避免重复绑定）
+    const newInput = searchInput.cloneNode(true);
+    searchInput.parentNode.replaceChild(newInput, searchInput);
+    
+    // 搜索输入事件
+    newInput.addEventListener('input', function() {
+        const keyword = this.value.trim().toLowerCase();
+        if (!keyword) {
+            resultsDiv.classList.remove('active');
+            return;
+        }
+        
+        // 搜索匹配的ETF
+        const matches = allETFList.filter(etf => {
+            if (csSelectedETFs.has(etf.etf_code)) return false;
+            return etf.etf_code.toLowerCase().includes(keyword) || 
+                   etf.etf_name.toLowerCase().includes(keyword);
+        }).slice(0, 10);
+        
+        if (matches.length > 0) {
+            resultsDiv.innerHTML = matches.map(etf => `
+                <div class="etf-search-item" onclick="selectCSETF('${etf.etf_code}', '${etf.etf_name}')">
+                    <span class="code">${etf.etf_code}</span>
+                    <span class="name">${etf.etf_name}</span>
+                </div>
+            `).join('');
+            resultsDiv.classList.add('active');
+        } else {
+            resultsDiv.innerHTML = '<div class="etf-search-item"><span class="name">无匹配结果</span></div>';
+            resultsDiv.classList.add('active');
+        }
+    });
+    
+    // 点击外部关闭搜索结果
+    const clickHandler = function(e) {
+        if (!e.target.closest('#modal-create-strategy .etf-search-container')) {
+            resultsDiv.classList.remove('active');
+        }
+    };
+    document.removeEventListener('click', clickHandler);
+    document.addEventListener('click', clickHandler);
+}
+
+function selectCSETF(code, name) {
+    csSelectedETFs.add(code);
+    document.getElementById('cs-etf-search').value = '';
+    document.getElementById('cs-etf-results').classList.remove('active');
+    updateCSETFDisplay();
+    updateCSETFInput();
+}
+
+function removeCSETF(code) {
+    csSelectedETFs.delete(code);
+    updateCSETFDisplay();
+    updateCSETFInput();
+}
+
+function updateCSETFDisplay() {
+    const container = document.getElementById('cs-etf-selected');
+    if (csSelectedETFs.size === 0) {
+        container.innerHTML = '';
+        return;
+    }
+    
+    container.innerHTML = Array.from(csSelectedETFs).map(code => {
+        const etf = allETFList.find(e => e.etf_code === code);
+        const name = etf ? etf.etf_name : code;
+        return `
+            <span class="etf-selected-tag">
+                ${code} ${name !== code ? '(' + name.slice(0, 10) + ')' : ''}
+                <span class="remove" onclick="removeCSETF('${code}')">×</span>
+            </span>
+        `;
+    }).join('');
+}
+
+function updateCSETFInput() {
+    document.getElementById('cs-etfs').value = Array.from(csSelectedETFs).join(',');
 }
 
 function renderTemplateParams() {
@@ -350,8 +512,112 @@ async function submitCreateStrategy() {
     } catch (e) { toast(e.message, 'error'); }
 }
 
+// ETF搜索相关变量
+let allETFList = []; // 存储全市场ETF列表
+let selectedETFs = new Set(); // 已选择的ETF
+
+// 加载全市场ETF列表
+async function loadAllETFList() {
+    try {
+        const res = await api('/api/etf/list');
+        allETFList = res.data?.etfs || [];
+    } catch (e) {
+        console.error('加载ETF列表失败:', e);
+    }
+}
+
 function showAIStrategyModal() {
     openModal('modal-ai-strategy');
+    // 加载ETF列表（如果还没加载）
+    if (allETFList.length === 0) {
+        loadAllETFList();
+    }
+    // 初始化搜索
+    initETFSearch();
+}
+
+function initETFSearch() {
+    selectedETFs.clear();
+    updateSelectedETFDisplay();
+    document.getElementById('ai-etfs').value = '';
+    
+    const searchInput = document.getElementById('ai-etf-search');
+    const resultsDiv = document.getElementById('ai-etf-results');
+    
+    searchInput.value = '';
+    
+    // 搜索输入事件
+    searchInput.addEventListener('input', function() {
+        const keyword = this.value.trim().toLowerCase();
+        if (!keyword) {
+            resultsDiv.classList.remove('active');
+            return;
+        }
+        
+        // 搜索匹配的ETF
+        const matches = allETFList.filter(etf => {
+            if (selectedETFs.has(etf.etf_code)) return false;
+            return etf.etf_code.toLowerCase().includes(keyword) || 
+                   etf.etf_name.toLowerCase().includes(keyword);
+        }).slice(0, 10); // 最多显示10条
+        
+        if (matches.length > 0) {
+            resultsDiv.innerHTML = matches.map(etf => `
+                <div class="etf-search-item" onclick="selectETF('${etf.etf_code}', '${etf.etf_name}')">
+                    <span class="code">${etf.etf_code}</span>
+                    <span class="name">${etf.etf_name}</span>
+                </div>
+            `).join('');
+            resultsDiv.classList.add('active');
+        } else {
+            resultsDiv.innerHTML = '<div class="etf-search-item"><span class="name">无匹配结果</span></div>';
+            resultsDiv.classList.add('active');
+        }
+    });
+    
+    // 点击外部关闭搜索结果
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('.etf-search-container')) {
+            resultsDiv.classList.remove('active');
+        }
+    });
+}
+
+function selectETF(code, name) {
+    selectedETFs.add(code);
+    document.getElementById('ai-etf-search').value = '';
+    document.getElementById('ai-etf-results').classList.remove('active');
+    updateSelectedETFDisplay();
+    updateETFInput();
+}
+
+function removeETF(code) {
+    selectedETFs.delete(code);
+    updateSelectedETFDisplay();
+    updateETFInput();
+}
+
+function updateSelectedETFDisplay() {
+    const container = document.getElementById('ai-etf-selected');
+    if (selectedETFs.size === 0) {
+        container.innerHTML = '';
+        return;
+    }
+    
+    container.innerHTML = Array.from(selectedETFs).map(code => {
+        const etf = allETFList.find(e => e.etf_code === code);
+        const name = etf ? etf.etf_name : code;
+        return `
+            <span class="etf-selected-tag">
+                ${code} ${name !== code ? '(' + name.slice(0, 10) + ')' : ''}
+                <span class="remove" onclick="removeETF('${code}')">×</span>
+            </span>
+        `;
+    }).join('');
+}
+
+function updateETFInput() {
+    document.getElementById('ai-etfs').value = Array.from(selectedETFs).join(',');
 }
 
 async function submitAIStrategy() {
@@ -363,6 +629,7 @@ async function submitAIStrategy() {
         description: document.getElementById('ai-desc').value,
         etf_codes: document.getElementById('ai-etfs').value.split(',').map(s => s.trim()).filter(Boolean),
         initial_capital: Number(document.getElementById('ai-capital').value),
+        model: document.getElementById('ai-model').value,
     };
 
     try {
@@ -385,6 +652,224 @@ async function deleteStrategy(id) {
         toast('已删除', 'success');
         loadStrategies();
     } catch (e) { toast(e.message, 'error'); }
+}
+
+// ==================================================================
+//  编辑策略
+// ==================================================================
+let editSelectedETFs = new Set();
+let currentEditStrategy = null;
+
+async function editStrategy(id) {
+    try {
+        const res = await api(`/api/strategy/${id}`);
+        const s = res.data;
+        currentEditStrategy = s;
+        
+        // 填充表单
+        document.getElementById('edit-strategy-id').value = s.id;
+        document.getElementById('edit-name').value = s.name;
+        document.getElementById('edit-desc').value = s.description || '';
+        document.getElementById('edit-capital').value = s.initial_capital;
+        
+        // 设置ETF选择
+        editSelectedETFs = new Set(s.etf_codes || []);
+        updateEditETFDisplay();
+        document.getElementById('edit-etfs').value = Array.from(editSelectedETFs).join(',');
+        
+        // AI策略显示代码编辑区
+        const codeGroup = document.getElementById('edit-code-group');
+        if (s.strategy_type === 'ai_generated' && s.code) {
+            codeGroup.style.display = 'block';
+            document.getElementById('edit-code').value = s.code;
+        } else {
+            codeGroup.style.display = 'none';
+        }
+        
+        // 初始化搜索
+        initEditETFSearch();
+        
+        openModal('modal-edit-strategy');
+    } catch (e) {
+        toast('加载策略失败: ' + e.message, 'error');
+    }
+}
+
+function initEditETFSearch() {
+    const searchInput = document.getElementById('edit-etf-search');
+    const resultsDiv = document.getElementById('edit-etf-results');
+    
+    searchInput.value = '';
+    
+    // 移除旧的事件监听器
+    const newInput = searchInput.cloneNode(true);
+    searchInput.parentNode.replaceChild(newInput, searchInput);
+    
+    // 搜索输入事件
+    newInput.addEventListener('input', function() {
+        const keyword = this.value.trim().toLowerCase();
+        if (!keyword) {
+            resultsDiv.classList.remove('active');
+            return;
+        }
+        
+        // 搜索匹配的ETF
+        const matches = allETFList.filter(etf => {
+            if (editSelectedETFs.has(etf.etf_code)) return false;
+            return etf.etf_code.toLowerCase().includes(keyword) || 
+                   etf.etf_name.toLowerCase().includes(keyword);
+        }).slice(0, 10);
+        
+        if (matches.length > 0) {
+            resultsDiv.innerHTML = matches.map(etf => `
+                <div class="etf-search-item" onclick="selectEditETF('${etf.etf_code}', '${etf.etf_name}')">
+                    <span class="code">${etf.etf_code}</span>
+                    <span class="name">${etf.etf_name}</span>
+                </div>
+            `).join('');
+            resultsDiv.classList.add('active');
+        } else {
+            resultsDiv.innerHTML = '<div class="etf-search-item"><span class="name">无匹配结果</span></div>';
+            resultsDiv.classList.add('active');
+        }
+    });
+    
+    // 点击外部关闭搜索结果
+    const clickHandler = function(e) {
+        if (!e.target.closest('#modal-edit-strategy .etf-search-container')) {
+            resultsDiv.classList.remove('active');
+        }
+    };
+    document.removeEventListener('click', clickHandler);
+    document.addEventListener('click', clickHandler);
+}
+
+function selectEditETF(code, name) {
+    editSelectedETFs.add(code);
+    document.getElementById('edit-etf-search').value = '';
+    document.getElementById('edit-etf-results').classList.remove('active');
+    updateEditETFDisplay();
+    updateEditETFInput();
+}
+
+function removeEditETF(code) {
+    editSelectedETFs.delete(code);
+    updateEditETFDisplay();
+    updateEditETFInput();
+}
+
+function updateEditETFDisplay() {
+    const container = document.getElementById('edit-etf-selected');
+    if (editSelectedETFs.size === 0) {
+        container.innerHTML = '';
+        return;
+    }
+    
+    container.innerHTML = Array.from(editSelectedETFs).map(code => {
+        const etf = allETFList.find(e => e.etf_code === code);
+        const name = etf ? etf.etf_name : code;
+        return `
+            <span class="etf-selected-tag">
+                ${code} ${name !== code ? '(' + name.slice(0, 10) + ')' : ''}
+                <span class="remove" onclick="removeEditETF('${code}')">×</span>
+            </span>
+        `;
+    }).join('');
+}
+
+function updateEditETFInput() {
+    document.getElementById('edit-etfs').value = Array.from(editSelectedETFs).join(',');
+}
+
+async function submitEditStrategy() {
+    const id = document.getElementById('edit-strategy-id').value;
+    const btn = document.getElementById('edit-submit-btn');
+    btn.disabled = true;
+    btn.textContent = '保存中...';
+    
+    const body = {
+        name: document.getElementById('edit-name').value,
+        description: document.getElementById('edit-desc').value,
+        etf_codes: document.getElementById('edit-etfs').value.split(',').map(s => s.trim()).filter(Boolean),
+        initial_capital: Number(document.getElementById('edit-capital').value),
+    };
+    
+    // AI策略可以编辑代码
+    const codeGroup = document.getElementById('edit-code-group');
+    if (codeGroup.style.display !== 'none') {
+        const code = document.getElementById('edit-code').value.trim();
+        if (code) {
+            body.code = code;
+        }
+    }
+    
+    try {
+        const res = await api(`/api/strategy/${id}`, { 
+            method: 'PUT', 
+            body: JSON.stringify(body) 
+        });
+        toast('策略更新成功', 'success');
+        closeModal('modal-edit-strategy');
+        loadStrategies();
+    } catch (e) {
+        toast(e.message || '更新失败', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '保存';
+    }
+}
+
+// ==================================================================
+//  更新指定区间行情
+// ==================================================================
+function showUpdateRangeModal() {
+    // 设置默认日期范围（最近30天）
+    const end = new Date();
+    const start = new Date();
+    start.setDate(start.getDate() - 30);
+    
+    document.getElementById('range-end-date').value = end.toISOString().slice(0, 10);
+    document.getElementById('range-start-date').value = start.toISOString().slice(0, 10);
+    
+    openModal('modal-update-range');
+}
+
+async function submitUpdateRange() {
+    const startDate = document.getElementById('range-start-date').value;
+    const endDate = document.getElementById('range-end-date').value;
+    
+    if (!startDate || !endDate) {
+        toast('请选择开始和结束日期', 'error');
+        return;
+    }
+    
+    if (startDate > endDate) {
+        toast('开始日期不能晚于结束日期', 'error');
+        return;
+    }
+    
+    // 转换为YYYYMMDD格式
+    const startStr = startDate.replace(/-/g, '');
+    const endStr = endDate.replace(/-/g, '');
+    
+    const btn = document.getElementById('range-submit-btn');
+    btn.disabled = true;
+    btn.textContent = '更新中...';
+    
+    try {
+        const res = await api(`/api/etf/update-range?start_date=${startStr}&end_date=${endStr}`, { 
+            method: 'POST'
+        });
+        toast(res.message, 'success');
+        closeModal('modal-update-range');
+        // 刷新行情数据
+        loadMarket();
+    } catch (e) {
+        toast(e.message || '更新失败', 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '开始更新';
+    }
 }
 
 // ==================================================================
@@ -445,6 +930,9 @@ async function runBacktest() {
             </tr>
         `).join('');
 
+        // 每日策略执行详情
+        renderDailyDetails(d.daily_details);
+
         toast('回测完成', 'success');
     } catch (e) {
         toast(e.message, 'error');
@@ -490,6 +978,77 @@ function renderBacktestChart(dailyData, initialCapital) {
     });
 
     window.addEventListener('resize', () => chart.resize());
+}
+
+// 渲染每日策略执行详情
+function renderDailyDetails(dailyDetails) {
+    if (!dailyDetails || dailyDetails.length === 0) {
+        document.getElementById('bt-daily-tbody').innerHTML = '<tr><td colspan="7" class="text-center">无数据</td></tr>';
+        return;
+    }
+
+    let html = '';
+    dailyDetails.forEach(day => {
+        const date = day.date;
+        const hasSignals = day.signals && day.signals.length > 0;
+        const hasDecisions = day.decisions && day.decisions.length > 0;
+        
+        // 构建持仓字符串
+        const holdingsStr = Object.entries(day.holdings || {})
+            .filter(([code, qty]) => qty > 0)
+            .map(([code, qty]) => `${code}:${qty}`)
+            .join(', ') || '无';
+        
+        if (!hasSignals && !hasDecisions) {
+            // 无信号无决策的一天
+            html += `
+                <tr>
+                    <td>${date}</td>
+                    <td>-</td>
+                    <td><span style="color:var(--text-secondary)">无信号</span></td>
+                    <td>-</td>
+                    <td>${holdingsStr}</td>
+                    <td class="text-right">${fmtNum(day.cash)}</td>
+                    <td class="text-right">${fmtNum(day.total_asset)}</td>
+                </tr>
+            `;
+        } else {
+            // 有信号或决策，每个信号/决策显示一行
+            const rowCount = Math.max(day.signals?.length || 0, day.decisions?.length || 0);
+            for (let i = 0; i < rowCount; i++) {
+                const signal = day.signals?.[i];
+                const decision = day.decisions?.[i];
+                
+                const signalStr = signal 
+                    ? `<span style="color:${signal.direction === 'buy' ? 'var(--danger)' : 'var(--success)'}">${signal.direction === 'buy' ? '买入' : '卖出'}${signal.strength ? '(' + (signal.strength * 100).toFixed(0) + '%)' : ''}</span><br><small>${signal.reason || ''}</small>`
+                    : '-';
+                
+                const decisionStr = decision
+                    ? `<span style="color:${decision.action === '买入' ? 'var(--danger)' : 'var(--success)'}">${decision.action}</span><br><small>${decision.etf_code} @ ${fmtNum(decision.price, 3)} × ${decision.quantity}</small>`
+                    : '-';
+                
+                html += `
+                    <tr>
+                        <td>${i === 0 ? date : ''}</td>
+                        <td>${signal?.etf_code || decision?.etf_code || '-'}</td>
+                        <td>${signalStr}</td>
+                        <td>${decisionStr}</td>
+                        <td>${i === 0 ? holdingsStr : ''}</td>
+                        <td class="text-right">${i === 0 ? fmtNum(day.cash) : ''}</td>
+                        <td class="text-right">${i === 0 ? fmtNum(day.total_asset) : ''}</td>
+                    </tr>
+                `;
+            }
+        }
+    });
+    
+    document.getElementById('bt-daily-tbody').innerHTML = html;
+}
+
+// 切换每日详情显示
+function toggleDailyDetails() {
+    const el = document.getElementById('bt-daily-details');
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
 }
 
 // ==================================================================

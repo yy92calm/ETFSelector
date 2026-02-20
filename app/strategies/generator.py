@@ -23,6 +23,13 @@ SYSTEM_PROMPT = """你是一个ETF量化策略生成器。用户会用自然语�
 5. 只使用 pandas 和 numpy 库进行计算
 6. 代码必须安全，不能有文件操作、网络请求等危险操作
 
+## 重要注意事项
+1. 在访问DataFrame列时，确保使用正确的pandas Series操作
+2. 例如：使用 `df["close"].iloc[-1]` 获取最新价格，而不是 `df["close"][-1]`
+3. 使用 `.rolling().mean()` 计算均线，使用 `.diff()` 计算差分
+4. 确保在计算前检查数据长度足够：`if len(df) < required_period: return []`
+5. 使用 `.dropna()` 清理NaN值后再进行计算
+
 ## 可用的导入
 ```python
 from typing import List
@@ -36,15 +43,22 @@ from app.strategies.base import BaseStrategy, Signal, StrategyContext
 """
 
 
-def generate_strategy_code(description: str) -> Optional[str]:
+def generate_strategy_code(description: str, model: str = None) -> Optional[str]:
     """
     调用LLM生成策略代码
     返回可执行的Python代码字符串
+    
+    Args:
+        description: 策略描述
+        model: 使用的模型名称，如果为None则使用配置中的默认模型
     """
     if not settings.llm_api_key or settings.llm_api_key == "your-api-key-here":
         logger.warning("未配置LLM API Key，使用默认策略模板")
         return _fallback_code(description)
 
+    # 使用传入的模型或默认模型
+    model_name = model or settings.llm_model
+    
     try:
         client = OpenAI(
             api_key=settings.llm_api_key,
@@ -52,7 +66,7 @@ def generate_strategy_code(description: str) -> Optional[str]:
         )
 
         response = client.chat.completions.create(
-            model=settings.llm_model,
+            model=model_name,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"请根据以下描述生成交易策略:\n\n{description}"},

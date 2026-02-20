@@ -20,6 +20,9 @@ class RSIStrategy(BaseStrategy):
     }
 
     def _calc_rsi(self, series: pd.Series, period: int) -> pd.Series:
+        # 确保输入是pandas Series
+        if not isinstance(series, pd.Series):
+            series = pd.Series(series)
         delta = series.diff()
         gain = delta.where(delta > 0, 0.0)
         loss = (-delta).where(delta < 0, 0.0)

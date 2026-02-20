@@ -252,6 +252,52 @@ class DataService:
         return result
 
     # ------------------------------------------------------------------ #
+    #  批量更新指定时间范围行情
+    # ------------------------------------------------------------------ #
+    def update_quotes_by_date_range(
+        self, start_date: str, end_date: str, db: Session
+    ) -> Dict:
+        """
+        批量更新指定日期范围内所有ETF的行情数据
+        start_date/end_date: 格式 YYYYMMDD
+        返回: {success_count, fail_count, total_etfs, failed_codes}
+        """
+        # 获取所有ETF代码
+        etf_codes = [r[0] for r in db.query(ETFBasic.etf_code).all()]
+        
+        result = {
+            "success_count": 0,
+            "fail_count": 0,
+            "total_etfs": len(etf_codes),
+            "date_range": f"{start_date}~{end_date}",
+            "failed_codes": [],
+        }
+        
+        logger.info(f"开始更新 {len(etf_codes)} 只ETF {start_date}~{end_date} 的行情数据")
+        
+        for code in etf_codes:
+            try:
+                df = self.fetch_etf_daily(code, start_date=start_date, end_date=end_date)
+                if not df.empty:
+                    added = self.save_daily_quotes(code, df, db)
+                    if added > 0:
+                        result["success_count"] += 1
+                        logger.info(f"{code} 新增 {added} 条行情数据")
+                    else:
+                        result["success_count"] += 1  # 数据已存在也算成功
+                else:
+                    result["fail_count"] += 1
+                    result["failed_codes"].append(code)
+                    logger.warning(f"{code} 未获取到数据")
+            except Exception as e:
+                result["fail_count"] += 1
+                result["failed_codes"].append(code)
+                logger.error(f"{code} 更新失败: {e}")
+        
+        logger.info(f"批量更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}")
+        return result
+
+    # ------------------------------------------------------------------ #
     #  查询接口
     # ------------------------------------------------------------------ #
     def get_etf_list(self, db: Session) -> List[ETFBasic]:

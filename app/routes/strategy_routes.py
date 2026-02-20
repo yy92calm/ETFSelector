@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.schemas.schemas import APIResponse, StrategyCreate, AIStrategyRequest
+from app.schemas.schemas import APIResponse, StrategyCreate, AIStrategyRequest, StrategyUpdate
 from app.services.strategy_service import get_strategy_service
 from app.strategies.registry import list_templates
 
@@ -60,6 +60,7 @@ def create_ai_strategy(req: AIStrategyRequest, db: Session = Depends(get_db)):
             etf_codes=req.etf_codes,
             initial_capital=req.initial_capital,
             db=db,
+            model=req.model,
         )
         return APIResponse(message="AI策略生成成功", data={
             "strategy_id": strategy.id,
@@ -110,3 +111,13 @@ def delete_strategy(strategy_id: int, db: Session = Depends(get_db)):
     if svc.delete_strategy(strategy_id, db):
         return APIResponse(message="策略已删除")
     raise HTTPException(status_code=404, detail="策略不存在")
+
+
+@router.put("/{strategy_id}", response_model=APIResponse)
+def update_strategy(strategy_id: int, req: StrategyUpdate, db: Session = Depends(get_db)):
+    """更新策略信息"""
+    svc = get_strategy_service()
+    s = svc.update_strategy(strategy_id, req.model_dump(exclude_unset=True), db)
+    if not s:
+        raise HTTPException(status_code=404, detail="策略不存在")
+    return APIResponse(message="策略更新成功", data={"strategy_id": s.id})
