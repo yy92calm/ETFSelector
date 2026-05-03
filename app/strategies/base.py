@@ -1,60 +1,149 @@
 """
-策略基类
-所有策略（模板策略和AI生成策略）都需要实现这个接口
+ETF配置组合策略基类
+基于再平衡逻辑而非技术指标择时
 """
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
 from datetime import date
+from enum import Enum
 
 import pandas as pd
 
 
+class RebalanceTrigger(Enum):
+    """再平衡触发类型"""
+    TIME_BASED = "time_based"       # 时间触发（季度末/月末）
+    THRESHOLD_BASED = "threshold"   # 偏离阈值触发
+    INITIAL = "initial"             # 初始买入
+
+
 @dataclass
-class Signal:
-    """交易信号"""
+class RebalanceSignal:
+    """再平衡信号"""
+    trigger_type: RebalanceTrigger
     trade_date: date
-    etf_code: str
-    direction: str          # "buy" | "sell"
-    strength: float = 1.0   # 信号强度 0~1，可用于仓位管理
+    adjustments: List[Dict]  # 调整列表 [{"etf_code": "xxx", "action": "buy/sell", "amount": 10000}]
     reason: str = ""
 
 
 @dataclass
-class StrategyContext:
-    """策略运行上下文"""
-    etf_code: str
-    history: pd.DataFrame       # 历史行情 DataFrame，列: date, open, close, high, low, volume, amount, change_pct
+class PortfolioContext:
+    """组合运行上下文"""
     current_date: date
+    total_asset: float
     holdings: Dict[str, int] = field(default_factory=dict)  # etf_code -> quantity
-    cash: float = 0.0
-    params: Dict = field(default_factory=dict)
+    current_prices: Dict[str, float] = field(default_factory=dict)  # etf_code -> current_price
+    allocation_config: Dict[str, float] = field(default_factory=dict)  # 目标配置比例
+    rebalance_threshold: float = 0.05
+    history_dates: List[date] = field(default_factory=list)  # 历史交易日列表
 
 
-class BaseStrategy(ABC):
-    """策略基类"""
-
+class AllocationStrategy(ABC):
+    """配置组合策略基类"""
+    
     name: str = "base"
     description: str = ""
-    default_params: dict = {}
-
-    def __init__(self, params: Optional[dict] = None):
-        self.params = {**self.default_params}
-        if params:
-            self.params.update(params)
-
+    allocation_config: Dict[str, float] = {}
+    rebalance_freq: str = "quarterly"
+    rebalance_threshold: float = 0.05
+    
+    def __init__(self, allocation_config: Optional[Dict] = None):
+        if allocation_config:
+            self.allocation_config = allocation_config
+        
+        # 验证配置比例总和为1
+        total = sum(self.allocation_config.values())
+        if abs(total - 1.0) > 0.01:
+            raise ValueError(f"配置比例总和应为1.0，当前为 {total}")
+    
     @abstractmethod
-    def generate_signals(self, ctx: StrategyContext) -> List[Signal]:
+    def check_rebalance(self, ctx: PortfolioContext) -> bool:
         """
-        根据上下文生成交易信号
-        返回一组 Signal，引擎会根据信号执行买卖
+        判断是否需要再平衡
+        返回True表示需要执行再平衡
         """
         ...
-
+    
+    @abstractmethod
+    def generate_rebalance_signals(self, ctx: PortfolioContext) -> List[RebalanceSignal]:
+        """
+        生成再平衡信号
+        返回需要执行的调整操作
+        """
+        ...
+    
+    def calculate_current_allocation(self, ctx: PortfolioContext) -> Dict[str, float]:
+        """
+        计算当前持仓的实际配置比例
+        """
+        if ctx.total_asset <= 0:
+            return {}
+        
+        current_allocation = {}
+        for etf_code, quantity in ctx.holdings.items():
+            if quantity <= 0:
+                continue
+            
+            price = ctx.current_prices.get(etf_code, 0)
+            if price <= 0:
+                continue
+            
+            market_value = quantity * price
+            allocation_ratio = market_value / ctx.total_asset
+            current_allocation[etf_code] = allocation_ratio
+        
+        return current_allocation
+    
+    def calculate_deviation(self, current_allocation: Dict[str, float]) -> Dict[str, float]:
+        """
+        计算配置偏离度
+        """
+        deviation = {}
+        for etf_code, target_ratio in self.allocation_config.items():
+            current_ratio = current_allocation.get(etf_code, 0)
+            deviation[etf_code] = abs(current_ratio - target_ratio)
+        
+        return deviation
+    
+    def should_trigger_threshold_rebalance(self, ctx: PortfolioContext) -> bool:
+        """
+        判断是否触发偏离阈值再平衡
+        """
+        current_allocation = self.calculate_current_allocation(ctx)
+        deviation = self.calculate_deviation(current_allocation)
+        
+        # 任意ETF偏离超过阈值则触发
+        max_deviation = max(deviation.values()) if deviation else 0
+        return max_deviation >= self.rebalance_threshold
+    
+    def should_trigger_time_rebalance(self, ctx: PortfolioContext) -> bool:
+        """
+        判断是否触发时间再平衡（季度末/月末）
+        """
+        current_date = ctx.current_date
+        
+        if self.rebalance_freq == "quarterly":
+            # 季度末：3月31、6月30、9月30、12月31
+            quarter_end_months = [3, 6, 9, 12]
+            return current_date.month in quarter_end_months and current_date.day >= 25
+        
+        elif self.rebalance_freq == "monthly":
+            # 月末：每月最后几天
+            return current_date.day >= 25
+        
+        elif self.rebalance_freq == "yearly":
+            # 年末：12月最后几天
+            return current_date.month == 12 and current_date.day >= 25
+        
+        return False
+    
     def get_info(self) -> dict:
         return {
             "name": self.name,
             "description": self.description,
-            "params": self.params,
+            "allocation_config": self.allocation_config,
+            "rebalance_freq": self.rebalance_freq,
+            "rebalance_threshold": self.rebalance_threshold,
         }

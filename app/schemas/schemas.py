@@ -35,45 +35,73 @@ class ETFQuotationOut(BaseModel):
 
 # ---- 策略 ----
 class StrategyCreate(BaseModel):
+    """创建配置组合策略"""
     name: str = Field(..., max_length=100)
     description: Optional[str] = None
-    strategy_type: str = Field(default="template", pattern="^(template|ai_generated)$")
-    template_name: Optional[str] = None
-    params: Optional[dict] = None
-    etf_codes: List[str] = Field(default_factory=list)
+    strategy_type: str = Field(default="template", pattern="^(template|ai_generated|custom)$")
+    
+    # 模板创建时可选（从模板获取）
+    template_name: Optional[str] = Field(None, description="模板名称：conservative/balanced/aggressive")
+    
+    # 自定义创建时必填
+    allocation_config: Optional[dict] = Field(None, description="ETF配置比例，如 {'510300': 0.5, '511010': 0.4}")
+    rebalance_freq: str = Field(default="quarterly", description="再平衡频率：monthly/quarterly/yearly")
+    rebalance_threshold: float = Field(default=0.05, ge=0.01, le=0.2, description="偏离阈值")
+    
     initial_capital: int = Field(default=100000, ge=10000)
 
 
 class StrategyOut(BaseModel):
+    """策略输出"""
     id: int
     name: str
     description: Optional[str]
     strategy_type: str
-    template_name: Optional[str]
-    params: Optional[dict]
+    
+    # 配置组合字段
+    allocation_config: Optional[dict]
+    rebalance_freq: Optional[str]
+    rebalance_threshold: Optional[float]
+    
+    # 其他字段
     code: Optional[str]
-    etf_codes: Optional[List[str]]
     initial_capital: int
     status: str
     created_at: datetime
+    
+    # 旧字段兼容
+    template_name: Optional[str] = None
+    params: Optional[dict] = None
+    etf_codes: Optional[List[str]] = None
+    
     model_config = {"from_attributes": True}
 
 
 class AIStrategyRequest(BaseModel):
     """AI策略生成请求"""
-    description: str = Field(..., min_length=5, max_length=1000, description="自然语言描述策略逻辑")
-    etf_codes: List[str] = Field(default_factory=list)
+    description: str = Field(
+        ..., 
+        min_length=5, 
+        max_length=1000, 
+        description="自然语言描述配置偏好，如：我要一个保守组合，债券为主，少量股票和黄金"
+    )
     initial_capital: int = Field(default=100000, ge=10000)
-    model: str = Field(default="gpt-4o", description="使用的AI模型")
+    model: str = Field(default="qwen3.6-plus", description="使用的AI模型（阿里云DashScope）")
+    rebalance_freq: str = Field(default="quarterly", description="再平衡频率")
+    rebalance_threshold: float = Field(default=0.05, ge=0.01, le=0.2, description="偏离阈值")
 
 
 class StrategyUpdate(BaseModel):
     """策略更新请求"""
     name: Optional[str] = Field(None, max_length=100)
     description: Optional[str] = None
-    etf_codes: Optional[List[str]] = None
+    
+    # 配置组合字段
+    allocation_config: Optional[dict] = None
+    rebalance_freq: Optional[str] = None
+    rebalance_threshold: Optional[float] = Field(None, ge=0.01, le=0.2)
+    
     initial_capital: Optional[int] = Field(None, ge=10000)
-    params: Optional[dict] = None
     code: Optional[str] = None
 
 

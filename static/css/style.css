@@ -1,4 +1,75 @@
-/* ---- ETF量化选择系统 - 样式 ---- */
+/* Toggle开关样式（iOS风格） */
+.toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 48px;
+    height: 28px;
+    cursor: pointer;
+}
+
+.toggle-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+    position: absolute;
+}
+
+.toggle-slider {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    border-radius: 28px;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    border: 2px solid transparent;
+}
+
+.toggle-slider:before {
+    position: absolute;
+    content: "";
+    height: 20px;
+    width: 20px;
+    left: 2px;
+    bottom: 2px;
+    background-color: white;
+    border-radius: 50%;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+.toggle-switch input:checked + .toggle-slider {
+    background-color: var(--success);
+    border-color: rgba(16, 185, 129, 0.2);
+}
+
+.toggle-switch input:checked + .toggle-slider:before {
+    transform: translateX(22px);
+}
+
+.toggle-switch:hover .toggle-slider {
+    box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+}
+
+.toggle-switch input:disabled + .toggle-slider {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+/* 禁用状态的选项区域 */
+.options-disabled {
+    opacity: 0.4;
+    pointer-events: none;
+    filter: grayscale(0.5);
+    transition: all 0.3s ease;
+}
+
+.options-enabled {
+    opacity: 1;
+    pointer-events: auto;
+    transition: all 0.3s ease;
+}
 :root {
     --primary: #3b82f6;
     --primary-hover: #2563eb;
@@ -528,4 +599,24 @@ tr:hover { background: #f8fafc; }
     justify-content: flex-end;
     gap: 8px;
     margin-top: 20px;
+}
+
+/* Modal Header样式（关闭按钮在右上角） */
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.modal-header h2 {
+    margin: 0;
+    font-size: 18px;
+}
+
+.modal-header .modal-close {
+    position: relative;
+    right: 0;
+    top: 0;
 }

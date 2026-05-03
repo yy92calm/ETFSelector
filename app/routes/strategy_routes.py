@@ -1,4 +1,4 @@
-"""策略管理API"""
+"""配置组合策略管理API"""
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -8,12 +8,12 @@ from app.schemas.schemas import APIResponse, StrategyCreate, AIStrategyRequest, 
 from app.services.strategy_service import get_strategy_service
 from app.strategies.registry import list_templates
 
-router = APIRouter(prefix="/api/strategy", tags=["策略管理"])
+router = APIRouter(prefix="/api/strategy", tags=["配置组合策略"])
 
 
 @router.get("/templates", response_model=APIResponse)
 def get_strategy_templates():
-    """获取所有内置策略模板"""
+    """获取所有配置模板"""
     templates = list_templates()
     return APIResponse(data={"templates": templates})
 
@@ -29,9 +29,12 @@ def get_strategy_list(db: Session = Depends(get_db)):
             "name": s.name,
             "description": s.description,
             "strategy_type": s.strategy_type,
-            "template_name": s.template_name,
-            "params": s.params,
-            "etf_codes": s.etf_codes,
+            
+            # 配置组合字段
+            "allocation_config": s.allocation_config,
+            "rebalance_freq": s.rebalance_freq,
+            "rebalance_threshold": s.rebalance_threshold,
+            
             "initial_capital": s.initial_capital,
             "status": s.status,
             "created_at": s.created_at.isoformat() if s.created_at else None,
@@ -41,30 +44,48 @@ def get_strategy_list(db: Session = Depends(get_db)):
 
 @router.post("/create", response_model=APIResponse)
 def create_strategy(req: StrategyCreate, db: Session = Depends(get_db)):
-    """创建模板策略"""
+    """创建模板配置策略"""
     svc = get_strategy_service()
     try:
         strategy = svc.create_template_strategy(req.model_dump(), db)
-        return APIResponse(message="策略创建成功", data={"strategy_id": strategy.id})
+        return APIResponse(message="配置策略创建成功", data={
+            "strategy_id": strategy.id,
+            "allocation_config": strategy.allocation_config
+        })
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/create-custom", response_model=APIResponse)
+def create_custom_strategy(req: StrategyCreate, db: Session = Depends(get_db)):
+    """创建自定义配置策略"""
+    svc = get_strategy_service()
+    try:
+        strategy = svc.create_custom_strategy(req.model_dump(), db)
+        return APIResponse(message="自定义配置策略创建成功", data={
+            "strategy_id": strategy.id,
+            "allocation_config": strategy.allocation_config
+        })
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/create-ai", response_model=APIResponse)
 def create_ai_strategy(req: AIStrategyRequest, db: Session = Depends(get_db)):
-    """通过自然语言描述创建AI策略"""
+    """通过自然语言描述创建AI配置策略"""
     svc = get_strategy_service()
     try:
         strategy = svc.create_ai_strategy(
             description=req.description,
-            etf_codes=req.etf_codes,
             initial_capital=req.initial_capital,
+            rebalance_freq=req.rebalance_freq,
+            rebalance_threshold=req.rebalance_threshold,
             db=db,
             model=req.model,
         )
-        return APIResponse(message="AI策略生成成功", data={
+        return APIResponse(message="AI配置策略生成成功", data={
             "strategy_id": strategy.id,
-            "code": strategy.code,
+            "allocation_config": strategy.allocation_config,
         })
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -77,15 +98,18 @@ def get_strategy_detail(strategy_id: int, db: Session = Depends(get_db)):
     s = svc.get_strategy(strategy_id, db)
     if not s:
         raise HTTPException(status_code=404, detail="策略不存在")
+    
     return APIResponse(data={
         "id": s.id,
         "name": s.name,
         "description": s.description,
         "strategy_type": s.strategy_type,
-        "template_name": s.template_name,
-        "params": s.params,
-        "code": s.code,
-        "etf_codes": s.etf_codes,
+        
+        # 配置组合字段
+        "allocation_config": s.allocation_config,
+        "rebalance_freq": s.rebalance_freq,
+        "rebalance_threshold": s.rebalance_threshold,
+        
         "initial_capital": s.initial_capital,
         "status": s.status,
         "created_at": s.created_at.isoformat() if s.created_at else None,
@@ -120,4 +144,7 @@ def update_strategy(strategy_id: int, req: StrategyUpdate, db: Session = Depends
     s = svc.update_strategy(strategy_id, req.model_dump(exclude_unset=True), db)
     if not s:
         raise HTTPException(status_code=404, detail="策略不存在")
-    return APIResponse(message="策略更新成功", data={"strategy_id": s.id})
+    return APIResponse(message="策略更新成功", data={
+        "strategy_id": s.id,
+        "allocation_config": s.allocation_config
+    })

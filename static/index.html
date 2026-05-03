@@ -26,7 +26,7 @@
     <div id="tab-market" class="tab-content active">
         <div class="toolbar">
             <button class="btn btn-primary" onclick="syncETFList()">同步ETF列表</button>
-            <button class="btn btn-success" onclick="updateTodayQuotes()">更新今日行情</button>
+            <button class="btn btn-success" onclick="updateTodayQuotes()">更新最新净值</button>
             <button class="btn btn-warning" onclick="showUpdateRangeModal()">更新区间行情</button>
             <span id="market-count" style="color:var(--text-secondary);font-size:13px;"></span>
         </div>
@@ -66,23 +66,21 @@
             <div class="table-wrap">
                 <table>
                     <thead>
-                        <tr>
-                            <th class="sortable" data-sort="code" onclick="sortTable('code')">代码 <span class="sort-icon">↕</span></th>
-                            <th>名称</th>
-                            <th class="text-right sortable" data-sort="close_price" onclick="sortTable('close_price')">收盘价 <span class="sort-icon">↕</span></th>
-                            <th class="text-right sortable" data-sort="change_pct" onclick="sortTable('change_pct')">涨跌幅 <span class="sort-icon">↕</span></th>
-                            <th class="text-right sortable" data-sort="volume" onclick="sortTable('volume')">成交量 <span class="sort-icon">↕</span></th>
-                            <th class="text-right sortable" data-sort="amount" onclick="sortTable('amount')">成交额 <span class="sort-icon">↕</span></th>
-                            <th>日期</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="market-table"></tbody>
+                    <tr>
+                        <th class="sortable" data-sort="code" onclick="sortTable('code')">代码 <span class="sort-icon">↕</span></th>
+                        <th>名称</th>
+                        <th class="text-right sortable" data-sort="net_value" onclick="sortTable('net_value')">最新净值 <span class="sort-icon">↕</span></th>
+                        <th class="text-right sortable" data-sort="net_value_change_pct" onclick="sortTable('net_value_change_pct')">净值增长率 <span class="sort-icon">↕</span></th>
+                        <th>净值日期</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody id="market-table"></tbody>
                 </table>
             </div>
             <div id="market-empty" class="empty-state" style="display:none;">
                 <div class="icon">📊</div>
-                <p>暂无行情数据，请先"同步ETF列表"然后"更新今日行情"</p>
+                <p>暂无行情数据，请先"同步ETF列表"然后"更新最新净值"</p>
             </div>
             
             <!-- 分页控件 -->
@@ -105,7 +103,7 @@
     <!-- ====== 策略管理 ====== -->
     <div id="tab-strategy" class="tab-content">
         <div class="toolbar">
-            <button class="btn btn-primary" onclick="showCreateStrategyModal()">+ 创建模板策略</button>
+            <button class="btn btn-primary" onclick="showCreateStrategyModal()">+ 创建配置策略</button>
             <button class="btn btn-success" onclick="showAIStrategyModal()">AI 生成策略</button>
         </div>
         <div class="card">
@@ -244,118 +242,257 @@
 
 </div>
 
-<!-- 创建模板策略 Modal -->
+<!-- 创建资产配置策略 Modal -->
+
+
+<!-- 创建资产配置策略弹窗 -->
 <div class="modal-overlay" id="modal-create-strategy">
-    <div class="modal">
-        <div class="modal-title">创建模板策略</div>
+    <div class="modal" style="max-width:650px;">
+        <div class="modal-title">创建资产配置策略</div>
+        
         <div class="form-group">
             <label>策略名称</label>
-            <input type="text" id="cs-name" placeholder="如: 沪深300双均线策略">
+            <input type="text" id="cs-name" placeholder="例如：稳健增长组合" required>
         </div>
+        
         <div class="form-group">
-            <label>策略模板</label>
-            <select id="cs-template"></select>
-        </div>
-        <div id="cs-params-area"></div>
-        <div class="form-group">
-            <label>选择ETF（支持代码或名称搜索）</label>
-            <div class="etf-search-container">
-                <input type="text" id="cs-etf-search" placeholder="输入ETF代码或名称搜索..." autocomplete="off">
+            <label>ETF配置（占比总和需等于100%）</label>
+            <div class="etf-search-container" style="position:relative;">
+                <input type="text" id="cs-etf-search" placeholder="搜索ETF代码或名称..." style="width:100%;">
                 <div class="etf-search-results" id="cs-etf-results"></div>
             </div>
-            <div class="etf-selected-list" id="cs-etf-selected"></div>
-            <input type="hidden" id="cs-etfs">
+            <div id="etf-allocation-list" style="margin-top:12px;"></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+                <span id="allocation-total" style="font-weight:600;font-size:14px;">当前占比总和: 0%</span>
+                <span id="allocation-warning" style="font-size:13px;"></span>
+            </div>
         </div>
+        
+        <div class="form-group">
+            <label>再平衡设置</label>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:10px;background:var(--bg-secondary);border-radius:6px;">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="cs-enable-rebalance" checked onchange="toggleRebalanceOptions()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <div style="flex:1;">
+                    <div style="font-size:15px;font-weight:600;color:var(--text);">启用自动再平衡</div>
+                    <div style="font-size:13px;color:var(--text-secondary);margin-top:2px;" id="rebalance-status-text">策略将定期调整持仓以保持目标配置比例</div>
+                </div>
+            </div>
+            <div id="rebalance-options" class="options-enabled" style="display:flex;gap:16px;padding:12px;background:linear-gradient(135deg, rgba(16,185,129,0.05) 0%, rgba(59,130,246,0.05) 100%);border-radius:6px;border:1px solid rgba(16,185,129,0.1);">
+                <div style="flex:1;">
+                    <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
+                        <span style="color:var(--success);">●</span> 再平衡频率
+                    </label>
+                    <select id="cs-rebalance-freq" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;">
+                        <option value="monthly">每月末执行</option>
+                        <option value="quarterly" selected>每季度末执行</option>
+                        <option value="yearly">每年末执行</option>
+                    </select>
+                    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">在周期末检查并调整持仓</div>
+                </div>
+                <div style="flex:1;">
+                    <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
+                        <span style="color:var(--warning);">●</span> 偏离阈值
+                    </label>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <input type="number" id="cs-rebalance-threshold" value="5" min="1" max="20" step="1" style="width:70px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;text-align:center;">
+                        <span style="font-size:14px;color:var(--text);font-weight:600;">%</span>
+                    </div>
+                    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">占比偏离超过阈值时触发调整</div>
+                </div>
+            </div>
+            <div id="rebalance-disabled-hint" style="display:none;padding:12px;background:var(--bg-secondary);border-radius:6px;border:1px solid var(--border);margin-top:8px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="color:var(--text-secondary);font-size:20px;">ℹ️</span>
+                    <div style="font-size:13px;color:var(--text-secondary);">
+                        <strong>再平衡已禁用</strong>：策略将保持初始配置，不会自动调整持仓比例。<br>
+                        <span style="font-size:12px;">适用于长期持有且不关注市场波动的场景。</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <div class="form-group">
             <label>初始资金</label>
-            <input type="number" id="cs-capital" value="100000">
+            <input type="number" id="cs-capital" value="100000" min="10000" step="10000">
         </div>
+        
         <div class="modal-actions">
             <button class="btn btn-outline" onclick="closeModal('modal-create-strategy')">取消</button>
-            <button class="btn btn-primary" onclick="submitCreateStrategy()">创建</button>
+            <button class="btn btn-primary" onclick="submitCreateStrategy()" id="cs-submit-btn">创建策略</button>
         </div>
     </div>
 </div>
 
-<!-- AI策略 Modal -->
+<!-- AI生成策略弹窗 -->
 <div class="modal-overlay" id="modal-ai-strategy">
-    <div class="modal">
-        <div class="modal-title">AI 生成策略</div>
+    <div class="modal" style="max-width:600px;">
+        <div class="modal-title">AI生成策略</div>
         <div class="form-group">
-            <label>策略描述（用自然语言描述你的交易逻辑）</label>
-            <textarea id="ai-desc" rows="4" placeholder="例如：当5日均线上穿20日均线时买入，下穿时卖出；同时RSI低于30时加仓，高于70时减仓"></textarea>
-        </div>
-        <div class="form-group">
-            <label>选择ETF（支持代码或名称搜索）</label>
-            <div class="etf-search-container">
-                <input type="text" id="ai-etf-search" placeholder="输入ETF代码或名称搜索..." autocomplete="off">
-                <div class="etf-search-results" id="ai-etf-results"></div>
+            <label>策略描述</label>
+            <textarea id="ai-desc" rows="4" placeholder="例如：我要一个保守组合，债券为主，少量股票和黄金"></textarea>
+            <div style="font-size:13px;color:var(--text-secondary);margin-top:6px;">
+                💡 描述您的风险偏好、投资目标和资产类型偏好，AI将自动生成配置方案
             </div>
-            <div class="etf-selected-list" id="ai-etf-selected"></div>
-            <input type="hidden" id="ai-etfs">
         </div>
         <div class="form-group">
-            <label>选择模型</label>
-            <select id="ai-model">
-                <option value="deepseek-v3">DeepSeek V3 (推荐)</option>
-                <option value="glm-4.6">GLM-4.6</option>
-                <option value="qwen3-235b-a22b-thinking-2507">Qwen3 235B Thinking</option>
-                <option value="qwen3-max">Qwen3 Max</option>
-                <option value="kimi-k2-0905">Kimi K2</option>
+            <label>AI模型选择</label>
+            <select id="ai-model" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;">
+                <option value="qwen3.6-plus" selected>通义千问3.6 Plus（推荐）</option>
+                <option value="kimi-k2.5">Moonshot Kimi 2.5</option>
+                <option value="MiniMax-M2.5">MiniMax M2.5</option>
             </select>
+            <div style="font-size:13px;color:var(--text-secondary);margin-top:6px;">
+                💡 使用阿里云DashScope API，通义千问性价比最优
+            </div>
+        </div>
+        <div class="form-group">
+            <label>再平衡设置</label>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:10px;background:var(--bg-secondary);border-radius:6px;">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="ai-enable-rebalance" checked onchange="toggleAIStrategyRebalanceOptions()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <div style="flex:1;">
+                    <div style="font-size:15px;font-weight:600;color:var(--text);">启用自动再平衡</div>
+                    <div style="font-size:13px;color:var(--text-secondary);margin-top:2px;" id="ai-rebalance-status-text">策略将定期调整持仓以保持目标配置比例</div>
+                </div>
+            </div>
+            <div id="ai-rebalance-options" class="options-enabled" style="display:flex;gap:16px;padding:12px;background:linear-gradient(135deg, rgba(16,185,129,0.05) 0%, rgba(59,130,246,0.05) 100%);border-radius:6px;border:1px solid rgba(16,185,129,0.1);">
+                <div style="flex:1;">
+                    <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
+                        <span style="color:var(--success);">●</span> 再平衡频率
+                    </label>
+                    <select id="ai-rebalance-freq" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;">
+                        <option value="monthly">每月末执行</option>
+                        <option value="quarterly" selected>每季度末执行</option>
+                        <option value="yearly">每年末执行</option>
+                    </select>
+                </div>
+                <div style="flex:1;">
+                    <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
+                        <span style="color:var(--warning);">●</span> 偏离阈值
+                    </label>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <input type="number" id="ai-rebalance-threshold" value="5" min="1" max="20" step="1" style="width:70px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;text-align:center;">
+                        <span style="font-size:14px;color:var(--text);font-weight:600;">%</span>
+                    </div>
+                </div>
+            </div>
+            <div id="ai-rebalance-disabled-hint" style="display:none;padding:12px;background:var(--bg-secondary);border-radius:6px;border:1px solid var(--border);margin-top:8px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="color:var(--text-secondary);font-size:20px;">ℹ️</span>
+                    <div style="font-size:13px;color:var(--text-secondary);">
+                        <strong>再平衡已禁用</strong>：策略将保持初始配置，不会自动调整持仓比例。
+                    </div>
+                </div>
+            </div>
         </div>
         <div class="form-group">
             <label>初始资金</label>
-            <input type="number" id="ai-capital" value="100000">
+            <input type="number" id="ai-capital" value="100000" min="10000" step="10000">
         </div>
         <div class="modal-actions">
             <button class="btn btn-outline" onclick="closeModal('modal-ai-strategy')">取消</button>
-            <button class="btn btn-success" onclick="submitAIStrategy()" id="ai-submit-btn">生成策略</button>
+            <button class="btn btn-primary" onclick="submitAIStrategy()" id="ai-submit-btn">生成策略</button>
         </div>
     </div>
 </div>
 
-<!-- 编辑策略 Modal -->
+<!-- 编辑策略弹窗 -->
 <div class="modal-overlay" id="modal-edit-strategy">
-    <div class="modal">
+    <div class="modal" style="max-width:650px;">
         <div class="modal-title">编辑策略</div>
+        
         <input type="hidden" id="edit-strategy-id">
+        
         <div class="form-group">
             <label>策略名称</label>
-            <input type="text" id="edit-name" placeholder="策略名称">
+            <input type="text" id="edit-name" required>
         </div>
+        
         <div class="form-group">
             <label>策略描述</label>
-            <textarea id="edit-desc" rows="3" placeholder="策略描述"></textarea>
+            <textarea id="edit-desc" rows="2" placeholder="策略描述"></textarea>
         </div>
+        
         <div class="form-group">
-            <label>选择ETF（支持代码或名称搜索）</label>
-            <div class="etf-search-container">
-                <input type="text" id="edit-etf-search" placeholder="输入ETF代码或名称搜索..." autocomplete="off">
+            <label>ETF配置（占比总和需等于100%）</label>
+            <div class="etf-search-container" style="position:relative;">
+                <input type="text" id="edit-etf-search" placeholder="搜索ETF代码或名称..." style="width:100%;">
                 <div class="etf-search-results" id="edit-etf-results"></div>
             </div>
-            <div class="etf-selected-list" id="edit-etf-selected"></div>
-            <input type="hidden" id="edit-etfs">
+            <div id="edit-allocation-list" style="margin-top:12px;"></div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+                <span id="edit-allocation-total" style="font-weight:600;font-size:14px;">当前占比总和: 0%</span>
+                <span id="edit-allocation-warning" style="font-size:13px;"></span>
+            </div>
         </div>
+        
+        <div class="form-group">
+            <label>再平衡设置</label>
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:10px;background:var(--bg-secondary);border-radius:6px;">
+                <label class="toggle-switch">
+                    <input type="checkbox" id="edit-enable-rebalance" checked onchange="toggleEditRebalanceOptions()">
+                    <span class="toggle-slider"></span>
+                </label>
+                <div style="flex:1;">
+                    <div style="font-size:15px;font-weight:600;color:var(--text);">启用自动再平衡</div>
+                    <div style="font-size:13px;color:var(--text-secondary);margin-top:2px;" id="edit-rebalance-status-text">策略将定期调整持仓以保持目标配置比例</div>
+                </div>
+            </div>
+            <div id="edit-rebalance-options" class="options-enabled" style="display:flex;gap:16px;padding:12px;background:linear-gradient(135deg, rgba(16,185,129,0.05) 0%, rgba(59,130,246,0.05) 100%);border-radius:6px;border:1px solid rgba(16,185,129,0.1);">
+                <div style="flex:1;">
+                    <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
+                        <span style="color:var(--success);">●</span> 再平衡频率
+                    </label>
+                    <select id="edit-rebalance-freq" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;">
+                        <option value="monthly">每月末执行</option>
+                        <option value="quarterly" selected>每季度末执行</option>
+                        <option value="yearly">每年末执行</option>
+                    </select>
+                    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">在周期末检查并调整持仓</div>
+                </div>
+                <div style="flex:1;">
+                    <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
+                        <span style="color:var(--warning);">●</span> 偏离阈值
+                    </label>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <input type="number" id="edit-rebalance-threshold" value="5" min="1" max="20" step="1" style="width:70px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;text-align:center;">
+                        <span style="font-size:14px;color:var(--text);font-weight:600;">%</span>
+                    </div>
+                    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">占比偏离超过阈值时触发调整</div>
+                </div>
+            </div>
+            <div id="edit-rebalance-disabled-hint" style="display:none;padding:12px;background:var(--bg-secondary);border-radius:6px;border:1px solid var(--border);margin-top:8px;">
+                <div style="display:flex;align-items:center;gap:8px;">
+                    <span style="color:var(--text-secondary);font-size:20px;">ℹ️</span>
+                    <div style="font-size:13px;color:var(--text-secondary);">
+                        <strong>再平衡已禁用</strong>：策略将保持初始配置，不会自动调整持仓比例。<br>
+                        <span style="font-size:12px;">适用于长期持有且不关注市场波动的场景。</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <div class="form-group">
             <label>初始资金</label>
-            <input type="number" id="edit-capital" value="100000">
+            <input type="number" id="edit-capital" min="10000" step="10000">
         </div>
-        <div class="form-group" id="edit-code-group" style="display:none;">
-            <label>策略代码（仅AI策略可编辑）</label>
-            <textarea id="edit-code" rows="10" placeholder="Python策略代码"></textarea>
-        </div>
+        
         <div class="modal-actions">
             <button class="btn btn-outline" onclick="closeModal('modal-edit-strategy')">取消</button>
-            <button class="btn btn-primary" onclick="submitEditStrategy()" id="edit-submit-btn">保存</button>
+            <button class="btn btn-primary" onclick="submitEditStrategy()" id="edit-submit-btn">保存修改</button>
         </div>
     </div>
 </div>
 
-<!-- 更新区间行情 Modal -->
+<!-- 批量更新净值数据弹窗 -->
 <div class="modal-overlay" id="modal-update-range">
     <div class="modal">
-        <div class="modal-title">更新指定区间行情</div>
+        <div class="modal-title">批量更新净值数据</div>
         <div class="form-group">
             <label>开始日期</label>
             <input type="date" id="range-start-date">
@@ -367,13 +504,50 @@
         <div class="form-group">
             <label>说明</label>
             <p style="font-size: 13px; color: var(--text-secondary);">
-                将更新所有ETF在指定日期范围内的历史行情数据。<br>
-                数据量较大时可能需要较长时间，请耐心等待。
+                将从证监会拉取所有ETF的历史净值数据。<br>
+                证监会频率限制：1秒1次，拉取速度较快。<br>
+将自动获取所有页面的历史净值数据（每页20条）。
             </p>
         </div>
         <div class="modal-actions">
             <button class="btn btn-outline" onclick="closeModal('modal-update-range')">取消</button>
-            <button class="btn btn-warning" onclick="submitUpdateRange()" id="range-submit-btn">开始更新</button>
+            <button class="btn btn-warning" onclick="submitUpdateRange()" id="range-submit-btn">开始拉取</button>
+        </div>
+    </div>
+</div>
+
+<!-- ETF历史净值查看弹窗 -->
+<div class="modal-overlay" id="modal-etf-history">
+    <div class="modal" style="max-width:900px;">
+        <div class="modal-header">
+            <h2 id="history-etf-title">ETF净值历史走势</h2>
+            <button class="modal-close" onclick="closeModal('modal-etf-history')">&times;</button>
+        </div>
+        
+        <div class="modal-body">
+            <!-- 净值走势图表 -->
+            <div id="history-chart" style="width:100%;height:400px;margin-bottom:20px;"></div>
+            
+            <!-- 统计信息 -->
+            <div style="margin-bottom:20px;">
+                <strong id="history-count">-</strong>
+            </div>
+            
+            <!-- 净值数据表格 -->
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>净值日期</th>
+                        <th class="text-right">份额净值</th>
+                        <th class="text-right">增长率</th>
+                    </tr>
+                </thead>
+                <tbody id="history-table"></tbody>
+            </table>
+            
+            <div id="history-empty" style="display:none;text-align:center;padding:40px;color:#999;">
+                <p>暂无净值数据</p>
+            </div>
         </div>
     </div>
 </div>

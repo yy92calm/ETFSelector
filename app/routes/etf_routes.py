@@ -2,6 +2,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from datetime import date
 
 from app.db.database import get_db
@@ -34,11 +35,13 @@ def sync_etf_list(db: Session = Depends(get_db)):
 
 @router.get("/overview", response_model=APIResponse)
 def get_market_overview(
-    limit: int = Query(2000, ge=1, le=5000), db: Session = Depends(get_db)
+    limit: int = Query(2000, ge=1, le=5000),
+    date: str = Query(None, description="指定日期 YYYY-MM-DD，不指定则返回最新交易日"),
+    db: Session = Depends(get_db)
 ):
-    """获取全市场最新行情概览（按成交额排序）"""
+    """获取全市场行情概览（按成交额排序，支持按日期查询）"""
     svc = get_data_service()
-    data = svc.get_market_overview(db, limit=limit)
+    data = svc.get_market_overview(db, limit=limit, date=date)
     return APIResponse(data={"quotes": data, "count": len(data)})
 
 
@@ -124,3 +127,35 @@ def update_quotes_by_range(
         message=f"行情更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}",
         data=result
     )
+
+
+
+
+@router.get("/search", response_model=APIResponse)
+def search_etfs(
+    q: str = Query(..., description="搜索关键词"),
+    limit: int = Query(10, ge=1, le=50),
+    db: Session = Depends(get_db)
+):
+    """搜索ETF"""
+    try:
+        from sqlalchemy import text
+        # 从etf_basic表搜索（包含所有ETF信息）
+        sql = text("""
+            SELECT etf_code, etf_name
+            FROM etf_basic
+            WHERE etf_code LIKE :q OR etf_name LIKE :q
+            ORDER BY etf_code
+            LIMIT :limit
+        """)
+        result = db.execute(sql, {"q": f"%{q}%", "limit": limit}).fetchall()
+        
+        etfs = [{"etf_code": row[0], "etf_name": row[1]} for row in result]
+        
+        return APIResponse(
+            code=200,
+            message=f"找到{len(etfs)}只ETF",
+            data={"etfs": etfs}
+        )
+    except Exception as e:
+        return APIResponse(code=500, message=str(e), data=None)

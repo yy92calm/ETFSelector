@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
 
-    # 定时任务
-    scheduler_hour: int = 18
+    # 定时任务（每个工作日20:00更新净值数据）
+    scheduler_hour: int = 20
     scheduler_minute: int = 0
 
     model_config = {"env_file": ".env", "case_sensitive": False}

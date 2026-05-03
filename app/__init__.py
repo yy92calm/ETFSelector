@@ -9,7 +9,9 @@ from fastapi.responses import FileResponse
 
 from app.config import get_settings
 from app.db.database import init_db
-from app.routes import etf_routes, strategy_routes, backtest_routes, portfolio_routes
+from app.routes import etf_routes, strategy_routes, backtest_routes, net_value_routes  # noqa: F401
+# portfolio_routes 暂时禁用（实盘模拟服务待重构）
+# from app.routes import portfolio_routes  # noqa: F401
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,7 +44,8 @@ if static_dir.exists():
 app.include_router(etf_routes.router)
 app.include_router(strategy_routes.router)
 app.include_router(backtest_routes.router)
-app.include_router(portfolio_routes.router)
+app.include_router(net_value_routes.router)  # 净值数据路由
+# app.include_router(portfolio_routes.router)  # 暂时禁用
 
 
 @app.on_event("startup")

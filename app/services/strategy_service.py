@@ -1,16 +1,14 @@
 """
-策略管理服务
-负责策略的CRUD以及关联策略引擎
+配置组合策略管理服务
 """
 
 import logging
-from typing import List, Optional
+from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
 
 from app.models.strategy import Strategy
-from app.strategies.registry import get_template_strategy, list_templates
-from app.strategies.generator import generate_strategy_code, compile_strategy
-from app.strategies.base import BaseStrategy
+from app.strategies.registry import get_template_config, list_templates
+from app.strategies.portfolio_rebalance import PortfolioRebalanceStrategy
 
 logger = logging.getLogger(__name__)
 
@@ -18,65 +16,96 @@ logger = logging.getLogger(__name__)
 class StrategyService:
 
     def create_template_strategy(self, data: dict, db: Session) -> Strategy:
-        """创建模板策略"""
+        """创建模板配置策略"""
         template_name = data.get("template_name")
-        params = data.get("params", {})
-
-        # 校验模板存在
-        _ = get_template_strategy(template_name, params)
-
+        
+        # 获取模板配置
+        template_config = get_template_config(template_name)
+        
         strategy = Strategy(
             name=data["name"],
-            description=data.get("description", ""),
+            description=data.get("description", "") or template_config["description"],
             strategy_type="template",
-            template_name=template_name,
-            params=params,
-            etf_codes=data.get("etf_codes", []),
+            
+            # 配置组合字段
+            allocation_config=template_config["allocation_config"],
+            rebalance_freq=template_config["rebalance_freq"],
+            rebalance_threshold=template_config["rebalance_threshold"],
+            
             initial_capital=data.get("initial_capital", 100000),
         )
         db.add(strategy)
         db.commit()
         db.refresh(strategy)
-        logger.info(f"创建模板策略: {strategy}")
+        logger.info(f"创建配置组合策略: {strategy.name}, 配置: {strategy.allocation_config}")
+        return strategy
+    
+    def create_custom_strategy(self, data: dict, db: Session) -> Strategy:
+        """创建自定义配置策略"""
+        allocation_config = data.get("allocation_config")
+        
+        if not allocation_config:
+            raise ValueError("必须提供 allocation_config 配置比例")
+        
+        # 验证配置比例总和为1
+        total = sum(allocation_config.values())
+        if abs(total - 1.0) > 0.01:
+            raise ValueError(f"配置比例总和应为1.0，当前为 {total:.2f}")
+        
+        strategy = Strategy(
+            name=data["name"],
+            description=data.get("description", ""),
+            strategy_type="custom",
+            
+            allocation_config=allocation_config,
+            rebalance_freq=data.get("rebalance_freq", "quarterly"),
+            rebalance_threshold=data.get("rebalance_threshold", 0.05),
+            
+            initial_capital=data.get("initial_capital", 100000),
+        )
+        db.add(strategy)
+        db.commit()
+        db.refresh(strategy)
+        logger.info(f"创建自定义配置策略: {strategy.name}")
         return strategy
 
-    def create_ai_strategy(self, description: str, etf_codes: List[str],
-                           initial_capital: int, db: Session, model: str = "gpt-4o") -> Strategy:
-        """创建AI生成的策略"""
-        code = generate_strategy_code(description, model=model)
-        if not code:
-            raise ValueError("AI策略生成失败，请检查LLM配置或重新描述")
-
-        # 验证代码可编译
-        instance = compile_strategy(code)
-        if instance is None:
-            raise ValueError("生成的策略代码无法编译执行")
-
+    def create_ai_strategy(self, description: str, initial_capital: int, 
+                           rebalance_freq: str, rebalance_threshold: float, 
+                           db: Session, model: str = "qwen3.6-plus") -> Strategy:
+        """创建AI生成的配置策略"""
+        from app.strategies.generator import generate_allocation_config
+        
+        allocation_config = generate_allocation_config(description, model=model)
+        if not allocation_config:
+            raise ValueError("AI配置生成失败，请检查LLM配置或重新描述")
+        
         strategy = Strategy(
-            name=f"AI策略-{description[:20]}",
+            name=f"AI配置-{description[:20]}",
             description=description,
             strategy_type="ai_generated",
-            code=code,
-            etf_codes=etf_codes,
+            
+            allocation_config=allocation_config,
+            rebalance_freq=rebalance_freq,
+            rebalance_threshold=rebalance_threshold,
+            
             initial_capital=initial_capital,
         )
         db.add(strategy)
         db.commit()
         db.refresh(strategy)
-        logger.info(f"创建AI策略: {strategy}")
+        logger.info(f"创建AI配置策略: {strategy.name}, 配置: {allocation_config}")
         return strategy
 
-    def get_strategy_instance(self, strategy: Strategy) -> BaseStrategy:
-        """根据数据库Strategy记录获取可执行的策略实例"""
-        if strategy.strategy_type == "template":
-            return get_template_strategy(strategy.template_name, strategy.params)
-        elif strategy.strategy_type == "ai_generated" and strategy.code:
-            instance = compile_strategy(strategy.code)
-            if instance is None:
-                raise ValueError(f"策略 {strategy.id} 代码编译失败")
-            return instance
-        else:
-            raise ValueError(f"无法创建策略实例: type={strategy.strategy_type}")
+    def get_strategy_instance(self, strategy: Strategy) -> PortfolioRebalanceStrategy:
+        """获取可执行的策略实例"""
+        if not strategy.allocation_config:
+            raise ValueError(f"策略 {strategy.id} 未设置配置比例")
+        
+        return PortfolioRebalanceStrategy(
+            allocation_config=strategy.allocation_config,
+            rebalance_freq=strategy.rebalance_freq or "quarterly",
+            rebalance_threshold=strategy.rebalance_threshold or 0.05
+        )
 
     def get_strategy(self, strategy_id: int, db: Session) -> Optional[Strategy]:
         return db.query(Strategy).filter(Strategy.id == strategy_id).first()
@@ -106,12 +135,11 @@ class StrategyService:
         if not strategy:
             return None
         
-        # 如果更新了代码，需要验证代码可编译
-        if "code" in data and data["code"]:
-            from app.strategies.generator import compile_strategy
-            instance = compile_strategy(data["code"])
-            if instance is None:
-                raise ValueError("更新的策略代码无法编译执行")
+        # 验证配置比例（如果更新了）
+        if "allocation_config" in data and data["allocation_config"]:
+            total = sum(data["allocation_config"].values())
+            if abs(total - 1.0) > 0.01:
+                raise ValueError(f"配置比例总和应为1.0，当前为 {total:.2f}")
         
         # 更新字段
         for field, value in data.items():

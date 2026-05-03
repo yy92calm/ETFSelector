@@ -86,9 +86,9 @@ document.addEventListener('DOMContentLoaded', function() {
 
 async function loadMarket() {
     try {
-        // 获取所有ETF数据用于分类展示
-        const res = await api('/api/etf/overview?limit=2000');
-        allQuotes = res.data?.quotes || [];
+        // 获取净值概览数据（来自证监会官方披露）
+        const res = await api('/api/net-value/overview?limit=500');
+        allQuotes = res.data?.etfs || [];
         
         if (allQuotes.length) {
             document.getElementById('market-stats').style.display = 'flex';
@@ -114,8 +114,8 @@ async function loadMarket() {
 function filterQuotesByMarket(quotes, market) {
     if (market === 'all') return quotes;
     if (market === 'hot') {
-        // 热门ETF：成交额前30（有行情的ETF）
-        return quotes.filter(q => q.has_quote || q.close_price !== null).slice(0, 30);
+        // 热门ETF：有净值数据的ETF
+        return quotes.filter(q => q.has_net_value || q.net_value !== null).slice(0, 30);
     }
     
     return quotes.filter(q => {
@@ -231,17 +231,17 @@ function filterAndDisplayQuotes() {
     title.textContent = getMarketTitle(currentMarket);
     
     tbody.innerHTML = showQuotes.map(q => {
-        const hasQuote = q.has_quote || (q.close_price !== null && q.close_price !== undefined);
+        const hasNetValue = q.has_net_value || (q.net_value !== null && q.net_value !== undefined);
         return `
         <tr>
             <td><strong>${q.etf_code}</strong></td>
-            <td>${q.etf_name}</td>
-            <td class="text-right">${hasQuote ? fmtNum(q.close_price, 3) : '-'}</td>
-            <td class="text-right">${hasQuote ? fmtPct(q.change_pct) : '-'}</td>
-            <td class="text-right">${hasQuote ? fmtAmount(q.volume) : '-'}</td>
-            <td class="text-right">${hasQuote ? fmtAmount(q.amount) : '-'}</td>
-            <td>${hasQuote ? q.trade_date : '-'}</td>
-            <td><button class="btn btn-outline btn-sm" onclick="fetchETFData('${q.etf_code}')">拉取历史</button></td>
+            <td><a href="#" onclick="showETFHistory('${q.etf_code}', '${q.etf_name}')" style="color:var(--primary);cursor:pointer;" title="点击查看历史净值走势">${q.etf_name}</a></td>
+            <td class="text-right">${hasNetValue ? fmtNum(q.net_value, 4) : '-'}</td>
+            <td class="text-right">${hasNetValue ? fmtPct(q.net_value_change_pct) : '-'}</td>
+            <td>${hasNetValue ? q.trade_date : '-'}</td>
+            <td>
+                <button class="btn btn-outline btn-sm" onclick="showETFHistory('${q.etf_code}', '${q.etf_name}')" title="查看净值走势曲线">查看净值</button>
+            </td>
         </tr>
     `}).join('');
     
@@ -277,16 +277,14 @@ function getMarketTitle(market) {
 
 function updateMarketStats(quotes) {
     let upCount = 0, downCount = 0, flatCount = 0;
-    let totalValue = 0;
     
     quotes.forEach(q => {
-        totalValue += q.amount || 0;
-        if (q.change_pct > 0) upCount++;
-        else if (q.change_pct < 0) downCount++;
+        const changePct = q.net_value_change_pct || 0;
+        if (changePct > 0) upCount++;
+        else if (changePct < 0) downCount++;
         else flatCount++;
     });
     
-    document.getElementById('total-market-value').textContent = fmtAmount(totalValue);
     document.getElementById('up-count').textContent = upCount;
     document.getElementById('down-count').textContent = downCount;
     document.getElementById('flat-count').textContent = flatCount;
@@ -327,15 +325,216 @@ async function fetchETFData(code) {
 }
 
 // ==================================================================
-//  策略管理
+//  策略管理 - 创建资产配置策略
 // ==================================================================
-let templates = [];
 
-async function loadTemplates() {
+
+
+let etfAllocations = []; // [{code: '510300', name: '沪深300ETF', ratio: 30}]
+
+async function showCreateStrategyModal() {
+    etfAllocations = [];
+    updateAllocationDisplay();
+    
+    document.getElementById('cs-name').value = '';
+    document.getElementById('cs-capital').value = '100000';
+    document.getElementById('cs-enable-rebalance').checked = true;
+    document.getElementById('cs-rebalance-freq').value = 'quarterly';
+    document.getElementById('cs-rebalance-threshold').value = '5';
+    document.getElementById('cs-etf-search').value = '';
+    
+    initETFSearch();
+    
+    openModal('modal-create-strategy');
+}
+
+function initETFSearch() {
+    const searchInput = document.getElementById('cs-etf-search');
+    const resultsDiv = document.getElementById('cs-etf-results');
+    
+    searchInput.value = '';
+    
+    const newInput = searchInput.cloneNode(true);
+    searchInput.parentNode.replaceChild(newInput, searchInput);
+    
+    newInput.addEventListener('input', function() {
+        const keyword = this.value.trim().toLowerCase();
+        if (!keyword) {
+            resultsDiv.classList.remove('active');
+            return;
+        }
+        
+        const matches = allQuotes.filter(etf => {
+            if (etfAllocations.find(a => a.code === etf.etf_code)) return false;
+            return etf.etf_code.toLowerCase().includes(keyword) || 
+                   etf.etf_name.toLowerCase().includes(keyword);
+        }).slice(0, 10);
+        
+        if (matches.length > 0) {
+            resultsDiv.innerHTML = matches.map(etf => `
+                <div class="etf-search-item" onclick="addETFAllocation('${etf.etf_code}', '${etf.etf_name}')">
+                    <span class="code">${etf.etf_code}</span>
+                    <span class="name">${etf.etf_name}</span>
+                </div>
+            `).join('');
+            resultsDiv.classList.add('active');
+        } else {
+            resultsDiv.innerHTML = '<div class="etf-search-item"><span class="name">无匹配结果</span></div>';
+            resultsDiv.classList.add('active');
+        }
+    });
+    
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('#modal-create-strategy .etf-search-container')) {
+            resultsDiv.classList.remove('active');
+        }
+    });
+}
+
+function addETFAllocation(code, name) {
+    etfAllocations.push({
+        code: code,
+        name: name.slice(0, 15),
+        ratio: 0
+    });
+    
+    document.getElementById('cs-etf-search').value = '';
+    document.getElementById('cs-etf-results').classList.remove('active');
+    
+    updateAllocationDisplay();
+}
+
+function removeETFAllocation(code) {
+    etfAllocations = etfAllocations.filter(a => a.code !== code);
+    updateAllocationDisplay();
+}
+
+function updateAllocationRatio(code, ratio) {
+    const allocation = etfAllocations.find(a => a.code === code);
+    if (allocation) {
+        allocation.ratio = parseFloat(ratio) || 0;
+    }
+    updateAllocationDisplay();
+}
+
+function updateAllocationDisplay() {
+    const container = document.getElementById('etf-allocation-list');
+    
+    if (etfAllocations.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-secondary);font-size:14px;padding:8px;">请搜索并添加ETF，然后设置占比</div>';
+        document.getElementById('allocation-total').textContent = '当前占比总和: 0%';
+        document.getElementById('allocation-warning').textContent = '';
+        return;
+    }
+    
+    container.innerHTML = etfAllocations.map(a => `
+        <div style="display:flex;align-items:center;margin-bottom:8px;padding:8px;background:var(--bg-secondary);border-radius:4px;">
+            <span style="flex:1;font-weight:600;">${a.code}</span>
+            <span style="flex:2;color:var(--text-secondary);font-size:13px;">${a.name}</span>
+            <input type="number" value="${a.ratio}" min="0" max="100" step="1"
+                   onchange="updateAllocationRatio('${a.code}', this.value)"
+                   style="width:70px;margin-right:8px;padding:4px;border:1px solid var(--border);border-radius:4px;text-align:right;">
+            <span style="width:20px;color:var(--text-secondary);">%</span>
+            <button class="btn btn-outline btn-sm" onclick="removeETFAllocation('${a.code}')" style="margin-left:8px;padding:2px 8px;">删除</button>
+        </div>
+    `).join('');
+    
+    const totalRatio = etfAllocations.reduce((sum, a) => sum + a.ratio, 0);
+    document.getElementById('allocation-total').textContent = `当前占比总和: ${totalRatio.toFixed(1)}%`;
+    
+    const warning = document.getElementById('allocation-warning');
+    if (totalRatio > 100) {
+        warning.textContent = '⚠️ 占比总和超过100%！';
+        warning.style.color = 'var(--danger)';
+    } else if (totalRatio < 100) {
+        warning.textContent = `还可配置 ${(100 - totalRatio).toFixed(1)}%`;
+        warning.style.color = 'var(--text-secondary)';
+    } else {
+        warning.textContent = '✅ 配置完整';
+        warning.style.color = 'var(--success)';
+    }
+}
+
+async function submitCreateStrategy() {
+    const name = document.getElementById('cs-name').value.trim();
+    const initialCapital = Number(document.getElementById('cs-capital').value);
+    const enableRebalance = document.getElementById('cs-enable-rebalance').checked;
+    const totalRatio = etfAllocations.reduce((sum, a) => sum + a.ratio, 0);
+    
+    if (!name) {
+        toast('请输入策略名称', 'error');
+        return;
+    }
+    
+    if (etfAllocations.length === 0) {
+        toast('请至少添加一只ETF', 'error');
+        return;
+    }
+    
+    if (totalRatio > 100) {
+        toast('占比总和不能超过100%', 'error');
+        return;
+    }
+    
+    if (totalRatio < 100) {
+        toast(`占比总和为${totalRatio.toFixed(1)}%，未达到100%`, 'warning');
+        return;
+    }
+    
+    const allocationConfig = {};
+    etfAllocations.forEach(a => {
+        allocationConfig[a.code] = a.ratio / 100;
+    });
+    
+    const body = {
+        name: name,
+        initial_capital: initialCapital,
+        allocation_config: allocationConfig,
+        rebalance_freq: enableRebalance ? document.getElementById('cs-rebalance-freq').value : 'none',
+        rebalance_threshold: enableRebalance ? Number(document.getElementById('cs-rebalance-threshold').value) / 100 : 0.05,
+        strategy_type: 'custom'
+    };
+
+    const btn = document.getElementById('cs-submit-btn');
+    btn.disabled = true;
+    btn.textContent = '创建中...';
+
     try {
-        const res = await api('/api/strategy/templates');
-        templates = res.data?.templates || [];
-    } catch (e) { console.error(e); }
+        const res = await api('/api/strategy/create-custom', { method: 'POST', body: JSON.stringify(body) });
+        toast('资产配置策略创建成功', 'success');
+        closeModal('modal-create-strategy');
+        loadStrategies();
+    } catch (e) {
+        toast('创建失败: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '创建策略';
+    }
+}
+
+function toggleRebalanceOptions() {
+    const enable = document.getElementById('cs-enable-rebalance').checked;
+    const optionsDiv = document.getElementById('rebalance-options');
+    const hintText = document.getElementById('rebalance-disabled-hint');
+    const statusText = document.getElementById('rebalance-status-text');
+    
+    if (enable) {
+        // 启用状态
+        optionsDiv.style.display = 'flex';
+        optionsDiv.classList.remove('options-disabled');
+        optionsDiv.classList.add('options-enabled');
+        hintText.style.display = 'none';
+        statusText.innerHTML = '策略将定期调整持仓以保持目标配置比例';
+        statusText.style.color = 'var(--text-secondary)';
+    } else {
+        // 禁用状态
+        optionsDiv.style.display = 'none';
+        optionsDiv.classList.remove('options-enabled');
+        optionsDiv.classList.add('options-disabled');
+        hintText.style.display = 'block';
+        statusText.innerHTML = '策略将保持初始配置，不再自动调整';
+        statusText.style.color = 'var(--warning)';
+    }
 }
 
 async function loadStrategies() {
@@ -356,7 +555,7 @@ async function loadStrategies() {
             <tr>
                 <td>${s.id}</td>
                 <td><strong>${s.name}</strong></td>
-                <td><span class="badge ${s.strategy_type === 'template' ? 'badge-template' : 'badge-ai'}">${s.strategy_type === 'template' ? '模板' : 'AI'}</span></td>
+                <td><span class="badge ${s.strategy_type === 'template' ? 'badge-template' : s.strategy_type === 'custom' ? 'badge-success' : 'badge-ai'}">${s.strategy_type === 'template' ? '模板' : s.strategy_type === 'custom' ? '自定义' : 'AI'}</span></td>
                 <td>${(s.etf_codes || []).join(', ')}</td>
                 <td class="text-right">${fmtNum(s.initial_capital, 0)}</td>
                 <td><span class="badge badge-${s.status}">${s.status}</span></td>
@@ -370,151 +569,10 @@ async function loadStrategies() {
     } catch (e) { console.error(e); }
 }
 
-// 模板策略的ETF选择
-let csSelectedETFs = new Set();
 
-function showCreateStrategyModal() {
-    const sel = document.getElementById('cs-template');
-    sel.innerHTML = templates.map(t => `<option value="${t.template_name}">${t.template_name} - ${t.description}</option>`).join('');
-    renderTemplateParams();
-    sel.onchange = renderTemplateParams;
-    
-    // 初始化ETF搜索
-    initCSETFSearch();
-    
-    openModal('modal-create-strategy');
-}
-
-function initCSETFSearch() {
-    csSelectedETFs.clear();
-    updateCSETFDisplay();
-    document.getElementById('cs-etfs').value = '';
-    
-    const searchInput = document.getElementById('cs-etf-search');
-    const resultsDiv = document.getElementById('cs-etf-results');
-    
-    searchInput.value = '';
-    
-    // 移除旧的事件监听器（避免重复绑定）
-    const newInput = searchInput.cloneNode(true);
-    searchInput.parentNode.replaceChild(newInput, searchInput);
-    
-    // 搜索输入事件
-    newInput.addEventListener('input', function() {
-        const keyword = this.value.trim().toLowerCase();
-        if (!keyword) {
-            resultsDiv.classList.remove('active');
-            return;
-        }
-        
-        // 搜索匹配的ETF
-        const matches = allETFList.filter(etf => {
-            if (csSelectedETFs.has(etf.etf_code)) return false;
-            return etf.etf_code.toLowerCase().includes(keyword) || 
-                   etf.etf_name.toLowerCase().includes(keyword);
-        }).slice(0, 10);
-        
-        if (matches.length > 0) {
-            resultsDiv.innerHTML = matches.map(etf => `
-                <div class="etf-search-item" onclick="selectCSETF('${etf.etf_code}', '${etf.etf_name}')">
-                    <span class="code">${etf.etf_code}</span>
-                    <span class="name">${etf.etf_name}</span>
-                </div>
-            `).join('');
-            resultsDiv.classList.add('active');
-        } else {
-            resultsDiv.innerHTML = '<div class="etf-search-item"><span class="name">无匹配结果</span></div>';
-            resultsDiv.classList.add('active');
-        }
-    });
-    
-    // 点击外部关闭搜索结果
-    const clickHandler = function(e) {
-        if (!e.target.closest('#modal-create-strategy .etf-search-container')) {
-            resultsDiv.classList.remove('active');
-        }
-    };
-    document.removeEventListener('click', clickHandler);
-    document.addEventListener('click', clickHandler);
-}
-
-function selectCSETF(code, name) {
-    csSelectedETFs.add(code);
-    document.getElementById('cs-etf-search').value = '';
-    document.getElementById('cs-etf-results').classList.remove('active');
-    updateCSETFDisplay();
-    updateCSETFInput();
-}
-
-function removeCSETF(code) {
-    csSelectedETFs.delete(code);
-    updateCSETFDisplay();
-    updateCSETFInput();
-}
-
-function updateCSETFDisplay() {
-    const container = document.getElementById('cs-etf-selected');
-    if (csSelectedETFs.size === 0) {
-        container.innerHTML = '';
-        return;
-    }
-    
-    container.innerHTML = Array.from(csSelectedETFs).map(code => {
-        const etf = allETFList.find(e => e.etf_code === code);
-        const name = etf ? etf.etf_name : code;
-        return `
-            <span class="etf-selected-tag">
-                ${code} ${name !== code ? '(' + name.slice(0, 10) + ')' : ''}
-                <span class="remove" onclick="removeCSETF('${code}')">×</span>
-            </span>
-        `;
-    }).join('');
-}
-
-function updateCSETFInput() {
-    document.getElementById('cs-etfs').value = Array.from(csSelectedETFs).join(',');
-}
-
-function renderTemplateParams() {
-    const name = document.getElementById('cs-template').value;
-    const tpl = templates.find(t => t.template_name === name);
-    const area = document.getElementById('cs-params-area');
-    if (!tpl) { area.innerHTML = ''; return; }
-
-    area.innerHTML = '<div class="form-row">' + Object.entries(tpl.default_params).map(([k, v]) => `
-        <div class="form-group">
-            <label>${k}</label>
-            <input type="number" step="any" class="tpl-param" data-key="${k}" value="${v}">
-        </div>
-    `).join('') + '</div>';
-}
-
-async function submitCreateStrategy() {
-    const params = {};
-    document.querySelectorAll('.tpl-param').forEach(el => {
-        params[el.dataset.key] = Number(el.value);
-    });
-
-    const body = {
-        name: document.getElementById('cs-name').value,
-        strategy_type: 'template',
-        template_name: document.getElementById('cs-template').value,
-        params,
-        etf_codes: document.getElementById('cs-etfs').value.split(',').map(s => s.trim()).filter(Boolean),
-        initial_capital: Number(document.getElementById('cs-capital').value),
-    };
-
-    try {
-        const res = await api('/api/strategy/create', { method: 'POST', body: JSON.stringify(body) });
-        toast(res.message, 'success');
-        closeModal('modal-create-strategy');
-        loadStrategies();
-    } catch (e) { toast(e.message, 'error'); }
-}
 
 // ETF搜索相关变量
 let allETFList = []; // 存储全市场ETF列表
-let selectedETFs = new Set(); // 已选择的ETF
 
 // 加载全市场ETF列表
 async function loadAllETFList() {
@@ -528,117 +586,78 @@ async function loadAllETFList() {
 
 function showAIStrategyModal() {
     openModal('modal-ai-strategy');
-    // 加载ETF列表（如果还没加载）
-    if (allETFList.length === 0) {
-        loadAllETFList();
+    // 清空表单
+    document.getElementById('ai-desc').value = '';
+    document.getElementById('ai-capital').value = '100000';
+    document.getElementById('ai-model').value = 'qwen3.6-plus';  // 使用阿里云DashScope默认模型
+    document.getElementById('ai-enable-rebalance').checked = true;
+    document.getElementById('ai-rebalance-freq').value = 'quarterly';
+    document.getElementById('ai-rebalance-threshold').value = '5';
+    
+    // 初始化再平衡选项状态
+    toggleAIStrategyRebalanceOptions();
+}
+
+function toggleAIStrategyRebalanceOptions() {
+    const enable = document.getElementById('ai-enable-rebalance').checked;
+    const optionsDiv = document.getElementById('ai-rebalance-options');
+    const hintText = document.getElementById('ai-rebalance-disabled-hint');
+    const statusText = document.getElementById('ai-rebalance-status-text');
+    
+    if (enable) {
+        // 启用状态
+        optionsDiv.style.display = 'flex';
+        optionsDiv.classList.remove('options-disabled');
+        optionsDiv.classList.add('options-enabled');
+        hintText.style.display = 'none';
+        statusText.innerHTML = '策略将定期调整持仓以保持目标配置比例';
+        statusText.style.color = 'var(--text-secondary)';
+    } else {
+        // 禁用状态
+        optionsDiv.style.display = 'none';
+        optionsDiv.classList.remove('options-enabled');
+        optionsDiv.classList.add('options-disabled');
+        hintText.style.display = 'block';
+        statusText.innerHTML = '策略将保持初始配置，不再自动调整';
+        statusText.style.color = 'var(--warning)';
     }
-    // 初始化搜索
-    initETFSearch();
-}
-
-function initETFSearch() {
-    selectedETFs.clear();
-    updateSelectedETFDisplay();
-    document.getElementById('ai-etfs').value = '';
-    
-    const searchInput = document.getElementById('ai-etf-search');
-    const resultsDiv = document.getElementById('ai-etf-results');
-    
-    searchInput.value = '';
-    
-    // 搜索输入事件
-    searchInput.addEventListener('input', function() {
-        const keyword = this.value.trim().toLowerCase();
-        if (!keyword) {
-            resultsDiv.classList.remove('active');
-            return;
-        }
-        
-        // 搜索匹配的ETF
-        const matches = allETFList.filter(etf => {
-            if (selectedETFs.has(etf.etf_code)) return false;
-            return etf.etf_code.toLowerCase().includes(keyword) || 
-                   etf.etf_name.toLowerCase().includes(keyword);
-        }).slice(0, 10); // 最多显示10条
-        
-        if (matches.length > 0) {
-            resultsDiv.innerHTML = matches.map(etf => `
-                <div class="etf-search-item" onclick="selectETF('${etf.etf_code}', '${etf.etf_name}')">
-                    <span class="code">${etf.etf_code}</span>
-                    <span class="name">${etf.etf_name}</span>
-                </div>
-            `).join('');
-            resultsDiv.classList.add('active');
-        } else {
-            resultsDiv.innerHTML = '<div class="etf-search-item"><span class="name">无匹配结果</span></div>';
-            resultsDiv.classList.add('active');
-        }
-    });
-    
-    // 点击外部关闭搜索结果
-    document.addEventListener('click', function(e) {
-        if (!e.target.closest('.etf-search-container')) {
-            resultsDiv.classList.remove('active');
-        }
-    });
-}
-
-function selectETF(code, name) {
-    selectedETFs.add(code);
-    document.getElementById('ai-etf-search').value = '';
-    document.getElementById('ai-etf-results').classList.remove('active');
-    updateSelectedETFDisplay();
-    updateETFInput();
-}
-
-function removeETF(code) {
-    selectedETFs.delete(code);
-    updateSelectedETFDisplay();
-    updateETFInput();
-}
-
-function updateSelectedETFDisplay() {
-    const container = document.getElementById('ai-etf-selected');
-    if (selectedETFs.size === 0) {
-        container.innerHTML = '';
-        return;
-    }
-    
-    container.innerHTML = Array.from(selectedETFs).map(code => {
-        const etf = allETFList.find(e => e.etf_code === code);
-        const name = etf ? etf.etf_name : code;
-        return `
-            <span class="etf-selected-tag">
-                ${code} ${name !== code ? '(' + name.slice(0, 10) + ')' : ''}
-                <span class="remove" onclick="removeETF('${code}')">×</span>
-            </span>
-        `;
-    }).join('');
-}
-
-function updateETFInput() {
-    document.getElementById('ai-etfs').value = Array.from(selectedETFs).join(',');
 }
 
 async function submitAIStrategy() {
+    const description = document.getElementById('ai-desc').value.trim();
+    const initialCapital = Number(document.getElementById('ai-capital').value);
+    const model = document.getElementById('ai-model').value;
+    const enableRebalance = document.getElementById('ai-enable-rebalance').checked;
+    
+    if (!description) {
+        toast('请输入策略描述', 'error');
+        return;
+    }
+    
+    if (description.length < 5) {
+        toast('策略描述至少需要5个字符', 'error');
+        return;
+    }
+
+    const body = {
+        description: description,
+        initial_capital: initialCapital,
+        model: model,
+        rebalance_freq: enableRebalance ? document.getElementById('ai-rebalance-freq').value : 'none',
+        rebalance_threshold: enableRebalance ? Number(document.getElementById('ai-rebalance-threshold').value) / 100 : 0.05,
+    };
+
     const btn = document.getElementById('ai-submit-btn');
     btn.disabled = true;
     btn.textContent = '生成中...';
 
-    const body = {
-        description: document.getElementById('ai-desc').value,
-        etf_codes: document.getElementById('ai-etfs').value.split(',').map(s => s.trim()).filter(Boolean),
-        initial_capital: Number(document.getElementById('ai-capital').value),
-        model: document.getElementById('ai-model').value,
-    };
-
     try {
         const res = await api('/api/strategy/create-ai', { method: 'POST', body: JSON.stringify(body) });
-        toast(res.message, 'success');
+        toast('AI策略生成成功', 'success');
         closeModal('modal-ai-strategy');
         loadStrategies();
     } catch (e) {
-        toast(e.message, 'error');
+        toast(e.message || '生成失败', 'error');
     } finally {
         btn.disabled = false;
         btn.textContent = '生成策略';
@@ -657,8 +676,8 @@ async function deleteStrategy(id) {
 // ==================================================================
 //  编辑策略
 // ==================================================================
-let editSelectedETFs = new Set();
 let currentEditStrategy = null;
+let editAllocations = []; // [{code: '510300', name: '沪深300ETF', ratio: 30}]
 
 async function editStrategy(id) {
     try {
@@ -666,28 +685,40 @@ async function editStrategy(id) {
         const s = res.data;
         currentEditStrategy = s;
         
+        // 初始化编辑配置数组
+        editAllocations = [];
+        if (s.allocation_config) {
+            Object.entries(s.allocation_config).forEach(([code, ratio]) => {
+                const etf = allQuotes.find(q => q.etf_code === code);
+                editAllocations.push({
+                    code: code,
+                    name: etf ? etf.etf_name : code,
+                    ratio: Math.round(ratio * 100)
+                });
+            });
+        }
+        
         // 填充表单
         document.getElementById('edit-strategy-id').value = s.id;
         document.getElementById('edit-name').value = s.name;
         document.getElementById('edit-desc').value = s.description || '';
         document.getElementById('edit-capital').value = s.initial_capital;
         
-        // 设置ETF选择
-        editSelectedETFs = new Set(s.etf_codes || []);
-        updateEditETFDisplay();
-        document.getElementById('edit-etfs').value = Array.from(editSelectedETFs).join(',');
+        // 再平衡设置
+        const enableRebalance = s.rebalance_freq && s.rebalance_freq !== 'none';
+        document.getElementById('edit-enable-rebalance').checked = enableRebalance;
+        toggleEditRebalanceOptions();
         
-        // AI策略显示代码编辑区
-        const codeGroup = document.getElementById('edit-code-group');
-        if (s.strategy_type === 'ai_generated' && s.code) {
-            codeGroup.style.display = 'block';
-            document.getElementById('edit-code').value = s.code;
-        } else {
-            codeGroup.style.display = 'none';
+        if (enableRebalance) {
+            document.getElementById('edit-rebalance-freq').value = s.rebalance_freq || 'quarterly';
+            document.getElementById('edit-rebalance-threshold').value = Math.round((s.rebalance_threshold || 0.05) * 100);
         }
         
         // 初始化搜索
         initEditETFSearch();
+        
+        // 渲染配置列表
+        updateEditAllocationDisplay();
         
         openModal('modal-edit-strategy');
     } catch (e) {
@@ -701,11 +732,9 @@ function initEditETFSearch() {
     
     searchInput.value = '';
     
-    // 移除旧的事件监听器
     const newInput = searchInput.cloneNode(true);
     searchInput.parentNode.replaceChild(newInput, searchInput);
     
-    // 搜索输入事件
     newInput.addEventListener('input', function() {
         const keyword = this.value.trim().toLowerCase();
         if (!keyword) {
@@ -713,16 +742,15 @@ function initEditETFSearch() {
             return;
         }
         
-        // 搜索匹配的ETF
-        const matches = allETFList.filter(etf => {
-            if (editSelectedETFs.has(etf.etf_code)) return false;
+        const matches = allQuotes.filter(etf => {
+            if (editAllocations.find(a => a.code === etf.etf_code)) return false;
             return etf.etf_code.toLowerCase().includes(keyword) || 
                    etf.etf_name.toLowerCase().includes(keyword);
         }).slice(0, 10);
         
         if (matches.length > 0) {
             resultsDiv.innerHTML = matches.map(etf => `
-                <div class="etf-search-item" onclick="selectEditETF('${etf.etf_code}', '${etf.etf_name}')">
+                <div class="etf-search-item" onclick="addEditAllocation('${etf.etf_code}', '${etf.etf_name}')">
                     <span class="code">${etf.etf_code}</span>
                     <span class="name">${etf.etf_name}</span>
                 </div>
@@ -734,75 +762,148 @@ function initEditETFSearch() {
         }
     });
     
-    // 点击外部关闭搜索结果
-    const clickHandler = function(e) {
+    document.addEventListener('click', function(e) {
         if (!e.target.closest('#modal-edit-strategy .etf-search-container')) {
             resultsDiv.classList.remove('active');
         }
-    };
-    document.removeEventListener('click', clickHandler);
-    document.addEventListener('click', clickHandler);
+    });
 }
 
-function selectEditETF(code, name) {
-    editSelectedETFs.add(code);
+function addEditAllocation(code, name) {
+    editAllocations.push({
+        code: code,
+        name: name.slice(0, 15),
+        ratio: 0
+    });
+    
     document.getElementById('edit-etf-search').value = '';
     document.getElementById('edit-etf-results').classList.remove('active');
-    updateEditETFDisplay();
-    updateEditETFInput();
+    
+    updateEditAllocationDisplay();
 }
 
-function removeEditETF(code) {
-    editSelectedETFs.delete(code);
-    updateEditETFDisplay();
-    updateEditETFInput();
+function removeEditAllocation(code) {
+    editAllocations = editAllocations.filter(a => a.code !== code);
+    updateEditAllocationDisplay();
 }
 
-function updateEditETFDisplay() {
-    const container = document.getElementById('edit-etf-selected');
-    if (editSelectedETFs.size === 0) {
-        container.innerHTML = '';
+function updateEditAllocationRatio(code, ratio) {
+    const allocation = editAllocations.find(a => a.code === code);
+    if (allocation) {
+        allocation.ratio = parseFloat(ratio) || 0;
+    }
+    updateEditAllocationDisplay();
+}
+
+function updateEditAllocationDisplay() {
+    const container = document.getElementById('edit-allocation-list');
+    
+    if (editAllocations.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-secondary);font-size:14px;padding:8px;">请搜索并添加ETF，然后设置占比</div>';
+        document.getElementById('edit-allocation-total').textContent = '当前占比总和: 0%';
+        document.getElementById('edit-allocation-warning').textContent = '';
         return;
     }
     
-    container.innerHTML = Array.from(editSelectedETFs).map(code => {
-        const etf = allETFList.find(e => e.etf_code === code);
-        const name = etf ? etf.etf_name : code;
-        return `
-            <span class="etf-selected-tag">
-                ${code} ${name !== code ? '(' + name.slice(0, 10) + ')' : ''}
-                <span class="remove" onclick="removeEditETF('${code}')">×</span>
-            </span>
-        `;
-    }).join('');
+    container.innerHTML = editAllocations.map(a => `
+        <div style="display:flex;align-items:center;margin-bottom:8px;padding:8px;background:var(--bg-secondary);border-radius:4px;">
+            <span style="flex:1;font-weight:600;">${a.code}</span>
+            <span style="flex:2;color:var(--text-secondary);font-size:13px;">${a.name}</span>
+            <input type="number" value="${a.ratio}" min="0" max="100" step="1"
+                   onchange="updateEditAllocationRatio('${a.code}', this.value)"
+                   style="width:70px;margin-right:8px;padding:4px;border:1px solid var(--border);border-radius:4px;text-align:right;">
+            <span style="width:20px;color:var(--text-secondary);">%</span>
+            <button class="btn btn-outline btn-sm" onclick="removeEditAllocation('${a.code}')" style="margin-left:8px;padding:2px 8px;">删除</button>
+        </div>
+    `).join('');
+    
+    const totalRatio = editAllocations.reduce((sum, a) => sum + a.ratio, 0);
+    document.getElementById('edit-allocation-total').textContent = `当前占比总和: ${totalRatio.toFixed(1)}%`;
+    
+    const warning = document.getElementById('edit-allocation-warning');
+    if (totalRatio > 100) {
+        warning.textContent = '⚠️ 占比总和超过100%！';
+        warning.style.color = 'var(--danger)';
+    } else if (totalRatio < 100) {
+        warning.textContent = `还可配置 ${(100 - totalRatio).toFixed(1)}%`;
+        warning.style.color = 'var(--text-secondary)';
+    } else {
+        warning.textContent = '✅ 配置完整';
+        warning.style.color = 'var(--success)';
+    }
 }
 
-function updateEditETFInput() {
-    document.getElementById('edit-etfs').value = Array.from(editSelectedETFs).join(',');
+function toggleEditRebalanceOptions() {
+    const enable = document.getElementById('edit-enable-rebalance').checked;
+    const optionsDiv = document.getElementById('edit-rebalance-options');
+    const hintText = document.getElementById('edit-rebalance-disabled-hint');
+    const statusText = document.getElementById('edit-rebalance-status-text');
+    
+    if (enable) {
+        // 启用状态
+        optionsDiv.style.display = 'flex';
+        optionsDiv.classList.remove('options-disabled');
+        optionsDiv.classList.add('options-enabled');
+        hintText.style.display = 'none';
+        statusText.innerHTML = '策略将定期调整持仓以保持目标配置比例';
+        statusText.style.color = 'var(--text-secondary)';
+    } else {
+        // 禁用状态
+        optionsDiv.style.display = 'none';
+        optionsDiv.classList.remove('options-enabled');
+        optionsDiv.classList.add('options-disabled');
+        hintText.style.display = 'block';
+        statusText.innerHTML = '策略将保持初始配置，不再自动调整';
+        statusText.style.color = 'var(--warning)';
+    }
 }
 
 async function submitEditStrategy() {
     const id = document.getElementById('edit-strategy-id').value;
+    const name = document.getElementById('edit-name').value.trim();
+    const description = document.getElementById('edit-desc').value.trim();
+    const initialCapital = Number(document.getElementById('edit-capital').value);
+    const enableRebalance = document.getElementById('edit-enable-rebalance').checked;
+    const totalRatio = editAllocations.reduce((sum, a) => sum + a.ratio, 0);
+    
+    if (!name) {
+        toast('请输入策略名称', 'error');
+        return;
+    }
+    
+    if (editAllocations.length === 0) {
+        toast('请至少添加一只ETF', 'error');
+        return;
+    }
+    
+    if (totalRatio > 100) {
+        toast('占比总和不能超过100%', 'error');
+        return;
+    }
+    
+    if (totalRatio < 100) {
+        toast(`占比总和为${totalRatio.toFixed(1)}%，未达到100%`, 'warning');
+        return;
+    }
+    
+    const allocationConfig = {};
+    editAllocations.forEach(a => {
+        allocationConfig[a.code] = a.ratio / 100;
+    });
+    
+    const body = {
+        name: name,
+        description: description,
+        initial_capital: initialCapital,
+        allocation_config: allocationConfig,
+        rebalance_freq: enableRebalance ? document.getElementById('edit-rebalance-freq').value : 'none',
+        rebalance_threshold: enableRebalance ? Number(document.getElementById('edit-rebalance-threshold').value) / 100 : 0.05,
+    };
+
     const btn = document.getElementById('edit-submit-btn');
     btn.disabled = true;
     btn.textContent = '保存中...';
-    
-    const body = {
-        name: document.getElementById('edit-name').value,
-        description: document.getElementById('edit-desc').value,
-        etf_codes: document.getElementById('edit-etfs').value.split(',').map(s => s.trim()).filter(Boolean),
-        initial_capital: Number(document.getElementById('edit-capital').value),
-    };
-    
-    // AI策略可以编辑代码
-    const codeGroup = document.getElementById('edit-code-group');
-    if (codeGroup.style.display !== 'none') {
-        const code = document.getElementById('edit-code').value.trim();
-        if (code) {
-            body.code = code;
-        }
-    }
-    
+
     try {
         const res = await api(`/api/strategy/${id}`, { 
             method: 'PUT', 
@@ -815,7 +916,7 @@ async function submitEditStrategy() {
         toast(e.message || '更新失败', 'error');
     } finally {
         btn.disabled = false;
-        btn.textContent = '保存';
+        btn.textContent = '保存修改';
     }
 }
 
@@ -1141,7 +1242,210 @@ async function catchUpStrategy() {
 }
 
 // ---- 初始化 ----
+
+
+// ==================================================================
+//  更新最新净值数据（从证监会）
+// ==================================================================
+
+async function updateLatestNetValues() {
+    if (!confirm('确定要从证监会拉取所有ETF的最新净值数据吗？\n预计耗时约20秒（20只ETF × 1秒）')) {
+        return;
+    }
+    
+    toast('开始拉取最新净值数据...', 'info');
+    
+    try {
+        const res = await api('/api/net-value/batch-update?limit=20', { method: 'POST' });
+        
+        if (res.code === 200) {
+            const data = res.data;
+            toast(`净值数据更新完成！成功: ${data.success_count}, 失败: ${data.fail_count}`, 'success');
+            
+            // 刷新行情看板
+            await loadMarket();
+        } else {
+            toast('更新失败: ' + res.message, 'error');
+        }
+    } catch (e) {
+        console.error('更新净值失败:', e);
+        toast('更新失败: ' + e.message, 'error');
+    }
+}
+
+// ==================================================================
+//  批量更新净值数据（指定区间 - 实际是从证监会拉取所有历史数据）
+// ==================================================================
+
+async function submitUpdateRange() {
+    const startDate = document.getElementById('range-start-date').value;
+    const endDate = document.getElementById('range-end-date').value;
+    
+    if (!startDate || !endDate) {
+        toast('请选择日期范围', 'warning');
+        return;
+    }
+    
+    if (!confirm(`确定要从证监会拉取所有ETF在 ${startDate} 至 ${endDate} 期间的净值数据吗？\n注意：证监会接口会返回所有历史数据，时间范围仅作参考。\n预计耗时约60秒（20只ETF × 3秒）`)) {
+        return;
+    }
+    
+    const btn = document.getElementById('range-submit-btn');
+    btn.disabled = true;
+    btn.textContent = '正在拉取...';
+    
+    toast('开始批量拉取净值数据...', 'info');
+    
+    try {
+        const res = await api('/api/net-value/batch-update?limit=20', { method: 'POST' });
+        
+        if (res.code === 200) {
+            const data = res.data;
+            closeModal('modal-update-range');
+            toast(`批量拉取完成！成功: ${data.success_count}, 失败: ${data.fail_count}`, 'success');
+            
+            // 刷新行情看板
+            await loadMarket();
+        } else {
+            toast('拉取失败: ' + res.message, 'error');
+        }
+    } catch (e) {
+        console.error('批量拉取失败:', e);
+        toast('拉取失败: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '开始拉取';
+    }
+}
+
 (async function init() {
-    await loadTemplates();
     loadMarket();
 })();
+
+
+// ==================================================================
+//  ETF历史净值查看
+// ==================================================================
+
+let historyChart = null;
+
+async function showETFHistory(etfCode, etfName) {
+    document.getElementById('history-etf-title').textContent = `${etfCode} ${etfName} - 净值走势`;
+    openModal('modal-etf-history');
+    
+    document.getElementById('history-table').innerHTML = '<tr><td colspan="3" style="text-align:center;color:var(--text-secondary);">正在加载净值数据...</td></tr>';
+    document.getElementById('history-empty').style.display = 'none';
+    document.getElementById('history-count').textContent = '';
+    
+    try {
+        const res = await api(`/api/net-value/history/${etfCode}`);
+        const netValues = res.data?.net_values || [];
+        
+        if (!netValues.length) {
+            document.getElementById('history-table').innerHTML = '';
+            document.getElementById('history-empty').style.display = 'block';
+            document.getElementById('history-count').textContent = '暂无净值数据';
+            return;
+        }
+        
+        document.getElementById('history-count').textContent = `共 ${netValues.length} 条净值记录`;
+        
+        // 按日期倒序排列（最近的在最前面）
+        const sortedNetValues = netValues.sort((a, b) => new Date(b.trade_date) - new Date(a.trade_date));
+        
+        const tbody = document.getElementById('history-table');
+        tbody.innerHTML = sortedNetValues.map(q => `
+            <tr>
+                <td>${q.trade_date}</td>
+                <td class="text-right">${fmtNum(q.net_value, 4)}</td>
+                <td class="text-right">${fmtPct(q.net_value_change_pct)}</td>
+            </tr>
+        `).join('');
+        
+        renderHistoryChart(netValues, etfCode, etfName);
+        
+    } catch (e) {
+        console.error('加载净值数据失败:', e);
+        document.getElementById('history-table').innerHTML = `<tr><td colspan="3" style="text-align:center;color:var(--danger);">加载失败: ${e.message}</td></tr>`;
+        toast('加载净值数据失败: ' + e.message, 'error');
+    }
+}
+
+function renderHistoryChart(netValues, etfCode, etfName) {
+    const chartDom = document.getElementById('history-chart');
+    
+    if (historyChart) {
+        historyChart.dispose();
+    }
+    
+    historyChart = echarts.init(chartDom);
+    
+    const sortedData = netValues.sort((a, b) => new Date(a.trade_date) - new Date(b.trade_date));
+    
+    const dates = sortedData.map(q => q.trade_date);
+    const netValueData = sortedData.map(q => q.net_value);
+    
+    const option = {
+        title: {
+            text: `${etfCode} 净值走势`,
+            left: 'center',
+            textStyle: { fontSize: 16, color: '#333' }
+        },
+        tooltip: {
+            trigger: 'axis',
+            axisPointer: { type: 'cross' },
+            formatter: function(params) {
+                const date = params[0].axisValue;
+                const netValue = params[0].data;
+                const changePct = sortedData.find(q => q.trade_date === date)?.net_value_change_pct || 0;
+                return `${date}<br/>净值: ${fmtNum(netValue, 4)}<br/>增长率: ${fmtNum(changePct)}%`;
+            }
+        },
+        grid: { left: '3%', right: '4%', bottom: '3%', top: 60, containLabel: true },
+        xAxis: {
+            type: 'category',
+            data: dates,
+            boundaryGap: false,
+            axisLabel: { rotate: 45, fontSize: 11 }
+        },
+        yAxis: {
+            type: 'value',
+            name: '净值',
+            position: 'left',
+            axisLabel: {
+                formatter: function(value) {
+                    return fmtNum(value, 2);
+                }
+            }
+        },
+        series: [
+            {
+                name: '净值',
+                type: 'line',
+                yAxisIndex: 0,
+                data: netValueData,
+                smooth: true,
+                lineStyle: { width: 2, color: '#5470c6' },
+                areaStyle: {
+                    color: {
+                        type: 'linear',
+                        x: 0, y: 0, x2: 0, y2: 1,
+                        colorStops: [
+                            { offset: 0, color: 'rgba(84, 112, 198, 0.3)' },
+                            { offset: 1, color: 'rgba(84, 112, 198, 0.05)' }
+                        ]
+                    }
+                },
+                itemStyle: { color: '#5470c6' }
+            }
+        ]
+    };
+    
+    historyChart.setOption(option);
+    
+    window.addEventListener('resize', function() {
+        if (historyChart) {
+            historyChart.resize();
+        }
+    });
+}

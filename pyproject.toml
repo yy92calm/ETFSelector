@@ -1,7 +1,7 @@
 [project]
 name = "etf-selector"
-version = "0.2.0"
-description = "ETF量化选择系统 - 全市场行情、策略回测与模拟实盘"
+version = "0.3.0"
+description = "ETF配置组合系统 - 智能配置、自动再平衡、回测验证"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -12,6 +12,7 @@ dependencies = [
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "akshare>=1.14.0",
+    "baostock>=0.8.9",
     "pandas>=2.0.0",
     "numpy>=1.24.0",
     "apscheduler>=3.10.0",

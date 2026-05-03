@@ -1,206 +1,448 @@
 """
-AI策略生成器
-通过LLM将自然语言描述转换为可执行的策略代码
+ETF配置组合AI生成器 - Agent Loop架构
+通过多步推理从数据库ETF列表中逐步筛选并生成配置比例
 """
 
 import logging
-import re
-from typing import Optional, List
+import json
+from typing import Optional, Dict, List
 from openai import OpenAI
 from app.config import get_settings
-from app.strategies.base import BaseStrategy, Signal, StrategyContext
+from app.db.database import SessionLocal
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-SYSTEM_PROMPT = """你是一个ETF量化策略生成器。用户会用自然语言描述一个交易策略，你需要将其转换为Python代码。
 
-## 要求
-1. 生成一个名为 `CustomStrategy` 的类，继承 `BaseStrategy`
-2. 必须实现 `generate_signals(self, ctx: StrategyContext) -> List[Signal]` 方法
-3. ctx.history 是一个 pandas DataFrame，包含列: date, open, close, high, low, volume, amount, change_pct
-4. 返回 Signal 列表，Signal 包含: trade_date, etf_code, direction("buy"/"sell"), strength(0~1), reason
-5. 只使用 pandas 和 numpy 库进行计算
-6. 代码必须安全，不能有文件操作、网络请求等危险操作
+class ETFAllocationAgent:
+    """ETF配置组合生成Agent"""
+    
+    def __init__(self):
+        self.client = None
+        self.etf_pool = []  # ETF候选池
+        self.user_preference = {}  # 用户偏好分析结果
+        
+        if settings.llm_api_key and settings.llm_api_key.strip():
+            self.client = OpenAI(
+                api_key=settings.llm_api_key,
+                base_url=settings.llm_api_base_url,
+            )
+    
+    def generate(self, description: str, model: str = None) -> Optional[Dict[str, float]]:
+        """
+        Agent Loop主流程：逐步筛选ETF并生成配置
+        
+        Args:
+            description: 用户描述
+            model: 使用的模型
+        
+        Returns:
+            配置比例字典 {"etf_code": ratio}
+        """
+        model_name = model or settings.llm_model
+        
+        logger.info(f"启动Agent Loop，模型: {model_name}")
+        logger.info(f"用户描述: {description}")
+        
+        try:
+            # Step 1: 分析用户投资偏好
+            logger.info("Step 1: 分析用户投资偏好...")
+            self.user_preference = self._analyze_user_preference(description, model_name)
+            
+            if not self.user_preference:
+                logger.warning("用户偏好分析失败，使用fallback")
+                return self._fallback_config(description)
+            
+            logger.info(f"用户偏好分析结果: {self.user_preference}")
+            
+            # Step 2: 从数据库筛选ETF候选池
+            logger.info("Step 2: 筛选ETF候选池...")
+            self.etf_pool = self._filter_etf_candidates(self.user_preference)
+            
+            if not self.etf_pool:
+                logger.warning("未筛选到合适的ETF，使用fallback")
+                return self._fallback_config(description)
+            
+            logger.info(f"筛选到 {len(self.etf_pool)} 只ETF候选")
+            
+            # Step 3: 根据资产配置理论生成比例
+            logger.info("Step 3: 生成配置比例...")
+            allocation = self._generate_allocation_ratio(
+                self.etf_pool, 
+                self.user_preference, 
+                model_name
+            )
+            
+            # Step 4: 验证配置合理性
+            if allocation and self._validate_final_allocation(allocation):
+                logger.info(f"✅ 最终配置: {allocation}")
+                return allocation
+            else:
+                logger.warning("配置验证失败，使用fallback")
+                return self._fallback_config(description)
+        
+        except Exception as e:
+            logger.error(f"Agent Loop执行失败: {e}", exc_info=True)
+            return self._fallback_config(description)
+    
+    def _analyze_user_preference(self, description: str, model: str) -> Optional[Dict]:
+        """
+        Step 1: 分析用户投资偏好
+        
+        Returns:
+            {
+                "risk_level": "conservative/balanced/aggressive",
+                "asset_types": ["债券", "股票", "黄金", "科创"],
+                "investment_goal": "稳健增长/追求收益/分散风险",
+                "time_horizon": "长期/中期/短期"
+            }
+        """
+        if not self.client:
+            return self._extract_preference_from_keywords(description)
+        
+        prompt = f"""分析用户的投资偏好描述，提取以下信息：
 
-## 重要注意事项
-1. 在访问DataFrame列时，确保使用正确的pandas Series操作
-2. 例如：使用 `df["close"].iloc[-1]` 获取最新价格，而不是 `df["close"][-1]`
-3. 使用 `.rolling().mean()` 计算均线，使用 `.diff()` 计算差分
-4. 确保在计算前检查数据长度足够：`if len(df) < required_period: return []`
-5. 使用 `.dropna()` 清理NaN值后再进行计算
+用户描述："{description}"
 
-## 可用的导入
-```python
-from typing import List
-import pandas as pd
-import numpy as np
-from app.strategies.base import BaseStrategy, Signal, StrategyContext
-```
+请返回JSON格式（不要包含其他文字）：
+{
+    "risk_level": "conservative/balanced/aggressive",
+    "asset_types": ["债券", "股票", "黄金", "科创板"],
+    "investment_goal": "简要描述投资目标",
+    "time_horizon": "长期/中期/短期"
+}
 
-## 输出格式
-只输出Python代码，不要包含其他说明文字。代码用 ```python 和 ``` 包裹。
+风险等级判断标准：
+- conservative（保守）：提到"保守"、"稳健"、"债券为主"、"安全"、"低风险"
+- balanced（均衡）：提到"均衡"、"平衡"、"股债平衡"、"适中风险"
+- aggressive（激进）：提到"激进"、"高收益"、"成长"、"高风险"、"追求收益"
 """
 
+        try:
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.1,
+                max_tokens=200,
+            )
+            
+            content = response.choices[0].message.content
+            preference = json.loads(content.strip())
+            
+            logger.info(f"LLM分析偏好: {preference}")
+            return preference
+        
+        except Exception as e:
+            logger.error(f"偏好分析失败: {e}")
+            return self._extract_preference_from_keywords(description)
+    
+    def _extract_preference_from_keywords(self, description: str) -> Dict:
+        """从关键词提取用户偏好（fallback）"""
+        risk_level = "balanced"
+        asset_types = []
+        
+        # 风险等级判断
+        if any(kw in description for kw in ["保守", "稳健", "债券", "安全", "低风险"]):
+            risk_level = "conservative"
+            asset_types = ["债券", "大盘蓝筹"]
+        elif any(kw in description for kw in ["激进", "高收益", "成长", "高风险", "创业板", "科创"]):
+            risk_level = "aggressive"
+            asset_types = ["科创板", "创业板", "成长股"]
+        else:
+            risk_level = "balanced"
+            asset_types = ["宽基指数", "债券"]
+        
+        # 特定资产类型
+        if "黄金" in description or "避险" in description:
+            asset_types.append("黄金")
+        if "医药" in description or "医疗" in description:
+            asset_types.append("医药")
+        if "科技" in description or "芯片" in description:
+            asset_types.append("科技")
+        if "新能源" in description:
+            asset_types.append("新能源")
+        
+        return {
+            "risk_level": risk_level,
+            "asset_types": asset_types,
+            "investment_goal": description,
+            "time_horizon": "长期"
+        }
+    
+    def _filter_etf_candidates(self, preference: Dict) -> List[Dict]:
+        """
+        Step 2: 从数据库筛选ETF候选池
+        
+        Returns:
+            [{"code": "510300", "name": "沪深300ETF", "category": "宽基指数", "score": 0.8}]
+        """
+        db = SessionLocal()
+        try:
+            from app.models.etf import ETFBasic
+            
+            # 获取所有ETF
+            all_etfs = db.query(ETFBasic).all()
+            
+            candidates = []
+            
+            for etf in all_etfs:
+                category = self._classify_etf(etf.etf_code, etf.etf_name)
+                score = self._calculate_match_score(category, preference)
+                
+                # 只保留匹配度较高的ETF
+                if score > 0.5:
+                    candidates.append({
+                        "code": etf.etf_code,
+                        "name": etf.etf_name,
+                        "category": category,
+                        "score": score
+                    })
+            
+            # 按匹配度排序，保留前20只
+            candidates.sort(key=lambda x: x['score'], reverse=True)
+            candidates = candidates[:20]
+            
+            logger.info(f"筛选结果: 前3只 {[(c['code'], c['category'], c['score']) for c in candidates[:3]]}")
+            
+            return candidates
+        
+        finally:
+            db.close()
+    
+    def _classify_etf(self, code: str, name: str) -> str:
+        """ETF分类"""
+        if "债" in name or "货币" in name or code.startswith("511"):
+            return "债券"
+        elif "黄金" in name or "金" in name or code.startswith("518"):
+            return "黄金"
+        elif "科创" in name or code.startswith("588") or code.startswith("589"):
+            return "科创板"
+        elif code.startswith("159"):
+            return "创业板"
+        elif "医药" in name or "医疗" in name:
+            return "医药"
+        elif "科技" in name or "芯片" in name or "半导体" in name:
+            return "科技"
+        elif "新能源" in name or "光伏" in name or "锂电" in name:
+            return "新能源"
+        elif "300" in name or "沪深" in name:
+            return "宽基指数"
+        elif "500" in name or "中证" in name:
+            return "中盘指数"
+        elif "50" in name or "上证" in name:
+            return "大盘蓝筹"
+        elif "纳斯达克" in name or "标普" in name or code.startswith("513"):
+            return "海外指数"
+        else:
+            return "其他"
+    
+    def _calculate_match_score(self, category: str, preference: Dict) -> float:
+        """计算ETF与用户偏好的匹配度"""
+        risk_level = preference.get("risk_level", "balanced")
+        asset_types = preference.get("asset_types", [])
+        
+        score = 0.0
+        
+        # 资产类型匹配
+        if category in asset_types:
+            score += 0.8
+        
+        # 风险等级匹配
+        if risk_level == "conservative":
+            if category in ["债券", "黄金", "大盘蓝筹"]:
+                score += 0.7
+            elif category in ["宽基指数"]:
+                score += 0.5
+            elif category in ["科创板", "创业板"]:
+                score -= 0.3
+        
+        elif risk_level == "balanced":
+            if category in ["宽基指数", "债券", "大盘蓝筹"]:
+                score += 0.6
+            elif category in ["中盘指数", "黄金"]:
+                score += 0.5
+            elif category in ["科创板", "创业板"]:
+                score += 0.3
+        
+        elif risk_level == "aggressive":
+            if category in ["科创板", "创业板", "科技", "新能源"]:
+                score += 0.8
+            elif category in ["中盘指数", "海外指数"]:
+                score += 0.6
+            elif category in ["债券"]:
+                score += 0.2
+        
+        return max(score, 0.0)
+    
+    def _generate_allocation_ratio(self, etf_pool: List[Dict], preference: Dict, model: str) -> Optional[Dict[str, float]]:
+        """
+        Step 3: 根据筛选出的ETF生成配置比例
+        
+        Args:
+            etf_pool: ETF候选池
+            preference: 用户偏好
+            model: 模型名称
+        
+        Returns:
+            {"510300": 0.5, "511010": 0.4}
+        """
+        if not self.client:
+            return self._rule_based_allocation(etf_pool, preference)
+        
+        # 构建ETF候选列表文本
+        etf_text = "\n".join([
+            f"{etf['code']}: {etf['name']} ({etf['category']}, 匹配度{etf['score']:.1f})"
+            for etf in etf_pool
+        ])
+        
+        risk_level = preference.get("risk_level", "balanced")
+        investment_goal = preference.get("investment_goal", "")
+        
+        prompt = f"""根据以下ETF候选池和用户风险偏好，生成合理的资产配置比例。
 
-def generate_strategy_code(description: str, model: str = None) -> Optional[str]:
+## ETF候选池（已筛选，匹配用户需求）
+{etf_text}
+
+## 用户风险偏好
+- 风险等级: {risk_level}
+- 投资目标: {investment_goal}
+
+## 配置原则
+1. 比例总和必须等于1.0
+2. 根据风险等级调整：
+   - conservative: 债券类ETF 60-80%，宽基指数20-30%，黄金5-10%
+   - balanced: 股债平衡，宽基指数50-60%，债券30-40%
+   - aggressive: 成长类ETF 60-80%，债券20-30%
+3. 建议配置3-5只ETF，避免过度集中
+4. 只使用候选池中的ETF代码
+
+请返回JSON格式（不要包含其他文字）：
+{"ETF代码": 比例, "ETF代码": 比例}
+"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=300,
+            )
+            
+            content = response.choices[0].message.content
+            allocation = json.loads(content.strip())
+            
+            logger.info(f"LLM生成配置: {allocation}")
+            return allocation
+        
+        except Exception as e:
+            logger.error(f"LLM生成失败: {e}")
+            return self._rule_based_allocation(etf_pool, preference)
+    
+    def _rule_based_allocation(self, etf_pool: List[Dict], preference: Dict) -> Dict[str, float]:
+        """基于规则的配置生成（fallback）"""
+        risk_level = preference.get("risk_level", "balanced")
+        
+        # 按分类分组
+        bond_etfs = [e for e in etf_pool if e['category'] == "债券"]
+        growth_etfs = [e for e in etf_pool if e['category'] in ["科创板", "创业板", "科技"]]
+        broad_etfs = [e for e in etf_pool if e['category'] in ["宽基指数", "大盘蓝筹"]]
+        gold_etfs = [e for e in etf_pool if e['category'] == "黄金"]
+        
+        allocation = {}
+        
+        if risk_level == "conservative":
+            # 债券70%，宽基20%，黄金10%
+            if bond_etfs:
+                allocation[bond_etfs[0]['code']] = 0.7
+            if broad_etfs:
+                allocation[broad_etfs[0]['code']] = 0.2
+            if gold_etfs:
+                allocation[gold_etfs[0]['code']] = 0.1
+        
+        elif risk_level == "aggressive":
+            # 成长股60%，宽基30%，债券10%
+            if growth_etfs:
+                allocation[growth_etfs[0]['code']] = 0.4
+                if growth_etfs[1:]:
+                    allocation[growth_etfs[1]['code']] = 0.2
+            if broad_etfs:
+                allocation[broad_etfs[0]['code']] = 0.3
+            if bond_etfs:
+                allocation[bond_etfs[0]['code']] = 0.1
+        
+        else:  # balanced
+            # 宽基50%，债券40%，黄金10%
+            if broad_etfs:
+                allocation[broad_etfs[0]['code']] = 0.5
+            if bond_etfs:
+                allocation[bond_etfs[0]['code']] = 0.4
+            if gold_etfs:
+                allocation[gold_etfs[0]['code']] = 0.1
+        
+        # 如果allocation为空，使用前几只ETF
+        if not allocation and etf_pool:
+            allocation = {etf_pool[0]['code']: 0.6, etf_pool[1]['code']: 0.4}
+        
+        logger.info(f"规则配置: {allocation}")
+        return allocation
+    
+    def _validate_final_allocation(self, allocation: Dict[str, float]) -> bool:
+        """Step 4: 验证最终配置"""
+        # 检查总和
+        total = sum(allocation.values())
+        if abs(total - 1.0) > 0.01:
+            logger.warning(f"配置总和 {total:.2f} 不等于1.0")
+            return False
+        
+        # 检查比例范围
+        for code, ratio in allocation.items():
+            if ratio < 0.05 or ratio > 0.8:
+                logger.warning(f"比例不合理 {code}: {ratio:.2f}（建议5%-80%）")
+                # 不返回False，只是警告
+        
+        # 检查ETF数量
+        if len(allocation) < 2:
+            logger.warning("配置ETF数量过少（建议至少2只）")
+            return False
+        
+        return True
+    
+    def _fallback_config(self, description: str) -> Dict[str, float]:
+        """最终fallback：从数据库获取ETF并生成配置"""
+        db = SessionLocal()
+        try:
+            from app.models.etf import ETFBasic
+            
+            etfs = db.query(ETFBasic).limit(5).all()
+            
+            if not etfs:
+                return {"510300": 0.5, "511010": 0.4, "588060": 0.1}
+            
+            # 简单规则配置
+            allocation = {
+                etfs[0].etf_code: 0.5,
+                etfs[1].etf_code: 0.3 if len(etfs) > 1 else 0.5,
+            }
+            if len(etfs) > 2:
+                allocation[etfs[2].etf_code] = 0.2
+            
+            logger.info(f"Fallback配置: {allocation}")
+            return allocation
+        
+        finally:
+            db.close()
+
+
+def generate_allocation_config(description: str, model: str = None) -> Optional[Dict[str, float]]:
     """
-    调用LLM生成策略代码
-    返回可执行的Python代码字符串
+    入口函数：使用Agent Loop生成配置
     
     Args:
-        description: 策略描述
-        model: 使用的模型名称，如果为None则使用配置中的默认模型
-    """
-    if not settings.llm_api_key or settings.llm_api_key == "your-api-key-here":
-        logger.warning("未配置LLM API Key，使用默认策略模板")
-        return _fallback_code(description)
-
-    # 使用传入的模型或默认模型
-    model_name = model or settings.llm_model
+        description: 配置偏好描述
+        model: 使用的模型名称
     
-    try:
-        client = OpenAI(
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_api_base_url,
-        )
-
-        response = client.chat.completions.create(
-            model=model_name,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": f"请根据以下描述生成交易策略:\n\n{description}"},
-            ],
-            temperature=0.3,
-            max_tokens=2000,
-        )
-
-        content = response.choices[0].message.content
-        code = _extract_code(content)
-
-        if code and _validate_code(code):
-            return code
-        else:
-            logger.error("生成的策略代码验证失败")
-            return None
-
-    except Exception as e:
-        logger.error(f"调用LLM生成策略失败: {e}")
-        return None
-
-
-def _extract_code(text: str) -> Optional[str]:
-    """从LLM回复中提取Python代码"""
-    pattern = r"```python\s*\n(.*?)```"
-    match = re.search(pattern, text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    # 尝试直接提取
-    if "class CustomStrategy" in text:
-        return text.strip()
-    return None
-
-
-def _validate_code(code: str) -> bool:
-    """基础安全检查"""
-    dangerous = [
-        "import os", "import sys", "import subprocess",
-        "open(", "exec(", "eval(",
-        "__import__", "os.system",
-        "requests.", "urllib.",
-    ]
-    for d in dangerous:
-        if d in code:
-            logger.warning(f"策略代码包含危险操作: {d}")
-            return False
-
-    # 确保有必要的类定义
-    if "class CustomStrategy" not in code:
-        return False
-    if "generate_signals" not in code:
-        return False
-
-    return True
-
-
-def compile_strategy(code: str) -> Optional[BaseStrategy]:
-    """将代码字符串编译为策略实例"""
-    try:
-        import pandas as pd
-        import numpy as np
-        from app.strategies.base import BaseStrategy, Signal, StrategyContext
-
-        namespace = {
-            "pd": pd,
-            "np": np,
-            "BaseStrategy": BaseStrategy,
-            "Signal": Signal,
-            "StrategyContext": StrategyContext,
-            "List": List,
-        }
-
-        exec(code, namespace)
-
-        strategy_cls = namespace.get("CustomStrategy")
-        if strategy_cls and issubclass(strategy_cls, BaseStrategy):
-            return strategy_cls()
-        return None
-
-    except Exception as e:
-        logger.error(f"编译策略代码失败: {e}")
-        return None
-
-
-def _fallback_code(description: str) -> str:
-    """当LLM不可用时的默认回退代码（简单均线策略）"""
-    return '''
-from typing import List
-import pandas as pd
-import numpy as np
-from app.strategies.base import BaseStrategy, Signal, StrategyContext
-
-
-class CustomStrategy(BaseStrategy):
-    """AI生成策略（回退版本）"""
-
-    name = "ai_custom"
-    description = """ + repr(description) + """
-    default_params = {"short_window": 5, "long_window": 20}
-
-    def generate_signals(self, ctx: StrategyContext) -> List[Signal]:
-        df = ctx.history.copy()
-        if len(df) < self.params.get("long_window", 20) + 1:
-            return []
-
-        short_w = self.params.get("short_window", 5)
-        long_w = self.params.get("long_window", 20)
-
-        df["ma_short"] = df["close"].rolling(window=short_w).mean()
-        df["ma_long"] = df["close"].rolling(window=long_w).mean()
-        df = df.dropna()
-
-        if len(df) < 2:
-            return []
-
-        prev = df.iloc[-2]
-        curr = df.iloc[-1]
-        signals = []
-
-        if prev["ma_short"] <= prev["ma_long"] and curr["ma_short"] > curr["ma_long"]:
-            signals.append(Signal(
-                trade_date=ctx.current_date,
-                etf_code=ctx.etf_code,
-                direction="buy",
-                reason="均线金叉买入",
-            ))
-
-        if prev["ma_short"] >= prev["ma_long"] and curr["ma_short"] < curr["ma_long"]:
-            signals.append(Signal(
-                trade_date=ctx.current_date,
-                etf_code=ctx.etf_code,
-                direction="sell",
-                reason="均线死叉卖出",
-            ))
-
-        return signals
-'''
+    Returns:
+        配置比例字典 {"etf_code": ratio}
+    """
+    agent = ETFAllocationAgent()
+    return agent.generate(description, model)
