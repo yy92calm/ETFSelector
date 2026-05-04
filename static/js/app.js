@@ -774,7 +774,16 @@ async function confirmAIStrategy() {
     
     const enableRebalance = document.getElementById('ai-enable-rebalance').checked;
     
+    const strategyName = document.getElementById('ai-strategy-name').value.trim();
+    
+    if (!strategyName) {
+        toast('请输入策略名称', 'error');
+        document.getElementById('ai-strategy-name').focus();
+        return;
+    }
+    
     const body = {
+        name: strategyName,
         allocation_config: aiCurrentAllocation,
         initial_capital: Number(document.getElementById('ai-capital').value),
         rebalance_freq: enableRebalance ? document.getElementById('ai-rebalance-freq').value : 'none',
