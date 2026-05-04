@@ -54,23 +54,29 @@ def update_single_etf_net_value(
 
 @router.post("/batch-update", response_model=APIResponse)
 def batch_update_net_values(
-    limit: int = Query(60, ge=1, le=100, description="每次最多更新数量（频率限制已放开）"),
+    days_limit: int = Query(None, ge=1, le=365, description="限制获取天数（None=全部历史，1=最近1天）"),
     db: Session = Depends(get_db)
 ):
     """
-    批量拉取ETF净值数据（从证监会）
+    批量拉取所有ETF净值数据（从证监会）
+    
+    参数说明：
+    - days_limit: 限制获取的天数
+      * None（不传）：获取完整历史净值（自动分页）
+      * 1：只获取最近一个工作日的净值（用于日常更新）✅ 推荐
+      * 7：获取最近7天的净值
     
     注意：
+    - 更新数据库中所有ETF（广发、易方达、华夏）
     - 证监会频率限制：1秒1次（已放开）
-    - 自动获取所有页面的历史数据（每页20条）
-    - 支持分页，每只ETF可获取完整历史净值
-    - 建议limit设置为20（对应20只ETF）
+    - days_limit=1时，只获取第一页数据，速度更快
+    - 建议日常更新使用 days_limit=1
     """
     svc = get_net_value_service()
-    result = svc.batch_update_net_values(db, limit=limit)
+    result = svc.batch_update_net_values(db, days_limit=days_limit)
     
     return APIResponse(
-        message=f"批量拉取完成: 成功 {result['success_count']}, 失败 {result['fail_count']}",
+        message=f"批量拉取完成: 成功 {result['success_count']}, 失败 {result['fail_count']}, 共 {result['total']} 只ETF",
         data=result
     )
 

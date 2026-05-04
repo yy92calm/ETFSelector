@@ -312,7 +312,7 @@ class AKShareDataSource(DataSourceBase):
             return False
     
     def fetch_etf_list(self) -> pd.DataFrame:
-        """获取广发基金ETF列表"""
+        """获取ETF列表（广发、易方达、华夏三家基金公司）"""
         try:
             import akshare as ak
             
@@ -328,18 +328,19 @@ class AKShareDataSource(DataSourceBase):
                 '名称': 'etf_name'
             })
             
-            # 过滤广发基金ETF（名称包含'广发'）
-            gf_df = df[df['etf_name'].str.contains('广发', na=False)].copy()
-            logger.info(f"[AKShare] 过滤后广发基金ETF {len(gf_df)} 条")
+            # 过滤三家基金公司的ETF（名称包含'广发'或'易方达'或'华夏')
+            target_funds = ['广发', '易方达', '华夏']
+            filtered_df = df[df['etf_name'].apply(lambda name: any(fund in str(name) for fund in target_funds))].copy()
+            logger.info(f"[AKShare] 过滤后ETF {len(filtered_df)} 条（广发/易方达/华夏）")
             
-            if gf_df.empty:
-                logger.warning("[AKShare] 未找到名称包含'广发'的ETF")
+            if filtered_df.empty:
+                logger.warning(f"[AKShare] 未找到目标基金公司的ETF（{target_funds}）")
                 return pd.DataFrame()
             
             # 添加数据源标记
-            gf_df['data_source'] = 'akshare'
+            filtered_df['data_source'] = 'akshare'
             
-            return gf_df[['etf_code', 'etf_name', 'data_source']]
+            return filtered_df[['etf_code', 'etf_name', 'data_source']]
             
         except Exception as e:
             logger.error(f"[AKShare] 获取ETF列表失败: {e}")

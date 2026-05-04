@@ -121,21 +121,46 @@ class AllocationStrategy(ABC):
     def should_trigger_time_rebalance(self, ctx: PortfolioContext) -> bool:
         """
         判断是否触发时间再平衡（季度末/月末）
+        改进：只在月末最后一个交易日触发，避免重复触发
         """
         current_date = ctx.current_date
+        history_dates = ctx.history_dates
+        
+        if self.rebalance_freq == "none":
+            return False
+        
+        if not history_dates:
+            return False
+        
+        if current_date not in history_dates:
+            return False
+        
+        current_idx = history_dates.index(current_date)
+        
+        if self.rebalance_freq == "daily":
+            return current_idx > 0
+        
+        if current_idx == len(history_dates) - 1:
+            return False
+        
+        next_date = history_dates[current_idx + 1]
         
         if self.rebalance_freq == "quarterly":
-            # 季度末：3月31、6月30、9月30、12月31
             quarter_end_months = [3, 6, 9, 12]
-            return current_date.month in quarter_end_months and current_date.day >= 25
+            is_quarter_end = current_date.month in quarter_end_months and next_date.month != current_date.month
+            return is_quarter_end
         
         elif self.rebalance_freq == "monthly":
-            # 月末：每月最后几天
-            return current_date.day >= 25
+            is_month_end = next_date.month != current_date.month
+            return is_month_end
+        
+        elif self.rebalance_freq == "weekly":
+            is_week_end = next_date.weekday() == 0 and current_date.weekday() != 0
+            return is_week_end
         
         elif self.rebalance_freq == "yearly":
-            # 年末：12月最后几天
-            return current_date.month == 12 and current_date.day >= 25
+            is_year_end = next_date.year != current_date.year
+            return is_year_end
         
         return False
     

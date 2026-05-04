@@ -35,21 +35,22 @@ class NetValueService:
         logger.info(f"从数据库获取 {len(gf_etfs)} 只广发基金ETF")
         return gf_etfs
     
-    def fetch_and_save_net_value(self, etf_code: str, db: Session) -> Dict:
+    def fetch_and_save_net_value(self, etf_code: str, db: Session, days_limit: int = None) -> Dict:
         """
         获取并保存单只ETF的净值数据
         
         Args:
             etf_code: ETF代码
             db: 数据库会话
+            days_limit: 限制获取的天数（None表示全部历史，1表示只获取最近1天）
         
         Returns:
             {'success': bool, 'count': int, 'etf_code': str}
         """
-        logger.info(f"开始获取 {etf_code} 净值数据...")
+        logger.info(f"开始获取 {etf_code} 净值数据（days_limit={days_limit}）...")
         
         # 从证监会获取净值数据（严格遵守频率限制）
-        df = self.csrc_source.fetch_etf_net_value(etf_code)
+        df = self.csrc_source.fetch_etf_net_value(etf_code, days_limit=days_limit)
         
         if df.empty:
             logger.warning(f"{etf_code} 未获取到净值数据")
@@ -123,13 +124,14 @@ class NetValueService:
         db.commit()
         return count
     
-    def batch_update_net_values(self, db: Session, limit: int = 10) -> Dict:
+    def batch_update_net_values(self, db: Session, limit: int = None, days_limit: int = None) -> Dict:
         """
         批量更新ETF净值数据
         
         Args:
             db: 数据库会话
-            limit: 每次最多更新数量（遵守频率限制，1分钟6次）
+            limit: 每次最多更新数量（遵守频率限制）
+            days_limit: 限制获取的天数（None表示全部历史，1表示只获取最近1天）
         
         Returns:
             {
@@ -144,10 +146,13 @@ class NetValueService:
         from app.models.etf import ETFBasic
         all_etfs = db.query(ETFBasic).all()
         
-        # 限制每次最多更新的数量
-        update_etfs = all_etfs[:min(limit, len(all_etfs))]
+        # 限制每次最多更新的数量（None表示更新全部）
+        if limit is None:
+            update_etfs = all_etfs
+        else:
+            update_etfs = all_etfs[:min(limit, len(all_etfs))]
         
-        logger.info(f"开始批量更新 {len(update_etfs)} 只ETF净值数据（频率限制：1秒1次）")
+        logger.info(f"开始批量更新 {len(update_etfs)} 只ETF净值数据（频率限制：1秒1次，days_limit={days_limit}）")
         
         result = {
             'success_count': 0,
@@ -159,7 +164,7 @@ class NetValueService:
         
         for etf in update_etfs:
             try:
-                res = self.fetch_and_save_net_value(etf.etf_code, db)
+                res = self.fetch_and_save_net_value(etf.etf_code, db, days_limit=days_limit)
                 
                 if res['success']:
                     result['success_count'] += 1
@@ -177,11 +182,17 @@ class NetValueService:
                 result['fail_count'] += 1
                 result['failed_etfs'].append(etf.etf_code)
         
-        logger.info(f"批量更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}")
+        logger.info(f"批量更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}, 共 {len(all_etfs)} 只ETF")
         
-        return result
+        return {
+            'success_count': result['success_count'],
+            'fail_count': result['fail_count'],
+            'total': len(all_etfs),
+            'updated_etfs': result['updated_etfs'],
+            'failed_etfs': result['failed_etfs']
+        }
     
-    def get_net_value_overview(self, db: Session, limit: int = 100) -> List[dict]:
+    def get_net_value_overview(self, db: Session, limit: int = 500) -> List[dict]:
         """
         获取ETF净值概览
         
@@ -200,10 +211,8 @@ class NetValueService:
         if not latest_date:
             return []
         
-        # 获取所有ETF基础信息
-        all_etfs = db.query(ETFBasic).filter(
-            ETFBasic.etf_name.contains('广发')
-        ).all()
+        # 获取所有ETF基础信息（广发、易方达、华夏）
+        all_etfs = db.query(ETFBasic).all()
         
         # 获取最新净值数据
         latest_quotes = db.query(ETFQuotation).filter(

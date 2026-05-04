@@ -89,17 +89,18 @@ class CSRCDataSource:
             logger.warning(f"[证监会] 数据源检查失败: {e}")
             return False
     
-    def fetch_etf_net_value(self, etf_code: str) -> pd.DataFrame:
+    def fetch_etf_net_value(self, etf_code: str, days_limit: int = None) -> pd.DataFrame:
         """
-        获取单只ETF的历史净值数据（支持分页）
+        从证监会获取ETF净值数据
         
         Args:
-            etf_code: ETF代码（如520880、159136）
+            etf_code: ETF代码（如'159915'）
+            days_limit: 限制获取的天数（None表示获取全部历史，1表示只获取最近1天）
         
         Returns:
-            DataFrame包含：净值日期、份额净值、净值增长率等字段
+            DataFrame包含: trade_date, net_value, net_value_change_pct
         """
-        logger.info(f"[证监会] 开始获取 {etf_code} 净值数据（支持分页）...")
+        logger.info(f"[证监会] 开始获取 {etf_code} 净值数据（days_limit={days_limit}）...")
         
         all_data = []
         page = 0
@@ -169,6 +170,14 @@ class CSRCDataSource:
                 all_data.append(df)
                 logger.info(f"[证监会] {etf_code} 第{page+1}页获取 {len(df)} 条净值数据")
                 
+                # 如果设置了天数限制，检查最新日期是否已足够早
+                if days_limit:
+                    latest_date = df['trade_date'].max()
+                    cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days_limit)
+                    if latest_date < cutoff_date:
+                        logger.info(f"[证监会] {etf_code} 已获取到 {days_limit} 天前的数据，停止分页")
+                        break
+                
                 if len(df) < 20:
                     break
                 
@@ -184,12 +193,18 @@ class CSRCDataSource:
         
         final_df = pd.concat(all_data, ignore_index=True)
         
+        # 如果设置了天数限制，过滤数据只保留指定范围内的
+        if days_limit:
+            cutoff_date = pd.Timestamp.now() - pd.Timedelta(days=days_limit)
+            final_df = final_df[final_df['trade_date'] >= cutoff_date]
+            logger.info(f"[证监会] {etf_code} 过滤后保留 {len(final_df)} 条净值数据（最近{days_limit}天）")
+        
         # 计算净值增长率
         final_df = final_df.sort_values('trade_date')
         final_df['net_value_change_pct'] = final_df['net_value'].pct_change() * 100
         final_df['net_value_change_pct'] = final_df['net_value_change_pct'].fillna(0)
         
-        logger.info(f"[证监会] {etf_code} 共获取 {len(final_df)} 条净值数据（{len(all_data)}页），已计算增长率")
+        logger.info(f"[证监会] {etf_code} 最终返回 {len(final_df)} 条净值数据，已计算增长率")
         
         return final_df[['trade_date', 'net_value', 'net_value_change_pct', 'etf_name']]
 

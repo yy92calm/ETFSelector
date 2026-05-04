@@ -1,0 +1,595 @@
+/* ====== ETF量化选择系统 - 前端逻辑 ====== */
+
+const API = '';
+
+// ---- 工具函数 ----
+async function api(path, options = {}) {
+    const resp = await fetch(API + path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+    });
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.detail || '请求失败');
+    return data;
+}
+
+function toast(msg, type = 'info') {
+    const el = document.createElement('div');
+    el.className = `toast toast-${type}`;
+    el.textContent = msg;
+    document.body.appendChild(el);
+    setTimeout(() => el.remove(), 3500);
+}
+
+function fmtNum(n, d = 2) {
+    if (n == null) return '-';
+    return Number(n).toLocaleString('zh-CN', { minimumFractionDigits: d, maximumFractionDigits: d });
+}
+
+function fmtPct(n) {
+    if (n == null) return '-';
+    const cls = n >= 0 ? 'text-success' : 'text-danger';
+    return `<span class="${cls}">${n >= 0 ? '+' : ''}${fmtNum(n)}%</span>`;
+}
+
+function fmtAmount(n) {
+    if (n == null) return '-';
+    if (n >= 1e8) return fmtNum(n / 1e8) + '亿';
+    if (n >= 1e4) return fmtNum(n / 1e4) + '万';
+    return fmtNum(n);
+}
+
+function formatAllocation(allocation) {
+    if (!allocation) return '-';
+    const entries = Object.entries(allocation);
+    return entries.map(([code, ratio]) => `${code} ${fmtNum(ratio * 100)}%`).join(', ');
+}
+
+// ---- Tab 切换 ----
+document.querySelectorAll('.nav-links a').forEach(a => {
+    a.addEventListener('click', (e) => {
+        e.preventDefault();
+        document.querySelectorAll('.nav-links a').forEach(x => x.classList.remove('active'));
+        a.classList.add('active');
+        const tab = a.dataset.tab;
+        document.querySelectorAll('.tab-content').forEach(x => x.classList.remove('active'));
+        document.getElementById('tab-' + tab).classList.add('active');
+
+        if (tab === 'market') loadMarket();
+        if (tab === 'strategy') loadStrategies();
+        if (tab === 'backtest') loadBacktestPage();
+        if (tab === 'portfolio') loadPortfolioPage();
+    });
+});
+
+function switchTab(tabName) {
+    document.querySelectorAll('.nav-links a').forEach(a => {
+        a.classList.add('active');
+        document.querySelectorAll('.nav-links a').forEach(x => x.classList.remove('active'));
+        if (a.dataset.tab === tabName) a.classList.add('active');
+    });
+    
+    document.querySelectorAll('.tab-content').forEach(x => x.classList.remove('active'));
+    document.getElementById('tab-' + tabName).classList.add('active');
+    
+    if (tabName === 'market') loadMarket();
+    if (tabName === 'strategy') loadStrategies();
+    if (tabName === 'backtest') loadBacktestPage();
+    if (tabName === 'portfolio') loadPortfolioPage();
+}
+
+async function loadBacktestPage() {
+    await loadBacktestStrategies();
+}
+
+// ---- Modal ----
+function openModal(id) { document.getElementById(id).classList.add('active'); }
+function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+
+// ==================================================================
+//  行情看板
+// ==================================================================
+let currentMarket = 'all';
+let currentPage = 1;
+let allQuotes = [];
+let filteredQuotes = [];
+
+// 初始化市场标签点击事件
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('.market-tab').forEach(tab => {
+        tab.addEventListener('click', function() {
+            document.querySelectorAll('.market-tab').forEach(t => t.classList.remove('active'));
+            this.classList.add('active');
+            currentMarket = this.dataset.market;
+            currentPage = 1;
+            filterAndDisplayQuotes();
+        });
+    });
+});
+
+async function loadMarket() {
+    try {
+        // 获取净值概览数据
+        const res = await api('/api/net-value/overview?limit=500');
+        allQuotes = res.data?.etfs || [];
+        
+        if (allQuotes.length) {
+            document.getElementById('market-stats').style.display = 'flex';
+            updateMarketStats(allQuotes);
+        }
+        
+        if (!allQuotes.length) {
+            const tbody = document.getElementById('market-table');
+            const empty = document.getElementById('market-empty');
+            tbody.innerHTML = '';
+            empty.style.display = 'block';
+            document.getElementById('market-count').textContent = '';
+            document.getElementById('market-stats').style.display = 'none';
+            return;
+        }
+
+        filterAndDisplayQuotes();
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+function filterQuotesByMarket(quotes, market) {
+    if (market === 'all') return quotes;
+    if (market === 'hot') {
+        // 热门ETF：有净值数据的ETF
+        return quotes.filter(q => q.has_net_value || q.net_value !== null).slice(0, 30);
+    }
+    
+    return quotes.filter(q => {
+        const code = q.etf_code;
+        // ETF代码规则：
+        // 51xxxx - 上交所ETF（如510300沪深300ETF）
+        // 58xxxx - 科创板ETF（如588000科创50ETF）
+        // 159xxx - 深交所ETF/创业板ETF（如159915创业板ETF）
+        // 15xxxx, 16xxxx, 18xxxx - 深交所其他ETF
+        switch(market) {
+            case 'sh':
+                // 上交所：51开头 或 58开头（58也是上交所的科创板）
+                return code.startsWith('51');
+            case 'sz':
+                // 深交所：15、16、18开头（不含159，159单独算创业板）
+                return code.startsWith('15') && !code.startsWith('159') || 
+                       code.startsWith('16') || 
+                       code.startsWith('18');
+            case 'cy':
+                // 创业板ETF：159开头
+                return code.startsWith('159');
+            case 'kc':
+                // 科创板ETF：58、588、589开头
+                return code.startsWith('58');
+            default:
+                return true;
+        }
+    });
+}
+
+function filterAndDisplayQuotes() {
+    filteredQuotes = filterQuotesByMarket(allQuotes, currentMarket);
+    const totalCount = filteredQuotes.length;
+    const perPage = 50;
+    const totalPages = Math.ceil(totalCount / perPage);
+    
+    if (currentPage > totalPages) currentPage = totalPages;
+    if (currentPage < 1) currentPage = 1;
+    
+    const startIndex = (currentPage - 1) * perPage;
+    const endIndex = startIndex + perPage;
+    const showQuotes = filteredQuotes.slice(startIndex, endIndex);
+    
+    const tbody = document.getElementById('market-table');
+    const empty = document.getElementById('market-empty');
+    const title = document.getElementById('market-title');
+    
+    if (!showQuotes.length) {
+        tbody.innerHTML = '';
+        empty.style.display = 'block';
+        document.getElementById('market-count').textContent = '';
+        document.getElementById('market-pagination').style.display = 'none';
+        title.textContent = getMarketTitle(currentMarket);
+        return;
+    }
+
+    empty.style.display = 'none';
+    document.getElementById('market-count').textContent = `共 ${totalCount} 条，当前显示 ${startIndex + 1}-${Math.min(endIndex, totalCount)} 条`;
+    title.textContent = getMarketTitle(currentMarket);
+    
+    tbody.innerHTML = showQuotes.map(q => {
+        const hasNetValue = q.has_net_value || (q.net_value !== null && q.net_value !== undefined);
+        return `
+        <tr>
+            <td><strong>${q.etf_code}</strong></td>
+            <td><a href="#" onclick="showETFHistory('${q.etf_code}', '${q.etf_name}')" style="color:var(--primary);cursor:pointer;" title="点击查看历史净值走势">${q.etf_name}</a></td>
+            <td class="text-right">${hasNetValue ? fmtNum(q.net_value, 4) : '-'}</td>
+            <td class="text-right">${hasNetValue ? fmtPct(q.net_value_change_pct) : '-'}</td>
+            <td>${hasNetValue ? q.trade_date : '-'}</td>
+            <td>
+                <button class="btn btn-outline btn-sm" onclick="showETFHistory('${q.etf_code}', '${q.etf_name}')" title="查看净值走势曲线">查看净值</button>
+            </td>
+        </tr>
+    `}).join('');
+    
+    // 更新分页控件
+    const pagination = document.getElementById('market-pagination');
+    if (totalCount > perPage) {
+        pagination.style.display = 'flex';
+        document.getElementById('current-page').textContent = currentPage;
+        document.getElementById('total-pages').textContent = totalPages;
+    } else {
+        pagination.style.display = 'none';
+    }
+}
+
+function getMarketTitle(market) {
+    const titles = {
+        'all': '全市场ETF行情',
+        'sh': '上交所ETF行情',
+        'sz': '深交所ETF行情', 
+        'cy': '创业板ETF行情',
+        'kc': '科创板ETF行情',
+        'hot': '热门ETF（按成交额排序）'
+    };
+    return titles[market] || 'ETF行情';
+}
+
+function updateMarketStats(quotes) {
+    let upCount = 0, downCount = 0, flatCount = 0;
+    
+    quotes.forEach(q => {
+        const changePct = q.net_value_change_pct || 0;
+        if (changePct > 0) upCount++;
+        else if (changePct < 0) downCount++;
+        else flatCount++;
+    });
+    
+    document.getElementById('up-count').textContent = upCount;
+    document.getElementById('down-count').textContent = downCount;
+    document.getElementById('flat-count').textContent = flatCount;
+}
+
+function changePage(direction) {
+    const totalPages = Math.ceil(filteredQuotes.length / 50);
+    currentPage += direction;
+    if (currentPage < 1) currentPage = 1;
+    if (currentPage > totalPages) currentPage = totalPages;
+    filterAndDisplayQuotes();
+}
+
+async function syncETFList() {
+    toast('正在同步ETF列表...', 'info');
+    try {
+        const res = await api('/api/etf/sync-list', { method: 'POST' });
+        toast(res.message, 'success');
+        loadMarket();
+    } catch (e) { toast(e.message, 'error'); }
+}
+
+async function updateTodayQuotes() {
+    toast('正在更新行情（可能需要几分钟）...', 'info');
+    try {
+        const res = await api('/api/etf/update-today', { method: 'POST' });
+        toast(`更新完成: 成功 ${res.data.success_count}, 失败 ${res.data.fail_count}`, 'success');
+        loadMarket();
+    } catch (e) { toast(e.message, 'error'); }
+}
+
+async function fetchETFData(code) {
+    toast(`正在拉取 ${code} 历史数据...`, 'info');
+    try {
+        const res = await api(`/api/etf/fetch/${code}?start_date=20200101`, { method: 'POST' });
+        toast(`${code}: 新增 ${res.data.new_records} 条`, 'success');
+    } catch (e) { toast(e.message, 'error'); }
+}
+
+// ==================================================================
+//  策略管理
+// ==================================================================
+let templates = [];
+
+async function loadTemplates() {
+    try {
+        const res = await api('/api/strategy/templates');
+        templates = res.data?.templates || [];
+    } catch (e) { console.error(e); }
+}
+
+async function loadStrategies() {
+    try {
+        const res = await api('/api/strategy/list');
+        const strategies = res.data?.strategies || [];
+        const tbody = document.getElementById('strategy-table');
+        const empty = document.getElementById('strategy-empty');
+
+        if (!strategies.length) {
+            tbody.innerHTML = '';
+            empty.style.display = 'block';
+            return;
+        }
+        empty.style.display = 'none';
+
+        tbody.innerHTML = strategies.map(s => `
+            <tr>
+                <td>${s.id}</td>
+                <td><strong>${s.name}</strong></td>
+                <td><span class="badge ${s.strategy_type === 'template' ? 'badge-template' : s.strategy_type === 'custom' ? 'badge-success' : 'badge-ai'}">${s.strategy_type === 'template' ? '模板' : s.strategy_type === 'custom' ? '自定义' : 'AI'}</span></td>
+                <td>${formatAllocation(s.allocation_config)}</td>
+                <td class="text-right">${fmtNum(s.initial_capital, 0)}</td>
+                <td><span class="badge badge-${s.status}">${s.status}</span></td>
+                <td>${s.created_at ? s.created_at.slice(0, 10) : '-'}</td>
+                <td>
+                    <button class="btn btn-primary btn-sm" onclick="quickBacktest(${s.id}, '1m')" title="快捷回测最近1个月">回测</button>
+                    <button class="btn btn-outline btn-sm" onclick="editStrategy(${s.id})">编辑</button>
+                    <button class="btn btn-outline btn-sm" onclick="deleteStrategy(${s.id})">删除</button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (e) { console.error(e); }
+}
+
+// ==================================================================
+//  策略回测快捷功能
+// ==================================================================
+
+function setBacktestRange(range) {
+    const today = new Date();
+    const endDate = today.toISOString().split('T')[0];
+    
+    let startDate;
+    switch(range) {
+        case '1m':
+            startDate = new Date(new Date().setMonth(new Date().getMonth() - 1));
+            break;
+        case '6m':
+            startDate = new Date(new Date().setMonth(new Date().getMonth() - 6));
+            break;
+        case '1y':
+            startDate = new Date(new Date().setFullYear(new Date().getFullYear() - 1));
+            break;
+        case 'custom':
+            return;
+        default:
+            startDate = new Date('2024-01-01');
+    }
+    
+    document.getElementById('bt-start').value = startDate.toISOString().split('T')[0];
+    document.getElementById('bt-end').value = endDate;
+}
+
+function quickBacktest(strategyId, range) {
+    switchTab('backtest');
+    document.getElementById('bt-strategy').value = strategyId;
+    setBacktestRange(range);
+    runBacktest();
+}
+
+async function loadBacktestStrategies() {
+    try {
+        const res = await api('/api/strategy/list');
+        const strategies = res.data?.strategies || [];
+        
+        const select = document.getElementById('bt-strategy');
+        select.innerHTML = strategies.map(s => 
+            `<option value="${s.id}">${s.name} (${formatAllocation(s.allocation_config)})</option>`
+        ).join('');
+        
+        if (strategies.length > 0) {
+            document.getElementById('bt-capital').value = strategies[0].initial_capital;
+        }
+        
+        setBacktestRange('1y');
+        
+    } catch (e) { console.error(e); }
+}
+
+
+// ==================================================================
+//  策略管理 - 创建资产配置策略
+// ==================================================================
+
+let etfAllocations = []; // [{code: '589160', name: '科创芯片ETF', ratio: 30}]
+
+async function showCreateStrategyModal() {
+    etfAllocations = [];
+    updateAllocationDisplay();
+    initETFSearch();
+    openModal('modal-create-strategy');
+}
+
+function initETFSearch() {
+    const searchInput = document.getElementById('cs-etf-search');
+    const resultsDiv = document.getElementById('cs-etf-results');
+    
+    searchInput.value = '';
+    
+    const newInput = searchInput.cloneNode(true);
+    searchInput.parentNode.replaceChild(newInput, searchInput);
+    
+    newInput.addEventListener('input', function() {
+        const keyword = this.value.trim().toLowerCase();
+        if (!keyword) {
+            resultsDiv.classList.remove('active');
+            return;
+        }
+        
+        const matches = allQuotes.filter(etf => {
+            if (etfAllocations.find(a => a.code === etf.etf_code)) return false;
+            return etf.etf_code.toLowerCase().includes(keyword) || 
+                   etf.etf_name.toLowerCase().includes(keyword);
+        }).slice(0, 10);
+        
+        if (matches.length > 0) {
+            resultsDiv.innerHTML = matches.map(etf => `
+                <div class="etf-search-item" onclick="addETFAllocation('${etf.etf_code}', '${etf.etf_name}')">
+                    <span class="code">${etf.etf_code}</span>
+                    <span class="name">${etf.etf_name}</span>
+                </div>
+            `).join('');
+            resultsDiv.classList.add('active');
+        } else {
+            resultsDiv.innerHTML = '<div class="etf-search-item"><span class="name">无匹配结果</span></div>';
+            resultsDiv.classList.add('active');
+        }
+    });
+    
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('#modal-create-strategy .etf-search-container')) {
+            resultsDiv.classList.remove('active');
+        }
+    });
+}
+
+function addETFAllocation(code, name) {
+    etfAllocations.push({
+        code: code,
+        name: name.slice(0, 15),
+        ratio: 0
+    });
+    
+    document.getElementById('cs-etf-search').value = '';
+    document.getElementById('cs-etf-results').classList.remove('active');
+    
+    updateAllocationDisplay();
+}
+
+function removeETFAllocation(code) {
+    etfAllocations = etfAllocations.filter(a => a.code !== code);
+    updateAllocationDisplay();
+}
+
+function updateAllocationRatio(code, ratio) {
+    const allocation = etfAllocations.find(a => a.code === code);
+    if (allocation) {
+        allocation.ratio = parseFloat(ratio) || 0;
+    }
+    updateAllocationDisplay();
+}
+
+function updateAllocationDisplay() {
+    const container = document.getElementById('etf-allocation-list');
+    
+    if (etfAllocations.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-secondary);font-size:14px;padding:8px;">请搜索并添加ETF，然后设置占比</div>';
+        document.getElementById('allocation-total').textContent = '当前占比总和: 0%';
+        document.getElementById('allocation-warning').textContent = '';
+        return;
+    }
+    
+    container.innerHTML = etfAllocations.map(a => `
+        <div style="display:flex;align-items:center;margin-bottom:8px;padding:8px;background:var(--bg-secondary);border-radius:4px;">
+            <span style="flex:1;font-weight:600;">${a.code}</span>
+            <span style="flex:2;color:var(--text-secondary);font-size:13px;">${a.name}</span>
+            <input type="number" value="${a.ratio}" min="0" max="100" step="1"
+                   onchange="updateAllocationRatio('${a.code}', this.value)"
+                   style="width:70px;margin-right:8px;padding:4px;border:1px solid var(--border);border-radius:4px;text-align:right;">
+            <span style="width:20px;color:var(--text-secondary);">%</span>
+            <button class="btn btn-outline btn-sm" onclick="removeETFAllocation('${a.code}')" style="margin-left:8px;padding:2px 8px;">删除</button>
+        </div>
+    `).join('');
+    
+    const totalRatio = etfAllocations.reduce((sum, a) => sum + a.ratio, 0);
+    document.getElementById('allocation-total').textContent = `当前占比总和: ${totalRatio.toFixed(1)}%`;
+    
+    const warning = document.getElementById('allocation-warning');
+    if (totalRatio > 100) {
+        warning.textContent = '⚠️ 占比总和超过100%！';
+        warning.style.color = 'var(--danger)';
+    } else if (totalRatio < 100) {
+        warning.textContent = `还可配置 ${(100 - totalRatio).toFixed(1)}%`;
+        warning.style.color = 'var(--text-secondary)';
+    } else {
+        warning.textContent = '✅ 配置完整';
+        warning.style.color = 'var(--success)';
+    }
+}
+
+async function submitCreateStrategy() {
+    const totalRatio = etfAllocations.reduce((sum, a) => sum + a.ratio, 0);
+    
+    if (etfAllocations.length === 0) {
+        toast('请至少添加一只ETF', 'error');
+        return;
+    }
+    
+    if (totalRatio > 100) {
+        toast('占比总和不能超过100%', 'error');
+        return;
+    }
+    
+    if (totalRatio < 100) {
+        toast(`占比总和为${totalRatio.toFixed(1)}%，未达到100%`, 'warning');
+    }
+    
+    const allocationConfig = {};
+    etfAllocations.forEach(a => {
+        allocationConfig[a.code] = a.ratio / 100;
+    });
+    
+    const body = {
+        name: document.getElementById('cs-name').value,
+        initial_capital: Number(document.getElementById('cs-capital').value || 100000),
+        allocation_config: allocationConfig,
+        rebalance_freq: document.getElementById('cs-rebalance').value,
+        rebalance_threshold: Number(document.getElementById('cs-threshold').value || 5) / 100,
+        strategy_type: 'custom'
+    };
+
+    try {
+        const res = await api('/api/strategy/create-custom', { method: 'POST', body: JSON.stringify(body) });
+        toast('资产配置策略创建成功', 'success');
+        closeModal('modal-create-strategy');
+        loadStrategies();
+    } catch (e) {
+        toast('创建失败: ' + e.message, 'error');
+    }
+}
+
+function showCreateStrategyModal() {
+    const sel = document.getElementById('cs-template');
+    sel.innerHTML = templates.map(t => `<option value="${t.template_name}">${t.template_name} - ${t.description}</option>`).join('');
+    renderTemplateParams();
+    sel.onchange = renderTemplateParams;
+    openModal('modal-create-strategy');
+}
+
+function renderTemplateParams() {
+    const name = document.getElementById('cs-template').value;
+    const tpl = templates.find(t => t.template_name === name);
+    const area = document.getElementById('cs-params-area');
+    if (!tpl) { area.innerHTML = ''; return; }
+
+    area.innerHTML = '<div class="form-row">' + Object.entries(tpl.default_params).map(([k, v]) => `
+        <div class="form-group">
+            <label>${k}</label>
+            <input type="number" step="any" class="tpl-param" data-key="${k}" value="${v}">
+        </div>
+    `).join('') + '</div>';
+}
+
+async function submitCreateStrategy() {
+    const params = {};
+    document.querySelectorAll('.tpl-param').forEach(el => {
+        params[el.dataset.key] = Number(el.value);
+    });
+
+    const body = {
+        name: document.getElementById('cs-name').value,
+        strategy_type: 'template',
+        template_name: document.getElementById('cs-template').value,
+        params,
+        etf_codes: document.getElementById('cs-etfs').value.split(',').map(s => s.trim()).filter(Boolean),
+        initial_capital: Number(document.getElementById('cs-capital').value),
+    };
+
+    try {
+        const res = await api('/api/strategy/create', { method: 'POST', body: JSON.stringify(body) });
+        toast(res.message, 'success');
+        closeModal('modal-create-strategy');
+        loadStrategies();
+    } catch (e) { toast(e.message, 'error'); }
+}
+

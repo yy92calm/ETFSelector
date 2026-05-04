@@ -41,6 +41,34 @@ class PortfolioRebalanceStrategy(AllocationStrategy):
         
         return False
     
+    def should_trigger_threshold_rebalance(self, ctx: PortfolioContext) -> bool:
+        """
+        判断是否触发偏离阈值再平衡（单独触发）
+        
+        工作原理：
+        1. 如果定期检查已启用（freq != 'none'），此方法返回False
+           （偏离检查由定期检查处理）
+        2. 如果定期检查未启用（freq == 'none'），检查实时偏离
+           （用于"从不定期检查但允许偏离触发"的场景）
+        """
+        # 如果定期检查已启用，偏离检查由定期检查处理
+        if self.rebalance_freq != 'none':
+            return False
+        
+        # 如果完全禁用再平衡，不触发
+        if self.rebalance_freq == 'none' and self.rebalance_threshold >= 999:
+            return False
+        
+        # 计算当前配置偏离情况
+        deviation = self.calculate_deviation(
+            self.calculate_current_allocation(ctx)
+        )
+        
+        # 如果偏离超过阈值，触发再平衡
+        max_deviation = max(deviation.values()) if deviation else 0
+        
+        return max_deviation > self.rebalance_threshold
+    
     def generate_rebalance_signals(self, ctx: PortfolioContext) -> List[RebalanceSignal]:
         """
         生成再平衡信号

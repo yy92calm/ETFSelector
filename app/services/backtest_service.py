@@ -51,7 +51,7 @@ class BacktestEngine:
         # 创建策略实例
         strategy_instance = PortfolioRebalanceStrategy(
             allocation_config=strategy.allocation_config,
-            rebalance_freq=strategy.rebalance_freq or "quarterly",
+            rebalance_freq=strategy.rebalance_freq or "monthly",
             rebalance_threshold=strategy.rebalance_threshold or 0.05
         )
         
@@ -195,6 +195,55 @@ class BacktestEngine:
         # Sharpe比率
         sharpe = self._calc_sharpe([d["total_asset"] for d in daily_data])
         
+        # 计算交易次数和胜率
+        trade_count = 0
+        win_count = 0
+        
+        # 遍历rebalance_records，统计交易
+        # 只统计initial和time_based类型（初始买入 + 定期再平衡触发）
+        # threshold类型不再单独触发（改为由定期检查处理）
+        for record in rebalance_records:
+            trigger_type = record.get("trigger_type", "")
+            
+            # 统计初始买入和定期再平衡触发的交易
+            if trigger_type in ["initial", "time_based"]:
+                trade_count += len(record.get("adjustments", []))
+        
+        # 计算每笔交易的盈亏（需要前后对比）
+        # 简化版本：计算rebalance后资产是否增长
+        # 只统计initial和time_based类型的交易
+        prev_asset = initial_capital
+        for i, record in enumerate(rebalance_records):
+            trigger_type = record.get("trigger_type", "")
+            
+            # 只统计初始买入和定期再平衡的交易
+            if trigger_type not in ["initial", "time_based"]:
+                continue
+            
+            # 找到交易当天的资产
+            record_date = record["date"]
+            record_asset = None
+            
+            for d in daily_data:
+                if d["date"] == record_date:
+                    record_asset = d["total_asset"]
+                    break
+            
+            if record_asset and prev_asset:
+                # 如果交易后资产增长，算作盈利
+                if record_asset > prev_asset:
+                    win_count += 1
+                prev_asset = record_asset
+        
+        # 胜率（简化版本：盈利次数/总交易次数）
+        win_rate = (win_count / trade_count * 100) if trade_count > 0 else None
+        
+        # 计算区间收益（按月度分段）
+        period_returns = self._calc_period_returns(daily_data, start_date, end_date)
+        
+        # 计算时间段收益（1个月、3个月、6个月、12个月）
+        time_period_returns = self._calc_time_period_returns(daily_data, start_date, end_date)
+        
         return {
             "strategy_id": strategy.id,
             "strategy_name": strategy.name,
@@ -208,6 +257,11 @@ class BacktestEngine:
             "max_drawdown_pct": round(max_drawdown, 4),
             "sharpe_ratio": round(sharpe, 4) if sharpe else None,
             "rebalance_count": len(rebalance_records),
+            "trade_count": trade_count,
+            "win_count": win_count,
+            "win_rate": round(win_rate, 2) if win_rate else None,
+            "period_returns": period_returns,
+            "time_period_returns": time_period_returns,
             "daily_data": daily_data,
             "rebalance_records": rebalance_records,
         }
@@ -302,6 +356,146 @@ class BacktestEngine:
         sharpe = (mean_r - daily_rf) / std_r * np.sqrt(252)
         
         return float(sharpe)
+    
+    def _calc_period_returns(self, daily_data: List[dict], start_date: date, 
+                              end_date: date) -> List[dict]:
+        """
+        计算区间收益（按月度分段）
+        
+        Returns:
+            [
+                {
+                    "period": "2025-01",
+                    "start_date": "2025-01-01",
+                    "end_date": "2025-01-31",
+                    "start_asset": 100000,
+                    "end_asset": 105000,
+                    "return_pct": 5.0
+                },
+                ...
+            ]
+        """
+        if not daily_data:
+            return []
+        
+        # 按月份分组
+        period_returns = []
+        
+        # 获取起始月份和结束月份
+        from datetime import datetime
+        
+        start_month = datetime.strptime(start_date.isoformat(), "%Y-%m-%d").strftime("%Y-%m")
+        end_month = datetime.strptime(end_date.isoformat(), "%Y-%m-%d").strftime("%Y-%m")
+        
+        # 遍历daily_data，按月份分组
+        monthly_data = {}
+        for d in daily_data:
+            date_str = d["date"]
+            month = datetime.strptime(date_str, "%Y-%m-%d").strftime("%Y-%m")
+            
+            if month not in monthly_data:
+                monthly_data[month] = []
+            
+            monthly_data[month].append(d)
+        
+        # 计算每个月的收益
+        prev_end_asset = None
+        for month in sorted(monthly_data.keys()):
+            month_data = monthly_data[month]
+            
+            # 月初资产
+            start_asset = month_data[0]["total_asset"]
+            
+            # 月末资产
+            end_asset = month_data[-1]["total_asset"]
+            
+            # 如果有上个月的月末资产，使用它作为月初资产
+            if prev_end_asset:
+                start_asset = prev_end_asset
+            
+            # 计算收益率
+            if start_asset > 0:
+                return_pct = (end_asset - start_asset) / start_asset * 100
+            else:
+                return_pct = 0
+            
+            period_returns.append({
+                "period": month,
+                "start_date": month_data[0]["date"],
+                "end_date": month_data[-1]["date"],
+                "start_asset": round(start_asset, 2),
+                "end_asset": round(end_asset, 2),
+                "return_pct": round(return_pct, 4)
+            })
+            
+            prev_end_asset = end_asset
+        
+        return period_returns
+
+    def _calc_time_period_returns(self, daily_data: List[dict], start_date: date, 
+                                    end_date: date) -> List[dict]:
+        """
+        计算时间段收益（1个月、3个月、6个月、12个月）
+        
+        Returns:
+            [
+                {
+                    "period": "最近1个月",
+                    "days": 30,
+                    "return_pct": 2.5,
+                    "start_asset": 100000,
+                    "end_asset": 102500
+                },
+                ...
+            ]
+        """
+        if not daily_data:
+            return []
+        
+        periods = [
+            {"label": "最近1个月", "days": 30},
+            {"label": "最近3个月", "days": 90},
+            {"label": "最近半年", "days": 180},
+            {"label": "最近1年", "days": 365},
+        ]
+        
+        period_returns = []
+        total_days = len(daily_data)
+        
+        for period_info in periods:
+            days = period_info["days"]
+            
+            # 如果数据不足该时间段，跳过
+            if total_days < days:
+                continue
+            
+            # 取最近N天的数据
+            start_idx = total_days - days
+            end_idx = total_days - 1
+            
+            start_data = daily_data[start_idx]
+            end_data = daily_data[end_idx]
+            
+            start_asset = start_data["total_asset"]
+            end_asset = end_data["total_asset"]
+            
+            # 计算收益率
+            if start_asset > 0:
+                return_pct = (end_asset - start_asset) / start_asset * 100
+            else:
+                return_pct = 0
+            
+            period_returns.append({
+                "period": period_info["label"],
+                "days": days,
+                "start_date": start_data["date"],
+                "end_date": end_data["date"],
+                "start_asset": round(start_asset, 2),
+                "end_asset": round(end_asset, 2),
+                "return_pct": round(return_pct, 4)
+            })
+        
+        return period_returns
 
 
 _engine: Optional[BacktestEngine] = None

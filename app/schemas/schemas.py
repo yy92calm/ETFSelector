@@ -45,7 +45,7 @@ class StrategyCreate(BaseModel):
     
     # 自定义创建时必填
     allocation_config: Optional[dict] = Field(None, description="ETF配置比例，如 {'510300': 0.5, '511010': 0.4}")
-    rebalance_freq: str = Field(default="quarterly", description="再平衡频率：monthly/quarterly/yearly")
+    rebalance_freq: str = Field(default="monthly", description="再平衡检查频率：daily/weekly/monthly/quarterly/yearly/none")
     rebalance_threshold: float = Field(default=0.05, ge=0.01, le=0.2, description="偏离阈值")
     
     initial_capital: int = Field(default=100000, ge=10000)

@@ -1,6 +1,6 @@
 """
-广发基金ETF数据获取服务
-优先使用Baostock，频率限制（1分钟10次）
+ETF数据获取服务
+ETF列表从akshare获取（仅广发、易方达、华夏），净值从证监会获取
 """
 
 import logging
@@ -19,45 +19,50 @@ logger = logging.getLogger(__name__)
 
 
 class DataService:
-    """广发基金ETF数据获取与存储服务"""
+    """ETF数据获取与存储服务"""
     
     def __init__(self):
         self.data_source = DataSourceManager()
 
     # ------------------------------------------------------------------ #
-    #  广发基金 ETF 列表
+    #  ETF 列表（广发、易方达、华夏）
     # ------------------------------------------------------------------ #
     def fetch_etf_list(self) -> pd.DataFrame:
         """
-        从Baostock优先获取广发基金ETF列表
+        从akshare获取ETF列表
         返回DataFrame包含: etf_code, etf_name 等字段
         """
         df = self.data_source.fetch_etf_list()
         if df.empty:
-            logger.warning("未获取到广发基金ETF列表数据")
+            logger.warning("未获取到ETF列表数据")
         return df
 
     def sync_etf_list(self, db: Session) -> int:
-        """将广发基金ETF列表同步到数据库，返回新增/更新数量
+        """
+        将ETF列表同步到数据库，返回新增/更新数量
         
-        只同步名称包含'广发'的ETF，确保数据源准确性
+        只同步以下基金公司的ETF：
+        - 广发基金
+        - 易方达基金  
+        - 华夏基金
         """
         df = self.fetch_etf_list()
         if df.empty:
-            logger.warning("未获取到广发基金ETF列表数据")
+            logger.warning("未获取到ETF列表数据")
             return 0
         
-        # 双重验证：确保名称包含'广发'
-        gf_df = df[df['etf_name'].str.contains('广发', na=False)]
+        # 只保留三家基金公司的ETF
+        target_funds = ['广发', '易方达', '华夏']
+        filtered_df = df[df['etf_name'].apply(lambda name: any(fund in str(name) for fund in target_funds))]
         
-        if gf_df.empty:
-            logger.warning("过滤后无广发基金ETF，请检查数据源")
+        if filtered_df.empty:
+            logger.warning(f"过滤后无目标基金公司ETF（{target_funds}），请检查数据源")
             return 0
         
-        logger.info(f"准备同步 {len(gf_df)} 只广发基金ETF")
+        logger.info(f"准备同步 {len(filtered_df)} 只ETF（广发/易方达/华夏）")
         
         count = 0
-        for _, row in gf_df.iterrows():
+        for _, row in filtered_df.iterrows():
             # 支持不同数据源的列名
             code = str(row.get("etf_code", "") or row.get("代码", ""))
             name = str(row.get("etf_name", "") or row.get("名称", ""))
@@ -65,9 +70,10 @@ class DataService:
             if not code or not name:
                 continue
             
-            # 再次验证名称包含'广发'（防御性编程）
-            if '广发' not in name:
-                logger.debug(f"跳过非广发基金ETF: {code} {name}")
+            # 验证是否为目标基金公司（防御性编程）
+            is_target = any(fund in name for fund in target_funds)
+            if not is_target:
+                logger.debug(f"跳过非目标基金ETF: {code} {name}")
                 continue
             
             existing = db.query(ETFBasic).filter(ETFBasic.etf_code == code).first()
@@ -81,7 +87,7 @@ class DataService:
                 count += 1
         
         db.commit()
-        logger.info(f"广发基金ETF列表同步完成，新增/更新 {count} 条（共 {len(gf_df)} 只）")
+        logger.info(f"ETF列表同步完成，新增/更新 {count} 条（共 {len(filtered_df)} 只）")
         return count
 
     # ------------------------------------------------------------------ #
