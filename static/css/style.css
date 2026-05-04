@@ -620,3 +620,17 @@ tr:hover { background: #f8fafc; }
     right: 0;
     top: 0;
 }
+
+/* 策略卡片样式 */
+.strategy-card {
+    transition: all 0.2s ease;
+}
+
+.strategy-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+}
+
+.strategy-card:hover {
+    border-color: var(--primary);
+}

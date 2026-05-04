@@ -108,23 +108,7 @@
         </div>
         <div class="card">
             <div class="card-title">我的策略</div>
-            <div class="table-wrap">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>ID</th>
-                            <th>名称</th>
-                            <th>类型</th>
-                            <th>ETF</th>
-                            <th>初始资金</th>
-                            <th>状态</th>
-                            <th>创建时间</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="strategy-table"></tbody>
-                </table>
-            </div>
+            <div id="strategy-cards" style="display:grid;grid-template-columns:repeat(auto-fill, minmax(350px, 1fr));gap:16px;"></div>
             <div id="strategy-empty" class="empty-state" style="display:none;">
                 <div class="icon">🧠</div>
                 <p>暂无策略，点击上方按钮创建</p>

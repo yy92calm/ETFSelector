@@ -541,32 +541,137 @@ async function loadStrategies() {
     try {
         const res = await api('/api/strategy/list');
         const strategies = res.data?.strategies || [];
-        const tbody = document.getElementById('strategy-table');
+        const cardsDiv = document.getElementById('strategy-cards');
         const empty = document.getElementById('strategy-empty');
 
         if (!strategies.length) {
-            tbody.innerHTML = '';
+            cardsDiv.innerHTML = '';
             empty.style.display = 'block';
             return;
         }
         empty.style.display = 'none';
 
-        tbody.innerHTML = strategies.map(s => `
-            <tr>
-                <td>${s.id}</td>
-                <td><strong>${s.name}</strong></td>
-                <td><span class="badge ${s.strategy_type === 'template' ? 'badge-template' : s.strategy_type === 'custom' ? 'badge-success' : 'badge-ai'}">${s.strategy_type === 'template' ? '模板' : s.strategy_type === 'custom' ? '自定义' : 'AI'}</span></td>
-                <td>${(s.etf_codes || []).join(', ')}</td>
-                <td class="text-right">${fmtNum(s.initial_capital, 0)}</td>
-                <td><span class="badge badge-${s.status}">${s.status}</span></td>
-                <td>${s.created_at ? s.created_at.slice(0, 10) : '-'}</td>
-                <td>
-                    <button class="btn btn-outline btn-sm" onclick="editStrategy(${s.id})">编辑</button>
-                    <button class="btn btn-outline btn-sm" onclick="deleteStrategy(${s.id})">删除</button>
-                </td>
-            </tr>
-        `).join('');
-    } catch (e) { console.error(e); }
+        // 加载ETF列表（用于显示ETF名称）
+        await loadAllETFList();
+
+        // 生成卡片HTML
+        cardsDiv.innerHTML = strategies.map(s => {
+            // 获取ETF详情
+            const etfDetails = getETFDetailsFromConfig(s.allocation_config || {});
+            
+            // 计算配置摘要
+            const configSummary = etfDetails.length > 0 
+                ? etfDetails.map(e => `${e.name} ${(e.ratio * 100).toFixed(1)}%`).join(' + ')
+                : '未配置';
+
+            // 类型标签
+            const typeBadge = s.strategy_type === 'template' 
+                ? '<span class="badge badge-template">模板</span>'
+                : s.strategy_type === 'custom' 
+                ? '<span class="badge badge-success">自定义</span>'
+                : '<span class="badge badge-ai">AI生成</span>';
+
+            // 再平衡频率
+            const rebalanceText = s.rebalance_freq === 'none' 
+                ? '不再平衡' 
+                : `每${s.rebalance_freq === 'monthly' ? '月' : s.rebalance_freq === 'quarterly' ? '季度' : '年'}再平衡`;
+
+            return `
+                <div class="strategy-card" style="background:var(--bg-secondary);border-radius:12px;padding:20px;border:1px solid var(--border);transition:all 0.2s;">
+                    <!-- 头部：名称+类型 -->
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+                        <div style="flex:1;">
+                            <div style="font-size:18px;font-weight:600;color:var(--text);margin-bottom:4px;">${s.name}</div>
+                            <div style="font-size:13px;color:var(--text-secondary);">${s.description || '暂无描述'}</div>
+                        </div>
+                        ${typeBadge}
+                    </div>
+                    
+                    <!-- 配置详情 -->
+                    <div style="background:var(--bg);border-radius:8px;padding:12px;margin-bottom:16px;">
+                        <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:12px;">ETF配置方案</div>
+                        ${etfDetails.length > 0 ? `
+                            <div style="display:flex;flex-wrap:wrap;gap:8px;">
+                                ${etfDetails.map(e => `
+                                    <div style="flex:1;min-width:120px;background:var(--bg-secondary);border-radius:6px;padding:10px;">
+                                        <div style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;">${e.code}</div>
+                                        <div style="font-size:14px;font-weight:600;color:var(--text);">${e.name}</div>
+                                        <div style="font-size:16px;font-weight:700;color:var(--primary);margin-top:4px;">${(e.ratio * 100).toFixed(1)}%</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                            <div style="margin-top:12px;font-size:13px;color:var(--text-secondary);padding-top:8px;border-top:1px dashed var(--border);">
+                                配置摘要：${configSummary}
+                            </div>
+                        ` : `
+                            <div style="text-align:center;color:var(--text-secondary);padding:20px;">
+                                未配置ETF
+                            </div>
+                        `}
+                    </div>
+                    
+                    <!-- 参数信息 -->
+                    <div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:12px;margin-bottom:16px;font-size:13px;">
+                        <div>
+                            <span style="color:var(--text-secondary);">初始资金：</span>
+                            <span style="color:var(--text);font-weight:600;">¥${fmtNum(s.initial_capital, 0)}</span>
+                        </div>
+                        <div>
+                            <span style="color:var(--text-secondary);">再平衡：</span>
+                            <span style="color:var(--text);font-weight:600;">${rebalanceText}</span>
+                        </div>
+                        <div>
+                            <span style="color:var(--text-secondary);">偏离阈值：</span>
+                            <span style="color:var(--text);font-weight:600;">${(s.rebalance_threshold * 100).toFixed(1)}%</span>
+                        </div>
+                        <div>
+                            <span style="color:var(--text-secondary);">创建时间：</span>
+                            <span style="color:var(--text);">${s.created_at ? s.created_at.slice(0, 10) : '-'}</span>
+                        </div>
+                    </div>
+                    
+                    <!-- 状态+操作 -->
+                    <div style="display:flex;justify-content:space-between;align-items:center;padding-top:12px;border-top:1px solid var(--border);">
+                        <div style="font-size:13px;">
+                            <span style="color:var(--text-secondary);">状态：</span>
+                            <span class="badge badge-${s.status}">${s.status}</span>
+                        </div>
+                        <div style="display:flex;gap:8px;">
+                            <button class="btn btn-outline btn-sm" onclick="editStrategy(${s.id})">编辑</button>
+                            <button class="btn btn-danger btn-sm" onclick="deleteStrategy(${s.id})">删除</button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    } catch (e) { 
+        console.error(e);
+        toast('加载策略失败: ' + e.message, 'error');
+    }
+}
+
+// 获取ETF详情（从allocation_config和allETFList）
+function getETFDetailsFromConfig(allocationConfig) {
+    if (!allocationConfig || Object.keys(allocationConfig).length === 0) {
+        return [];
+    }
+    
+    const details = [];
+    Object.entries(allocationConfig).forEach(([code, ratio]) => {
+        // 从allETFList查找ETF名称
+        const etf = allETFList.find(e => e.etf_code === code);
+        
+        details.push({
+            code: code,
+            name: etf ? etf.etf_name : code,
+            ratio: ratio
+        });
+    });
+    
+    // 按比例排序（从大到小）
+    details.sort((a, b) => b.ratio - a.ratio);
+    
+    return details;
 }
 
 
