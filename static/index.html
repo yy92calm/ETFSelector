@@ -143,42 +143,17 @@
 
         <div id="bt-result" style="display:none;">
             <div class="stats-grid" id="bt-stats"></div>
-            <div class="card">
+<div class="card">
                 <div class="card-title">收益曲线</div>
                 <div id="bt-chart" style="height:400px;"></div>
             </div>
+            <div id="bt-trades-container"></div>
+        </div>
+    </div>
             <div class="card">
-                <div class="card-title">交易记录</div>
-                <div class="table-wrap">
-                    <table>
-                        <thead>
-                            <tr><th>日期</th><th>ETF</th><th>方向</th><th class="text-right">价格</th><th class="text-right">数量</th><th class="text-right">金额</th><th>原因</th></tr>
-                        </thead>
-                        <tbody id="bt-trades"></tbody>
-                    </table>
-                </div>
             </div>
             <div class="card">
                 <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
-                    <span>每日策略执行详情</span>
-                    <button class="btn btn-outline btn-sm" onclick="toggleDailyDetails()">展开/收起</button>
-                </div>
-                <div id="bt-daily-details" style="display:none;">
-                    <div class="table-wrap">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>日期</th>
-                                    <th>ETF</th>
-                                    <th>策略信号</th>
-                                    <th>执行动作</th>
-                                    <th>持仓</th>
-                                    <th>现金</th>
-                                    <th>总资产</th>
-                                </tr>
-                            </thead>
-                            <tbody id="bt-daily-tbody"></tbody>
-                        </table>
                     </div>
                 </div>
             </div>
@@ -254,45 +229,44 @@
         
         <div class="form-group">
             <label>再平衡设置</label>
-            <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;padding:10px;background:var(--bg-secondary);border-radius:6px;">
-                <label class="toggle-switch">
-                    <input type="checkbox" id="cs-enable-rebalance" checked onchange="toggleRebalanceOptions()">
-                    <span class="toggle-slider"></span>
-                </label>
-                <div style="flex:1;">
-                    <div style="font-size:15px;font-weight:600;color:var(--text);">启用自动再平衡</div>
-                    <div style="font-size:13px;color:var(--text-secondary);margin-top:2px;" id="rebalance-status-text">策略将定期调整持仓以保持目标配置比例</div>
+            <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:12px;">再平衡设置</div>
+            
+            <div style="padding:12px;background:linear-gradient(135deg, rgba(16,185,129,0.05) 0%, rgba(59,130,246,0.05) 100%);border-radius:6px;border:1px solid rgba(16,185,129,0.1);margin-bottom:12px;">
+                <div style="font-size:14px;color:var(--text-secondary);margin-bottom:12px;">
+                    定期检查持仓偏离情况，超过阈值则触发再平衡，恢复目标配置比例
                 </div>
-            </div>
-            <div id="rebalance-options" class="options-enabled" style="display:flex;gap:16px;padding:12px;background:linear-gradient(135deg, rgba(16,185,129,0.05) 0%, rgba(59,130,246,0.05) 100%);border-radius:6px;border:1px solid rgba(16,185,129,0.1);">
-                <div style="flex:1;">
-                    <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
-                        <span style="color:var(--success);">●</span> 再平衡频率
-                    </label>
-                    <select id="cs-rebalance-freq" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;">
-                        <option value="monthly">每月末执行</option>
-                        <option value="quarterly" selected>每季度末执行</option>
-                        <option value="yearly">每年末执行</option>
-                    </select>
-                    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">在周期末检查并调整持仓</div>
-                </div>
-                <div style="flex:1;">
-                    <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
-                        <span style="color:var(--warning);">●</span> 偏离阈值
-                    </label>
-                    <div style="display:flex;align-items:center;gap:8px;">
-                        <input type="number" id="cs-rebalance-threshold" value="5" min="1" max="20" step="1" style="width:70px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;text-align:center;">
-                        <span style="font-size:14px;color:var(--text);font-weight:600;">%</span>
+                
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div>
+                        <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
+                            <span style="color:var(--success);">●</span> 检查频率
+                        </label>
+                        <select id="cs-rebalance-freq" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;">
+                            <option value="daily">每日检查</option>
+                            <option value="weekly">每周检查</option>
+                            <option value="monthly" selected>每月检查</option>
+                            <option value="quarterly">每季度检查</option>
+                            <option value="yearly">每年检查</option>
+                            <option value="none">从不检查（禁用再平衡）</option>
+                        </select>
+                        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">按周期定期检查偏离情况</div>
                     </div>
-                    <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">占比偏离超过阈值时触发调整</div>
+                    
+                    <div>
+                        <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
+                            <span style="color:var(--warning);">●</span> 偏离阈值
+                        </label>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="number" id="cs-rebalance-threshold" value="5" min="1" max="20" step="1" style="width:70px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;text-align:center;">
+                            <span style="font-size:14px;color:var(--text);font-weight:600;">%</span>
+                        </div>
+                        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">偏离超过阈值触发再平衡</div>
+                    </div>
                 </div>
-            </div>
-            <div id="rebalance-disabled-hint" style="display:none;padding:12px;background:var(--bg-secondary);border-radius:6px;border:1px solid var(--border);margin-top:8px;">
-                <div style="display:flex;align-items:center;gap:8px;">
-                    <span style="color:var(--text-secondary);font-size:20px;">ℹ️</span>
-                    <div style="font-size:13px;color:var(--text-secondary);">
-                        <strong>再平衡已禁用</strong>：策略将保持初始配置，不会自动调整持仓比例。<br>
-                        <span style="font-size:12px;">适用于长期持有且不关注市场波动的场景。</span>
+                
+                <div style="margin-top:12px;padding:8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--primary);">
+                    <div style="font-size:12px;color:var(--text-secondary);">
+                        💡 <strong>工作原理</strong>：每到检查周期（如每月），系统会检查各ETF的实际占比与目标占比的偏离程度。如果偏离超过阈值（如5%），则自动触发再平衡，调整持仓回到目标配置。
                     </div>
                 </div>
             </div>
@@ -319,7 +293,7 @@
         </div>
         
         <!-- 对话历史区域 -->
-        <div id="ai-chat-container" style="height:400px;overflow-y:auto;padding:16px;background:var(--bg-secondary);border-radius:8px;margin-bottom:16px;">
+        <div id="ai-chat-container" style="height:300px;overflow-y:auto;padding:16px;background:var(--bg-secondary);border-radius:8px;margin-bottom:16px;">
             <div id="ai-chat-messages">
                 <!-- AI欢迎消息 -->
                 <div class="chat-message ai-message">
@@ -347,7 +321,7 @@
         </div>
         
         <!-- 输入区域 -->
-        <div style="display:flex;gap:12px;align-items:flex-end;">
+        <div style="display:flex;gap:12px;align-items:flex-end;margin-bottom:16px;">
             <div style="flex:1;">
                 <textarea id="ai-chat-input" rows="2" placeholder="描述你的投资偏好或提出修改建议..." style="width:100%;padding:12px;border:1px solid var(--border);border-radius:8px;font-size:14px;resize:none;"></textarea>
             </div>
@@ -356,47 +330,60 @@
             </button>
         </div>
         
-        <!-- 配置参数（可折叠） -->
-        <div style="margin-top:16px;">
-            <button class="btn btn-outline btn-sm" onclick="toggleAIAdvancedSettings()" style="width:100%;">
-                <span id="ai-advanced-toggle-text">显示高级设置 ▼</span>
-            </button>
-            <div id="ai-advanced-settings" style="display:none;padding:16px;background:var(--bg-secondary);border-radius:8px;margin-top:8px;">
-                <div class="form-group">
-                    <label style="font-size:13px;font-weight:600;">策略名称</label>
-                    <input type="text" id="ai-strategy-name" placeholder="例如：AI保守配置策略" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
+        <!-- 策略配置参数（与创建普通策略一致） -->
+        <div class="form-group">
+            <label>策略名称</label>
+            <input type="text" id="ai-strategy-name" placeholder="例如：AI保守配置策略" required>
+        </div>
+        
+        <div class="form-group">
+            <label>再平衡设置</label>
+            <div style="font-size:16px;font-weight:600;color:var(--text);margin-bottom:12px;">再平衡设置</div>
+            
+            <div style="padding:12px;background:linear-gradient(135deg, rgba(16,185,129,0.05) 0%, rgba(59,130,246,0.05) 100%);border-radius:6px;border:1px solid rgba(16,185,129,0.1);margin-bottom:12px;">
+                <div style="font-size:14px;color:var(--text-secondary);margin-bottom:12px;">
+                    定期检查持仓偏离情况，超过阈值则触发再平衡，恢复目标配置比例
                 </div>
-                <div class="form-group" style="margin-top:12px;">
-                    <label style="font-size:13px;font-weight:600;">AI模型</label>
-                    <select id="ai-model" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
-                        <option value="qwen3.6-plus" selected>通义千问3.6 Plus</option>
-                        <option value="kimi-k2.5">Kimi 2.5</option>
-                        <option value="MiniMax-M2.5">MiniMax M2.5</option>
-                    </select>
-                </div>
-                <div class="form-group" style="margin-top:12px;">
-                    <label style="font-size:13px;font-weight:600;">初始资金</label>
-                    <input type="number" id="ai-capital" value="100000" min="10000" step="10000" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
-                </div>
-                <div class="form-group" style="margin-top:12px;">
-                    <label style="font-size:13px;font-weight:600;">再平衡设置</label>
-                    <div style="display:flex;gap:12px;margin-top:8px;">
-                        <label class="toggle-switch" style="transform:scale(0.8);">
-                            <input type="checkbox" id="ai-enable-rebalance" checked onchange="toggleAIStrategyRebalanceOptions()">
-                            <span class="toggle-slider"></span>
+                
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div>
+                        <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
+                            <span style="color:var(--success);">●</span> 检查频率
                         </label>
-                        <div style="flex:1;display:flex;gap:8px;">
-                            <select id="ai-rebalance-freq" style="padding:6px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
-                                <option value="monthly">月</option>
-                                <option value="quarterly" selected>季</option>
-                                <option value="yearly">年</option>
-                            </select>
-                            <input type="number" id="ai-rebalance-threshold" value="5" min="1" max="20" style="width:60px;padding:6px;border:1px solid var(--border);border-radius:6px;font-size:13px;">
-                            <span style="font-size:13px;color:var(--text-secondary);">%阈值</span>
+                        <select id="ai-rebalance-freq" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;">
+                            <option value="daily">每日检查</option>
+                            <option value="weekly">每周检查</option>
+                            <option value="monthly" selected>每月检查</option>
+                            <option value="quarterly">每季度检查</option>
+                            <option value="yearly">每年检查</option>
+                            <option value="none">从不检查（禁用再平衡）</option>
+                        </select>
+                        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">按周期定期检查偏离情况</div>
+                    </div>
+                    
+                    <div>
+                        <label style="font-size:14px;font-weight:600;color:var(--text);display:block;margin-bottom:6px;">
+                            <span style="color:var(--warning);">●</span> 偏离阈值
+                        </label>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <input type="number" id="ai-rebalance-threshold" value="5" min="1" max="20" step="1" style="width:70px;padding:8px;border:1px solid var(--border);border-radius:6px;font-size:14px;text-align:center;">
+                            <span style="font-size:14px;color:var(--text);font-weight:600;">%</span>
                         </div>
+                        <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">偏离超过阈值触发再平衡</div>
+                    </div>
+                </div>
+                
+                <div style="margin-top:12px;padding:8px;background:var(--bg);border-radius:4px;border-left:3px solid var(--primary);">
+                    <div style="font-size:12px;color:var(--text-secondary);">
+                        💡 <strong>工作原理</strong>：每到检查周期（如每月），系统会检查各ETF的实际占比与目标占比的偏离程度。如果偏离超过阈值（如5%），则自动触发再平衡，调整持仓回到目标配置。
                     </div>
                 </div>
             </div>
+        </div>
+        
+        <div class="form-group">
+            <label>初始资金</label>
+            <input type="number" id="ai-capital" value="100000" min="10000" step="10000">
         </div>
         
         <!-- 最终确认按钮 -->
