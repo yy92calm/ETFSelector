@@ -77,6 +77,14 @@ class StrategyOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class AIChatRequest(BaseModel):
+    """AI对话式生成策略请求"""
+    message: str = Field(..., min_length=5, max_length=500, description="用户消息")
+    chat_history: Optional[str] = Field(None, description="对话历史")
+    current_allocation: Optional[dict] = Field(None, description="当前配置方案")
+    model: str = Field(default="qwen3.6-plus", description="使用的AI模型")
+
+
 class AIStrategyRequest(BaseModel):
     """AI策略生成请求"""
     description: str = Field(

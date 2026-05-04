@@ -70,6 +70,39 @@ def create_custom_strategy(req: StrategyCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/ai-chat", response_model=APIResponse)
+def ai_strategy_chat(req: dict, db: Session = Depends(get_db)):
+    """AI对话式生成策略配置"""
+    from app.strategies.generator import ETFAllocationAgent
+    
+    message = req.get("message", "")
+    chat_history = req.get("chat_history", "")
+    current_allocation = req.get("current_allocation")
+    model = req.get("model", "qwen3.6-plus")
+    
+    if not message or len(message) < 5:
+        raise HTTPException(status_code=400, detail="消息至少需要5个字符")
+    
+    try:
+        # 创建Agent实例
+        agent = ETFAllocationAgent()
+        
+        # 生成配置（支持迭代优化）
+        result = agent.chat_and_generate(
+            user_message=message,
+            chat_history=chat_history,
+            current_allocation=current_allocation,
+            model=model,
+            db=db
+        )
+        
+        return APIResponse(message="对话成功", data=result)
+    
+    except Exception as e:
+        logger.error(f"AI对话失败: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"AI对话失败: {str(e)}")
+
+
 @router.post("/create-ai", response_model=APIResponse)
 def create_ai_strategy(req: AIStrategyRequest, db: Session = Depends(get_db)):
     """通过自然语言描述创建AI配置策略"""

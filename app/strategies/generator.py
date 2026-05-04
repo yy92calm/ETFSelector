@@ -28,6 +28,244 @@ class ETFAllocationAgent:
                 base_url=settings.llm_api_base_url,
             )
     
+    def chat_and_generate(self, user_message: str, chat_history: str, 
+                           current_allocation: dict, model: str, db) -> dict:
+        """
+        对话式生成配置方案（支持迭代优化）
+        
+        Args:
+            user_message: 用户最新消息
+            chat_history: 对话历史
+            current_allocation: 当前配置方案（可能为None）
+            model: 模型名称
+            db: 数据库会话
+        
+        Returns:
+            {
+                "ai_response": "AI回复文本",
+                "allocation": {"510300": 0.5, ...},
+                "etf_info": {"510300": {"name": "沪深300ETF", "category": "宽基指数"}, ...}
+            }
+        """
+        logger.info(f"对话式生成 - 用户消息: {user_message}")
+        logger.info(f"对话历史长度: {len(chat_history)}")
+        logger.info(f"当前配置: {current_allocation}")
+        
+        # 判断是否是修改建议
+        is_modification = current_allocation and self._is_modification_request(user_message)
+        
+        if is_modification:
+            logger.info("检测到修改建议，基于当前配置调整")
+            allocation = self._adjust_allocation(current_allocation, user_message, model)
+        else:
+            logger.info("生成新的配置方案")
+            allocation = self.generate(user_message, model)
+        
+        # 获取ETF详细信息
+        etf_info = self._get_etf_details(allocation, db)
+        
+        # 生成AI回复文本
+        ai_response = self._generate_ai_response(
+            allocation, 
+            etf_info, 
+            user_message, 
+            chat_history,
+            is_modification,
+            model
+        )
+        
+        return {
+            "ai_response": ai_response,
+            "allocation": allocation,
+            "etf_info": etf_info
+        }
+    
+    def _is_modification_request(self, message: str) -> bool:
+        """判断是否是修改建议"""
+        modification_keywords = [
+            "增加", "减少", "调整", "修改", "改", "换成", "替换",
+            "太大", "太小", "太多", "太少", "偏高", "偏低",
+            "降低", "提高", "加大", "缩小", "扩大", "压缩"
+        ]
+        
+        return any(keyword in message for keyword in modification_keywords)
+    
+    def _adjust_allocation(self, current_allocation: dict, 
+                           user_message: str, model: str) -> dict:
+        """
+        基于用户修改建议调整配置
+        
+        Args:
+            current_allocation: 当前配置
+            user_message: 修改建议
+            model: 模型名称
+        
+        Returns:
+            调整后的配置
+        """
+        if not self.client:
+            return self._rule_based_adjust(current_allocation, user_message)
+        
+        prompt = f"""根据用户的修改建议调整ETF配置比例。
+
+当前配置：
+{json.dumps(current_allocation, ensure_ascii=False)}
+
+用户修改建议：
+"{user_message}"
+
+请返回调整后的配置（JSON格式，总和=1.0）：
+{"ETF代码": 新比例, ...}
+
+调整原则：
+1. 比例总和必须等于1.0
+2. 根据用户建议调整对应ETF的比例
+3. 如果用户要求"增加X"，适当提高X的比例
+4. 如果用户要求"减少Y"，适当降低Y的比例
+5. 调整幅度建议在10%-20%之间（除非用户明确指定）
+"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=300,
+            )
+            
+            content = response.choices[0].message.content
+            new_allocation = json.loads(content.strip())
+            
+            # 验证并返回
+            if self._validate_final_allocation(new_allocation):
+                logger.info(f"调整后的配置: {new_allocation}")
+                return new_allocation
+            else:
+                return current_allocation
+        
+        except Exception as e:
+            logger.error(f"调整配置失败: {e}")
+            return self._rule_based_adjust(current_allocation, user_message)
+    
+    def _rule_based_adjust(self, current_allocation: dict, user_message: str) -> dict:
+        """基于规则的配置调整（fallback）"""
+        new_allocation = current_allocation.copy()
+        
+        # 检测关键词并调整
+        if "增加" in user_message or "加大" in user_message or "提高" in user_message:
+            # 找到用户提到的ETF并增加比例
+            for code in current_allocation.keys():
+                if code in user_message or any(kw in user_message for kw in ["债券", "科创", "创业板", "宽基"]):
+                    new_allocation[code] = min(current_allocation[code] + 0.1, 0.8)
+                    # 需要从其他ETF减比例
+                    other_codes = [c for c in current_allocation.keys() if c != code]
+                    if other_codes:
+                        decrease_per_etf = 0.1 / len(other_codes)
+                        for other_code in other_codes:
+                            new_allocation[other_code] = max(current_allocation[other_code] - decrease_per_etf, 0.05)
+                    break
+        
+        elif "减少" in user_message or "降低" in user_message or "缩小" in user_message:
+            # 找到用户提到的ETF并减少比例
+            for code in current_allocation.keys():
+                if code in user_message or any(kw in user_message for kw in ["债券", "科创", "创业板", "宽基"]):
+                    new_allocation[code] = max(current_allocation[code] - 0.1, 0.05)
+                    # 需要给其他ETF加比例
+                    other_codes = [c for c in current_allocation.keys() if c != code]
+                    if other_codes:
+                        increase_per_etf = 0.1 / len(other_codes)
+                        for other_code in other_codes:
+                            new_allocation[other_code] = min(current_allocation[other_code] + increase_per_etf, 0.8)
+                    break
+        
+        logger.info(f"规则调整后的配置: {new_allocation}")
+        return new_allocation
+    
+    def _get_etf_details(self, allocation: dict, db) -> dict:
+        """获取ETF详细信息"""
+        from app.models.etf import ETFBasic
+        
+        etf_info = {}
+        
+        for code in allocation.keys():
+            etf = db.query(ETFBasic).filter(ETFBasic.etf_code == code).first()
+            
+            if etf:
+                etf_info[code] = {
+                    "name": etf.etf_name,
+                    "category": self._classify_etf(etf.etf_code, etf.etf_name)
+                }
+            else:
+                etf_info[code] = {
+                    "name": code,
+                    "category": "未知"
+                }
+        
+        return etf_info
+    
+    def _generate_ai_response(self, allocation: dict, etf_info: dict,
+                              user_message: str, chat_history: str,
+                              is_modification: bool, model: str) -> str:
+        """生成AI回复文本"""
+        if not self.client:
+            return self._generate_fallback_response(allocation, etf_info, is_modification)
+        
+        # 构建配置展示文本
+        config_text = "\n".join([
+            f"- {etf_info[code]['name']}（{etf_info[code]['category']}）: {(ratio * 100):.1f}%"
+            for code, ratio in allocation.items()
+        ])
+        
+        prompt = f"""你是一个友好的AI策略助手，请用自然语言回复用户。
+
+对话历史：
+{chat_history if chat_history else "（首次对话）"}
+
+用户最新消息：
+"{user_message}"
+
+生成的配置方案：
+{config_text}
+
+请回复用户（不要包含配置数据，用自然语言描述）：
+1. 如果是首次生成：简要说明配置方案的特点（风险等级、资产分布）
+2. 如果是修改调整：说明已根据建议调整，并简要说明调整内容
+3. 语气友好、专业，控制在100字以内
+"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,
+                max_tokens=150,
+            )
+            
+            return response.choices[0].message.content
+        
+        except Exception as e:
+            logger.error(f"生成AI回复失败: {e}")
+            return self._generate_fallback_response(allocation, etf_info, is_modification)
+    
+    def _generate_fallback_response(self, allocation: dict, etf_info: dict, 
+                                     is_modification: bool) -> str:
+        """生成fallback回复文本"""
+        if is_modification:
+            return "已根据你的建议调整配置方案。你可以继续提出修改意见，或者点击确认保存。"
+        else:
+            # 判断风险等级
+            has_bond = any("债券" in etf_info[code]['category'] for code in allocation.keys())
+            has_growth = any("科创" in etf_info[code]['category'] or "创业板" in etf_info[code]['category'] for code in allocation.keys())
+            
+            if has_bond and not has_growth:
+                risk = "保守型"
+            elif has_growth and not has_bond:
+                risk = "激进型"
+            else:
+                risk = "均衡型"
+            
+            return f"为你生成了一个{risk}配置方案，包含{len(allocation)}只ETF。你可以继续对话调整，或点击确认保存。"
+    
     def generate(self, description: str, model: str = None) -> Optional[Dict[str, float]]:
         """
         Agent Loop主流程：逐步筛选ETF并生成配置

@@ -584,85 +584,241 @@ async function loadAllETFList() {
     }
 }
 
+// AI对话历史管理
+let aiChatHistory = [];  // [{role: 'user/ai', content: '...'}]
+let aiCurrentAllocation = null;  // 当前生成的配置方案
+
 function showAIStrategyModal() {
     openModal('modal-ai-strategy');
-    // 清空表单
-    document.getElementById('ai-desc').value = '';
+    
+    // 重置状态
+    aiChatHistory = [];
+    aiCurrentAllocation = null;
+    
+    // 清空对话历史（保留欢迎消息）
+    const messagesDiv = document.getElementById('ai-chat-messages');
+    messagesDiv.innerHTML = `
+        <div class="chat-message ai-message">
+            <div class="message-avatar">🤖</div>
+            <div class="message-content">
+                <p>你好！我是AI策略助手，可以帮你生成ETF配置方案。</p>
+                <p style="font-size:13px;color:var(--text-secondary);margin-top:8px;">
+                    请告诉我你的投资偏好，例如：<br>
+                    • "我要一个保守组合，债券为主"<br>
+                    • "追求高收益，偏向科技股"<br>
+                    • "均衡配置，股债平衡"
+                </p>
+            </div>
+        </div>
+    `;
+    
+    // 隐藏配置预览
+    document.getElementById('ai-current-config').style.display = 'none';
+    document.getElementById('ai-confirm-btn').style.display = 'none';
+    
+    // 设置默认参数
+    document.getElementById('ai-model').value = 'qwen3.6-plus';
     document.getElementById('ai-capital').value = '100000';
-    document.getElementById('ai-model').value = 'qwen3.6-plus';  // 使用阿里云DashScope默认模型
     document.getElementById('ai-enable-rebalance').checked = true;
     document.getElementById('ai-rebalance-freq').value = 'quarterly';
     document.getElementById('ai-rebalance-threshold').value = '5';
     
-    // 初始化再平衡选项状态
-    toggleAIStrategyRebalanceOptions();
+    // 清空输入
+    document.getElementById('ai-chat-input').value = '';
 }
 
-function toggleAIStrategyRebalanceOptions() {
-    const enable = document.getElementById('ai-enable-rebalance').checked;
-    const optionsDiv = document.getElementById('ai-rebalance-options');
-    const hintText = document.getElementById('ai-rebalance-disabled-hint');
-    const statusText = document.getElementById('ai-rebalance-status-text');
+function toggleAIAdvancedSettings() {
+    const settingsDiv = document.getElementById('ai-advanced-settings');
+    const toggleText = document.getElementById('ai-advanced-toggle-text');
     
-    if (enable) {
-        // 启用状态
-        optionsDiv.style.display = 'flex';
-        optionsDiv.classList.remove('options-disabled');
-        optionsDiv.classList.add('options-enabled');
-        hintText.style.display = 'none';
-        statusText.innerHTML = '策略将定期调整持仓以保持目标配置比例';
-        statusText.style.color = 'var(--text-secondary)';
+    if (settingsDiv.style.display === 'none') {
+        settingsDiv.style.display = 'block';
+        toggleText.innerHTML = '隐藏高级设置 ▲';
     } else {
-        // 禁用状态
-        optionsDiv.style.display = 'none';
-        optionsDiv.classList.remove('options-enabled');
-        optionsDiv.classList.add('options-disabled');
-        hintText.style.display = 'block';
-        statusText.innerHTML = '策略将保持初始配置，不再自动调整';
-        statusText.style.color = 'var(--warning)';
+        settingsDiv.style.display = 'none';
+        toggleText.innerHTML = '显示高级设置 ▼';
     }
 }
 
-async function submitAIStrategy() {
-    const description = document.getElementById('ai-desc').value.trim();
-    const initialCapital = Number(document.getElementById('ai-capital').value);
-    const model = document.getElementById('ai-model').value;
+function clearAIChatHistory() {
+    if (!confirm('确定要清空对话历史吗？')) return;
+    
+    aiChatHistory = [];
+    aiCurrentAllocation = null;
+    
+    showAIStrategyModal();
+}
+
+async function sendAIMessage() {
+    const input = document.getElementById('ai-chat-input');
+    const message = input.value.trim();
+    
+    if (!message) {
+        toast('请输入内容', 'error');
+        return;
+    }
+    
+    // 显示用户消息
+    addChatMessage('user', message);
+    
+    // 清空输入
+    input.value = '';
+    
+    // 禁用发送按钮
+    const sendBtn = document.getElementById('ai-send-btn');
+    sendBtn.disabled = true;
+    sendBtn.textContent = '思考中...';
+    
+    // 构建对话历史（用于发送给后端）
+    const chatHistoryText = aiChatHistory.map(msg => 
+        `${msg.role === 'user' ? '用户' : 'AI'}: ${msg.content}`
+    ).join('\n');
+    
+    // 构建请求
+    const body = {
+        message: message,
+        chat_history: chatHistoryText,
+        current_allocation: aiCurrentAllocation,
+        model: document.getElementById('ai-model').value,
+    };
+    
+    try {
+        const res = await api('/api/strategy/ai-chat', { 
+            method: 'POST', 
+            body: JSON.stringify(body) 
+        });
+        
+        if (res.data) {
+            // 显示AI回复
+            addChatMessage('ai', res.data.ai_response);
+            
+            // 更新当前配置
+            if (res.data.allocation) {
+                aiCurrentAllocation = res.data.allocation;
+                displayCurrentAllocation(res.data.allocation, res.data.etf_info);
+                
+                // 显示确认按钮
+                document.getElementById('ai-confirm-btn').style.display = 'inline-block';
+            }
+            
+            // 记录对话历史
+            aiChatHistory.push({role: 'user', content: message});
+            aiChatHistory.push({role: 'ai', content: res.data.ai_response});
+        }
+        
+    } catch (e) {
+        addChatMessage('ai', '抱歉，生成失败。请重新描述你的需求。');
+        toast(e.message, 'error');
+    } finally {
+        sendBtn.disabled = false;
+        sendBtn.textContent = '发送';
+        
+        // 滚动到底部
+        scrollToBottom();
+    }
+}
+
+function addChatMessage(role, content) {
+    const messagesDiv = document.getElementById('ai-chat-messages');
+    
+    const avatar = role === 'user' ? '👤' : '🤖';
+    const messageClass = role === 'user' ? 'user-message' : 'ai-message';
+    
+    const messageHTML = `
+        <div class="chat-message ${messageClass}">
+            <div class="message-avatar">${avatar}</div>
+            <div class="message-content">${content}</div>
+        </div>
+    `;
+    
+    messagesDiv.innerHTML += messageHTML;
+}
+
+function displayCurrentAllocation(allocation, etfInfo) {
+    const previewDiv = document.getElementById('ai-config-preview');
+    const configDiv = document.getElementById('ai-current-config');
+    
+    configDiv.style.display = 'block';
+    
+    // 构建配置展示HTML
+    let configHTML = '';
+    
+    for (const [code, ratio] of Object.entries(allocation)) {
+        const info = etfInfo ? etfInfo[code] : null;
+        const name = info ? info.name : code;
+        
+        configHTML += `
+            <div class="config-item">
+                <div>
+                    <span class="config-etf-code">${code}</span>
+                    <span class="config-etf-name">${name}</span>
+                </div>
+                <span class="config-ratio">${(ratio * 100).toFixed(1)}%</span>
+            </div>
+        `;
+    }
+    
+    previewDiv.innerHTML = configHTML;
+}
+
+function scrollToBottom() {
+    const container = document.getElementById('ai-chat-container');
+    container.scrollTop = container.scrollHeight;
+}
+
+async function confirmAIStrategy() {
+    if (!aiCurrentAllocation) {
+        toast('没有可用的配置方案', 'error');
+        return;
+    }
+    
     const enableRebalance = document.getElementById('ai-enable-rebalance').checked;
     
-    if (!description) {
-        toast('请输入策略描述', 'error');
-        return;
-    }
-    
-    if (description.length < 5) {
-        toast('策略描述至少需要5个字符', 'error');
-        return;
-    }
-
     const body = {
-        description: description,
-        initial_capital: initialCapital,
-        model: model,
+        allocation_config: aiCurrentAllocation,
+        initial_capital: Number(document.getElementById('ai-capital').value),
         rebalance_freq: enableRebalance ? document.getElementById('ai-rebalance-freq').value : 'none',
         rebalance_threshold: enableRebalance ? Number(document.getElementById('ai-rebalance-threshold').value) / 100 : 0.05,
+        strategy_type: 'ai_generated',
+        description: aiChatHistory.map(m => m.content).join(' | '),  // 记录完整对话
     };
-
-    const btn = document.getElementById('ai-submit-btn');
-    btn.disabled = true;
-    btn.textContent = '生成中...';
-
+    
+    const confirmBtn = document.getElementById('ai-confirm-btn');
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = '保存中...';
+    
     try {
-        const res = await api('/api/strategy/create-ai', { method: 'POST', body: JSON.stringify(body) });
-        toast('AI策略生成成功', 'success');
+        const res = await api('/api/strategy/create-custom', { 
+            method: 'POST', 
+            body: JSON.stringify(body) 
+        });
+        
+        toast('策略保存成功', 'success');
         closeModal('modal-ai-strategy');
         loadStrategies();
+        
     } catch (e) {
-        toast(e.message || '生成失败', 'error');
+        toast('保存失败: ' + e.message, 'error');
     } finally {
-        btn.disabled = false;
-        btn.textContent = '生成策略';
+        confirmBtn.disabled = false;
+        confirmBtn.textContent = '确认并保存策略';
     }
 }
+
+// 输入框快捷键支持
+document.addEventListener('DOMContentLoaded', function() {
+    const input = document.getElementById('ai-chat-input');
+    if (input) {
+        input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendAIMessage();
+            }
+        });
+    }
+});
+
+
 
 async function deleteStrategy(id) {
     if (!confirm('确定删除该策略？')) return;
