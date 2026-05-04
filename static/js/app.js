@@ -573,6 +573,7 @@ async function loadStrategies() {
                     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:12px;">
                         <h3 style="font-size:18px;font-weight:600;margin:0;color:var(--text);">${s.name}</h3>
                         <div style="display:flex;gap:8px;">
+                            <button class="btn btn-success btn-sm" onclick="quickBacktest(${s.id}, '${s.name}', ${s.initial_capital})" style="padding:4px 12px;">回测</button>
                             <button class="btn btn-outline btn-sm" onclick="editStrategy(${s.id})" style="padding:4px 12px;">编辑</button>
                             <button class="btn btn-danger btn-sm" onclick="deleteStrategy(${s.id})" style="padding:4px 12px;">删除</button>
                         </div>
@@ -644,6 +645,179 @@ async function deleteStrategy(id) {
         loadStrategies();
     } catch (e) {
         toast('删除失败: ' + e.message, 'error');
+    }
+}
+
+// ==================================================================
+//  快速回测
+// ==================================================================
+let currentQuickBacktestStrategy = null;
+
+function quickBacktest(strategyId, strategyName, initialCapital) {
+    currentQuickBacktestStrategy = strategyId;
+    
+    document.getElementById('qb-strategy-name').textContent = strategyName;
+    document.getElementById('qb-capital').value = initialCapital;
+    
+    const today = new Date();
+    document.getElementById('qb-end').value = today.toISOString().split('T')[0];
+    
+    const oneYearAgo = new Date(today);
+    oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+    document.getElementById('qb-start').value = oneYearAgo.toISOString().split('T')[0];
+    
+    document.getElementById('qb-result').style.display = 'none';
+    
+    openModal('modal-quick-backtest');
+}
+
+async function runQuickBacktest() {
+    const btn = document.getElementById('qb-run-btn');
+    btn.disabled = true;
+    btn.textContent = '回测中...';
+    
+    const body = {
+        strategy_id: currentQuickBacktestStrategy,
+        start_date: document.getElementById('qb-start').value,
+        end_date: document.getElementById('qb-end').value,
+        initial_capital: Number(document.getElementById('qb-capital').value),
+    };
+    
+    try {
+        const res = await api('/api/backtest/run', { method: 'POST', body: JSON.stringify(body) });
+        const d = res.data;
+        
+        if (!d) {
+            throw new Error('回测返回数据为空');
+        }
+        
+        document.getElementById('qb-result').style.display = 'block';
+        
+        document.getElementById('qb-stats').innerHTML = [
+            { label: '最终资产', value: '¥' + fmtNum(d.final_asset || 0), color: '' },
+            { label: '总收益率', value: fmtNum(d.total_return_pct || 0) + '%', color: (d.total_return_pct || 0) >= 0 ? 'var(--danger)' : 'var(--success)' },
+            { label: '最大回撤', value: fmtNum(d.max_drawdown_pct || 0) + '%', color: 'var(--danger)' },
+            { label: 'Sharpe', value: d.sharpe_ratio != null ? fmtNum(d.sharpe_ratio) : '-', color: '' },
+            { label: '交易次数', value: d.trade_count || 0, color: '' },
+        ].map(s => `<div class="stat-card"><div class="stat-value" style="color:${s.color || 'inherit'}">${s.value}</div><div class="stat-label">${s.label}</div></div>`).join('');
+        
+        const periodReturnsDiv = document.getElementById('qb-period-returns');
+        if (d.time_period_returns && d.time_period_returns.length > 0) {
+            periodReturnsDiv.innerHTML = `
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-title">时间段收益</div>
+                    <div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));gap:12px;">
+                        ${d.time_period_returns.map(p => `
+                            <div style="background:var(--bg-secondary);border-radius:8px;padding:12px;text-align:center;">
+                                <div style="font-size:14px;font-weight:600;color:var(--text);margin-bottom:8px;">${p.period}</div>
+                                <div style="font-size:20px;font-weight:700;color:${p.return_pct >= 0 ? 'var(--danger)' : 'var(--success)'};">
+                                    ${fmtNum(p.return_pct)}%
+                                </div>
+                                <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">
+                                    ${p.days}天
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            `;
+        } else {
+            periodReturnsDiv.innerHTML = '';
+        }
+        
+        if (d.daily_data && d.daily_data.length > 0) {
+            const chart = echarts.init(document.getElementById('qb-chart'));
+            const dates = d.daily_data.map(x => x.date);
+            const assets = d.daily_data.map(x => x.total_asset);
+            const profits = d.daily_data.map(x => x.profit_pct);
+            
+            chart.setOption({
+                tooltip: {
+                    trigger: 'axis',
+                    formatter: function(params) {
+                        const date = params[0].axisValue;
+                        const asset = params[0].value;
+                        const profit = params[1].value;
+                        return `${date}<br/>总资产：¥${fmtNum(asset)}<br/>收益率：${fmtNum(profit)}%`;
+                    }
+                },
+                legend: { data: ['总资产', '收益率'] },
+                grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                xAxis: { type: 'category', data: dates },
+                yAxis: [
+                    { type: 'value', name: '总资产', position: 'left' },
+                    { type: 'value', name: '收益率%', position: 'right' }
+                ],
+                series: [
+                    { name: '总资产', type: 'line', data: assets, smooth: true, yAxisIndex: 0 },
+                    { name: '收益率', type: 'line', data: profits, smooth: true, yAxisIndex: 1, itemStyle: { color: '#10b981' } }
+                ]
+            });
+        }
+        
+        const tradesContainer = document.getElementById('qb-trades-container');
+        if (d.rebalance_records && d.rebalance_records.length > 0) {
+            const allTrades = [];
+            d.rebalance_records.forEach(record => {
+                record.adjustments.forEach(adj => {
+                    allTrades.push({
+                        date: record.date,
+                        etf_code: adj.etf_code,
+                        action: adj.action,
+                        price: adj.price,
+                        quantity: adj.quantity,
+                        amount: adj.amount,
+                        reason: record.reason
+                    });
+                });
+            });
+            
+            allTrades.sort((a, b) => new Date(b.date) - new Date(a.date));
+            
+            tradesContainer.innerHTML = `
+                <div class="card" style="margin-top:16px;">
+                    <div class="card-title">交易记录（共${allTrades.length}条）</div>
+                    <div class="table-wrap" style="max-height:300px;overflow-y:auto;">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th>日期</th>
+                                    <th>ETF代码</th>
+                                    <th>操作</th>
+                                    <th class="text-right">价格</th>
+                                    <th class="text-right">数量</th>
+                                    <th class="text-right">金额</th>
+                                    <th>原因</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${allTrades.slice(0, 10).map(t => `
+                                    <tr>
+                                        <td>${t.date}</td>
+                                        <td style="font-weight:600;color:var(--primary);">${t.etf_code}</td>
+                                        <td><span class="badge badge-${t.action === '买入' ? 'success' : 'danger'}">${t.action}</span></td>
+                                        <td class="text-right">${fmtNum(t.price)}</td>
+                                        <td class="text-right">${t.quantity}</td>
+                                        <td class="text-right">¥${fmtNum(t.amount)}</td>
+                                        <td style="font-size:12px;color:var(--text-secondary);">${t.reason}</td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        } else {
+            tradesContainer.innerHTML = '';
+        }
+        
+        btn.disabled = false;
+        btn.textContent = '开始回测';
+        toast('回测完成', 'success');
+    } catch (e) {
+        btn.disabled = false;
+        btn.textContent = '开始回测';
+        toast('回测失败: ' + e.message, 'error');
     }
 }
 

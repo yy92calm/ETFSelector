@@ -612,6 +612,52 @@
     </div>
 </div>
 
+<!-- 快速回测弹窗 -->
+<div class="modal-overlay" id="modal-quick-backtest">
+    <div class="modal" style="max-width:900px;max-height:90vh;">
+        <div class="modal-title">快速回测 - <span id="qb-strategy-name"></span></div>
+        
+        <!-- 回测参数 -->
+        <div class="form-row" style="margin-bottom:16px;">
+            <div class="form-group">
+                <label>开始日期</label>
+                <input type="date" id="qb-start" value="2025-01-01">
+            </div>
+            <div class="form-group">
+                <label>结束日期</label>
+                <input type="date" id="qb-end">
+            </div>
+            <div class="form-group">
+                <label>初始资金</label>
+                <input type="number" id="qb-capital" value="100000">
+            </div>
+        </div>
+        
+        <button class="btn btn-primary" onclick="runQuickBacktest()" id="qb-run-btn" style="margin-bottom:16px;">开始回测</button>
+        
+        <!-- 回测结果展示 -->
+        <div id="qb-result" style="display:none;">
+            <div class="stats-grid" id="qb-stats"></div>
+            
+            <!-- 收益曲线 -->
+            <div class="card" style="margin-top:16px;">
+                <div class="card-title">收益曲线</div>
+                <div id="qb-chart" style="height:350px;"></div>
+            </div>
+            
+            <!-- 时间段收益 -->
+            <div id="qb-period-returns"></div>
+            
+            <!-- 交易记录 -->
+            <div id="qb-trades-container"></div>
+        </div>
+        
+        <div style="margin-top:16px;text-align:right;">
+            <button class="btn btn-outline" onclick="closeModal('modal-quick-backtest')">关闭</button>
+        </div>
+    </div>
+</div>
+
 <script src="/static/js/app.js"></script>
 </body>
 </html>
