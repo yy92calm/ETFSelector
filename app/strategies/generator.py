@@ -1,6 +1,6 @@
 """
-ETF配置组合AI生成器 - Agent Loop架构
-通过多步推理从数据库ETF列表中逐步筛选并生成配置比例
+ETF配置组合生成器 - 对话式架构（简化版）
+通过多轮对话让LLM自由处理配置生成
 """
 
 import logging
@@ -52,6 +52,33 @@ class ETFAllocationAgent:
                 api_key=settings.llm_api_key,
                 base_url=settings.llm_api_base_url,
             )
+    
+    def _classify_etf(self, code: str, name: str) -> str:
+        """ETF分类（根据代码和名称判断）"""
+        if "债" in name or "货币" in name or code.startswith("511"):
+            return "债券"
+        elif "黄金" in name or "金" in name or code.startswith("518"):
+            return "黄金"
+        elif "科创" in name or code.startswith("588") or code.startswith("589"):
+            return "科创板"
+        elif code.startswith("159"):
+            return "创业板"
+        elif "医药" in name or "医疗" in name:
+            return "医药"
+        elif "科技" in name or "芯片" in name or "半导体" in name:
+            return "科技"
+        elif "新能源" in name or "光伏" in name or "锂电" in name:
+            return "新能源"
+        elif "300" in name or "沪深" in name:
+            return "宽基指数"
+        elif "500" in name or "中证" in name:
+            return "中盘指数"
+        elif "50" in name or "上证" in name:
+            return "大盘蓝筹"
+        elif "纳斯达克" in name or "标普" in name or code.startswith("513"):
+            return "海外指数"
+        else:
+            return "其他"
     
     def chat_and_generate(self, user_message: str, chat_history: str, 
                            current_allocation: dict, model: str, db) -> dict:

@@ -1,13 +1,15 @@
-"""配置组合策略管理API"""
+"""策略管理路由"""
 
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.schemas.schemas import APIResponse, StrategyCreate, AIStrategyRequest, StrategyUpdate
+from app.schemas.schemas import APIResponse, StrategyCreate, AIStrategyRequest, StrategyUpdate, AIChatRequest
 from app.services.strategy_service import get_strategy_service
 from app.strategies.registry import list_templates
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/strategy", tags=["配置组合策略"])
 
 
