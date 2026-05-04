@@ -54,7 +54,7 @@ def update_single_etf_net_value(
 
 @router.post("/batch-update", response_model=APIResponse)
 def batch_update_net_values(
-    days_limit: int = Query(None, ge=1, le=365, description="限制获取天数（None=全部历史，1=最近1天）"),
+    days_limit: int = Query(None, ge=1, description="限制获取天数（None=全部历史，1=最近1天）"),
     db: Session = Depends(get_db)
 ):
     """

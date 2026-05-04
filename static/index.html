@@ -566,7 +566,8 @@
                 • 数据来源：证监会官方披露（权威准确）<br>
                 • 频率限制：1秒1次（已放开，可快速拉取）<br>
                 • 数据范围：完整历史净值（自动分页获取）<br>
-                • ETF范围：广发、易方达、华夏三家基金公司
+                • ETF范围：广发、易方达、华夏三家基金公司<br>
+                • <strong style="color: var(--primary);">支持任意时间范围，无天数限制</strong>
             </p>
         </div>
         <div class="modal-actions">
@@ -615,7 +616,10 @@
 <!-- 快速回测弹窗 -->
 <div class="modal-overlay" id="modal-quick-backtest">
     <div class="modal" style="max-width:900px;max-height:90vh;">
-        <div class="modal-title">快速回测 - <span id="qb-strategy-name"></span></div>
+        <div class="modal-title" style="display:flex;justify-content:space-between;align-items:center;">
+            <span>快速回测 - <span id="qb-strategy-name"></span></span>
+            <button onclick="closeModal('modal-quick-backtest')" style="background:none;border:none;font-size:24px;color:var(--text-secondary);cursor:pointer;padding:0;line-height:1;">×</button>
+        </div>
         
         <!-- 回测参数 -->
         <div class="form-row" style="margin-bottom:16px;">
@@ -639,10 +643,16 @@
         <div id="qb-result" style="display:none;">
             <div class="stats-grid" id="qb-stats"></div>
             
-            <!-- 收益曲线 -->
+            <!-- 总资产曲线 -->
             <div class="card" style="margin-top:16px;">
-                <div class="card-title">收益曲线</div>
-                <div id="qb-chart" style="height:350px;"></div>
+                <div class="card-title">总资产曲线</div>
+                <div id="qb-chart-asset" style="height:300px;"></div>
+            </div>
+            
+            <!-- 收益率曲线 -->
+            <div class="card" style="margin-top:16px;">
+                <div class="card-title">收益率曲线</div>
+                <div id="qb-chart-profit" style="height:300px;"></div>
             </div>
             
             <!-- 时间段收益 -->

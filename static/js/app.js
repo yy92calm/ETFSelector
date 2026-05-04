@@ -317,11 +317,19 @@ async function updateTodayQuotes() {
 }
 
 async function fetchETFData(code) {
-    toast(`正在拉取 ${code} 历史数据...`, 'info');
+    toast(`正在拉取 ${code} 净值数据...`, 'info');
+    
     try {
-        const res = await api(`/api/etf/fetch/${code}?start_date=20200101`, { method: 'POST' });
-        toast(`${code}: 新增 ${res.data.new_records} 条`, 'success');
-    } catch (e) { toast(e.message, 'error'); }
+        const res = await api(`/api/net-value/update-single/${code}`, { method: 'POST' });
+        
+        if (res.data.success) {
+            toast(`${code}: 成功更新 ${res.data.count} 条净值数据`, 'success');
+        } else {
+            toast(`${code}: 净值数据获取失败`, 'error');
+        }
+    } catch (e) {
+        toast('拉取失败: ' + e.message, 'error');
+    }
 }
 
 // ==================================================================
@@ -725,35 +733,86 @@ async function runQuickBacktest() {
             periodReturnsDiv.innerHTML = '';
         }
         
-        if (d.daily_data && d.daily_data.length > 0) {
-            const chart = echarts.init(document.getElementById('qb-chart'));
-            const dates = d.daily_data.map(x => x.date);
-            const assets = d.daily_data.map(x => x.total_asset);
-            const profits = d.daily_data.map(x => x.profit_pct);
-            
-            chart.setOption({
-                tooltip: {
-                    trigger: 'axis',
-                    formatter: function(params) {
-                        const date = params[0].axisValue;
-                        const asset = params[0].value;
-                        const profit = params[1].value;
-                        return `${date}<br/>总资产：¥${fmtNum(asset)}<br/>收益率：${fmtNum(profit)}%`;
-                    }
-                },
-                legend: { data: ['总资产', '收益率'] },
-                grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-                xAxis: { type: 'category', data: dates },
-                yAxis: [
-                    { type: 'value', name: '总资产', position: 'left' },
-                    { type: 'value', name: '收益率%', position: 'right' }
-                ],
-                series: [
-                    { name: '总资产', type: 'line', data: assets, smooth: true, yAxisIndex: 0 },
-                    { name: '收益率', type: 'line', data: profits, smooth: true, yAxisIndex: 1, itemStyle: { color: '#10b981' } }
-                ]
-            });
-        }
+        setTimeout(() => {
+            if (d.daily_data && d.daily_data.length > 0) {
+                const dates = d.daily_data.map(x => x.date);
+                const assets = d.daily_data.map(x => x.total_asset);
+                const profits = d.daily_data.map(x => x.profit_pct);
+                const initialCapital = body.initial_capital;
+                const initialCapitalLine = dates.map(() => initialCapital);
+                
+                const assetChart = echarts.init(document.getElementById('qb-chart-asset'));
+                assetChart.setOption({
+                    tooltip: {
+                        trigger: 'axis',
+                        formatter: function(params) {
+                            const date = params[0].axisValue;
+                            let result = `${date}<br/>`;
+                            params.forEach(p => {
+                                if (p.seriesName === '总资产') {
+                                    result += `总资产：¥${fmtNum(p.value)}<br/>`;
+                                } else if (p.seriesName === '初始资产') {
+                                    result += `初始资产：¥${fmtNum(p.value)}<br/>`;
+                                }
+                            });
+                            return result;
+                        }
+                    },
+                    legend: { data: ['总资产', '初始资产'], bottom: 0 },
+                    grid: { left: '3%', right: '4%', bottom: '15%', top: '3%', containLabel: true },
+                    xAxis: { type: 'category', data: dates, boundaryGap: false },
+                    yAxis: { type: 'value', name: '总资产（元）' },
+                    series: [
+                        {
+                            name: '总资产',
+                            type: 'line',
+                            data: assets,
+                            smooth: true,
+                            areaStyle: { color: 'rgba(59, 130, 246, 0.1)' },
+                            lineStyle: { color: '#3b82f6', width: 2 },
+                            itemStyle: { color: '#3b82f6' }
+                        },
+                        {
+                            name: '初始资产',
+                            type: 'line',
+                            data: initialCapitalLine,
+                            lineStyle: { color: '#9ca3af', width: 1, type: 'dashed' },
+                            itemStyle: { color: '#9ca3af' },
+                            symbol: 'none'
+                        }
+                    ]
+                });
+                
+                const profitChart = echarts.init(document.getElementById('qb-chart-profit'));
+                profitChart.setOption({
+                    tooltip: {
+                        trigger: 'axis',
+                        formatter: function(params) {
+                            const date = params[0].axisValue;
+                            const profit = params[0].value;
+                            return `${date}<br/>收益率：${fmtNum(profit)}%`;
+                        }
+                    },
+                    grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+                    xAxis: { type: 'category', data: dates, boundaryGap: false },
+                    yAxis: { type: 'value', name: '收益率（%）' },
+                    series: [
+                        {
+                            name: '收益率',
+                            type: 'line',
+                            data: profits,
+                            smooth: true,
+                            lineStyle: { width: 2 },
+                            itemStyle: {
+                                color: function(params) {
+                                    return params.value >= 0 ? '#ef4444' : '#10b981';
+                                }
+                            }
+                        }
+                    ]
+                });
+            }
+        }, 100);
         
         const tradesContainer = document.getElementById('qb-trades-container');
         if (d.rebalance_records && d.rebalance_records.length > 0) {
@@ -1307,6 +1366,19 @@ async function submitUpdateRange() {
     const start = new Date(startDate);
     const end = new Date(endDate);
     const daysLimit = Math.ceil((end - start) / (1000 * 60 * 60 * 24));
+    
+    if (daysLimit < 1) {
+        toast('日期范围至少需要1天', 'error');
+        return;
+    }
+    
+    // 提示大量数据拉取耗时
+    if (daysLimit > 365) {
+        const confirmed = confirm(`您选择的时间范围较大（${daysLimit}天），批量拉取可能需要较长时间。\n\n确定继续吗？`);
+        if (!confirmed) {
+            return;
+        }
+    }
     
     const btn = document.getElementById('range-submit-btn');
     btn.disabled = true;
