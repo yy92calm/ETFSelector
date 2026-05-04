@@ -1168,36 +1168,70 @@ async function runBacktest() {
     try {
         const res = await api('/api/backtest/run', { method: 'POST', body: JSON.stringify(body) });
         const d = res.data;
+        
+        // 防御性检查：确保必要字段存在
+        if (!d) {
+            throw new Error('回测返回数据为空');
+        }
+        
         document.getElementById('bt-result').style.display = 'block';
 
         // 统计卡片
         document.getElementById('bt-stats').innerHTML = [
-            { label: '最终资产', value: '¥' + fmtNum(d.final_asset), color: '' },
-            { label: '总收益率', value: fmtNum(d.total_return_pct) + '%', color: d.total_return_pct >= 0 ? 'var(--success)' : 'var(--danger)' },
-            { label: '最大回撤', value: fmtNum(d.max_drawdown_pct) + '%', color: 'var(--danger)' },
+            { label: '最终资产', value: '¥' + fmtNum(d.final_asset || 0), color: '' },
+            { label: '总收益率', value: fmtNum(d.total_return_pct || 0) + '%', color: (d.total_return_pct || 0) >= 0 ? 'var(--success)' : 'var(--danger)' },
+            { label: '最大回撤', value: fmtNum(d.max_drawdown_pct || 0) + '%', color: 'var(--danger)' },
             { label: 'Sharpe', value: d.sharpe_ratio != null ? fmtNum(d.sharpe_ratio) : '-', color: '' },
-            { label: '交易次数', value: d.trade_count, color: '' },
+            { label: '交易次数', value: d.trade_count || 0, color: '' },
             { label: '胜率', value: d.win_rate != null ? fmtNum(d.win_rate) + '%' : '-', color: '' },
         ].map(s => `<div class="stat-card"><div class="stat-value" style="color:${s.color || 'inherit'}">${s.value}</div><div class="stat-label">${s.label}</div></div>`).join('');
 
-        // 收益曲线
-        renderBacktestChart(d.daily_data, d.initial_capital);
+        // 收益曲线（检查数据是否存在）
+        if (d.daily_data && d.daily_data.length > 0) {
+            renderBacktestChart(d.daily_data, d.initial_capital);
+        } else {
+            document.getElementById('bt-chart').innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-secondary);">无每日数据</div>';
+        }
 
-        // 交易记录
-        document.getElementById('bt-trades').innerHTML = d.trades.map(t => `
-            <tr>
-                <td>${t.date}</td>
-                <td>${t.etf_code}</td>
-                <td><span class="${t.direction === 'buy' ? 'text-danger' : 'text-success'}">${t.direction === 'buy' ? '买入' : '卖出'}</span></td>
-                <td class="text-right">${fmtNum(t.price, 3)}</td>
-                <td class="text-right">${t.quantity}</td>
-                <td class="text-right">${fmtNum(t.amount)}</td>
-                <td>${t.reason}</td>
-            </tr>
-        `).join('');
+        // 交易记录（使用rebalance_records，检查数据是否存在）
+        if (d.rebalance_records && d.rebalance_records.length > 0) {
+            // 将rebalance_records转换为交易记录格式
+            const trades = [];
+            d.rebalance_records.forEach(record => {
+                record.adjustments.forEach(adj => {
+                    trades.push({
+                        date: record.date,
+                        etf_code: adj.etf_code,
+                        direction: adj.action === '买入' ? 'buy' : 'sell',
+                        price: adj.price,
+                        quantity: adj.quantity,
+                        amount: adj.amount,
+                        reason: record.reason
+                    });
+                });
+            });
+            
+            document.getElementById('bt-trades').innerHTML = trades.map(t => `
+                <tr>
+                    <td>${t.date}</td>
+                    <td>${t.etf_code}</td>
+                    <td><span class="${t.direction === 'buy' ? 'text-danger' : 'text-success'}">${t.direction === 'buy' ? '买入' : '卖出'}</span></td>
+                    <td class="text-right">${fmtNum(t.price, 3)}</td>
+                    <td class="text-right">${t.quantity}</td>
+                    <td class="text-right">${fmtNum(t.amount)}</td>
+                    <td>${t.reason}</td>
+                </tr>
+            `).join('');
+        } else {
+            document.getElementById('bt-trades').innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-secondary);">无交易记录</td></tr>';
+        }
 
-        // 每日策略执行详情
-        renderDailyDetails(d.daily_details);
+        // 每日策略执行详情（检查数据是否存在）
+        if (d.daily_details && d.daily_details.length > 0) {
+            renderDailyDetails(d.daily_details);
+        } else {
+            document.getElementById('bt-daily-details').innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-secondary);">无每日详情</div>';
+        }
 
         toast('回测完成', 'success');
     } catch (e) {
