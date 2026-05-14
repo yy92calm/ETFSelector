@@ -1,22 +1,19 @@
 """
 实盘模拟服务
-从策略创建日起，使用每日行情执行策略，
-以「全部成功买入 / 全部成功卖出」方式处理信号，每日记录组合资产
+基于配置组合+再平衡逻辑，每日检查并执行策略
 """
 
 import logging
-from datetime import date, timedelta
+from datetime import date
 from typing import Optional, List, Dict
 
-import pandas as pd
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from app.models.etf import ETFQuotation
 from app.models.strategy import Strategy
 from app.models.portfolio import PortfolioSnapshot, TradeRecord, Holding
 from app.services.strategy_service import get_strategy_service
-from app.strategies.base import StrategyContext
+from app.strategies.base import PortfolioContext
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +21,8 @@ logger = logging.getLogger(__name__)
 class PortfolioService:
 
     def run_strategy_for_date(self, strategy: Strategy, trade_date: date, db: Session):
-        """
-        为指定策略在指定日期执行一次信号检测和交易
-        """
-        svc = get_strategy_service()
-        strategy_instance = svc.get_strategy_instance(strategy)
-        etf_codes = strategy.etf_codes or []
-
+        """为指定策略在指定日期执行再平衡检查和交易"""
+        etf_codes = strategy.get_etf_codes()
         if not etf_codes:
             return
 
@@ -59,148 +51,140 @@ class PortfolioService:
             cash = float(strategy.initial_capital)
 
         # 获取当前持仓
-        holdings_records = (
-            db.query(Holding)
-            .filter(Holding.strategy_id == strategy.id)
-            .all()
-        )
+        holdings_records = db.query(Holding).filter(
+            Holding.strategy_id == strategy.id
+        ).all()
         holdings: Dict[str, int] = {h.etf_code: h.quantity for h in holdings_records}
-        avg_costs: Dict[str, float] = {h.etf_code: h.avg_cost for h in holdings_records}
 
-        # 对每个ETF生成并执行信号
+        # 获取当日各ETF价格
+        current_prices = {}
         for code in etf_codes:
-            # 取历史数据（含当日）
-            rows = (
-                db.query(ETFQuotation)
-                .filter(ETFQuotation.etf_code == code,
-                        ETFQuotation.trade_date <= trade_date)
-                .order_by(ETFQuotation.trade_date.asc())
-                .all()
-            )
-            if not rows:
-                continue
-
-            hist = pd.DataFrame([{
-                "date": r.trade_date,
-                "open": r.open_price,
-                "close": r.close_price,
-                "high": r.high_price,
-                "low": r.low_price,
-                "volume": r.volume,
-                "amount": r.amount,
-                "change_pct": r.change_pct,
-            } for r in rows])
-
-            # 检查当日是否有行情
-            today_data = hist[hist["date"] == trade_date]
-            if today_data.empty:
-                continue
-
-            ctx = StrategyContext(
-                etf_code=code,
-                history=hist,
-                current_date=trade_date,
-                holdings=holdings.copy(),
-                cash=cash,
-                params=strategy_instance.params,
-            )
-
-            signals = strategy_instance.generate_signals(ctx)
-
-            for sig in signals:
-                current_price = hist.iloc[-1]["close"]
-                if current_price <= 0:
-                    continue
-
-                if sig.direction == "buy" and cash > 0:
-                    max_qty = int(cash / current_price / 100) * 100
-                    if max_qty > 0:
-                        trade_amount = max_qty * current_price
-                        old_qty = holdings.get(code, 0)
-                        old_cost = avg_costs.get(code, 0)
-                        if old_qty + max_qty > 0:
-                            avg_costs[code] = (old_cost * old_qty + trade_amount) / (old_qty + max_qty)
-                        holdings[code] = old_qty + max_qty
-                        cash -= trade_amount
-
-                        db.add(TradeRecord(
-                            strategy_id=strategy.id,
-                            trade_date=trade_date,
-                            etf_code=code,
-                            direction="buy",
-                            price=current_price,
-                            quantity=max_qty,
-                            amount=trade_amount,
-                            reason=sig.reason,
-                        ))
-
-                elif sig.direction == "sell" and holdings.get(code, 0) > 0:
-                    qty = holdings[code]
-                    trade_amount = qty * current_price
-                    cash += trade_amount
-                    holdings[code] = 0
-
-                    db.add(TradeRecord(
-                        strategy_id=strategy.id,
-                        trade_date=trade_date,
-                        etf_code=code,
-                        direction="sell",
-                        price=current_price,
-                        quantity=qty,
-                        amount=trade_amount,
-                        reason=sig.reason,
-                    ))
-
-        # 计算当日市值
-        market_value = 0
-        for code, qty in holdings.items():
-            if qty <= 0:
-                continue
-            latest = (
+            quote = (
                 db.query(ETFQuotation)
                 .filter(ETFQuotation.etf_code == code,
                         ETFQuotation.trade_date <= trade_date)
                 .order_by(ETFQuotation.trade_date.desc())
                 .first()
             )
-            if latest:
-                price = latest.close_price
-                market_value += qty * price
+            if quote and quote.close_price > 0:
+                current_prices[code] = quote.close_price
 
-                # 更新持仓记录
-                h = db.query(Holding).filter(
-                    Holding.strategy_id == strategy.id,
-                    Holding.etf_code == code,
-                ).first()
+        if not current_prices:
+            return
+
+        # 计算当前市值和总资产
+        market_value = 0
+        for code, qty in holdings.items():
+            if qty > 0 and code in current_prices:
+                market_value += qty * current_prices[code]
+
+        total_asset = cash + market_value
+
+        # 构建上下文
+        ctx = PortfolioContext(
+            current_date=trade_date,
+            total_asset=total_asset,
+            holdings=holdings.copy(),
+            current_prices=current_prices,
+            allocation_config=strategy.allocation_config,
+            rebalance_threshold=strategy.rebalance_threshold,
+        )
+
+        # 获取策略实例并检查是否需要再平衡
+        svc = get_strategy_service()
+        strategy_instance = svc.get_strategy_instance(strategy)
+
+        if strategy_instance.check_rebalance(ctx):
+            signals = strategy_instance.generate_rebalance_signals(ctx)
+
+            for signal in signals:
+                for adj in signal.adjustments:
+                    etf_code = adj['etf_code']
+                    action = adj['action']
+                    amount = adj['amount']
+                    price = current_prices.get(etf_code, 0)
+
+                    if price <= 0:
+                        continue
+
+                    if action == "buy" and cash >= amount:
+                        quantity = int(amount / price / 100) * 100
+                        if quantity > 0:
+                            actual_amount = quantity * price
+                            holdings[etf_code] = holdings.get(etf_code, 0) + quantity
+                            cash -= actual_amount
+
+                            db.add(TradeRecord(
+                                strategy_id=strategy.id,
+                                trade_date=trade_date,
+                                etf_code=etf_code,
+                                direction="buy",
+                                price=price,
+                                quantity=quantity,
+                                amount=round(actual_amount, 2),
+                                reason=signal.reason,
+                            ))
+
+                    elif action == "sell" and holdings.get(etf_code, 0) > 0:
+                        target_sell_amount = amount
+                        current_qty = holdings[etf_code]
+                        sell_qty = min(int(target_sell_amount / price / 100) * 100, current_qty)
+
+                        if sell_qty > 0:
+                            actual_amount = sell_qty * price
+                            holdings[etf_code] -= sell_qty
+                            if holdings[etf_code] <= 0:
+                                holdings[etf_code] = 0
+                            cash += actual_amount
+
+                            db.add(TradeRecord(
+                                strategy_id=strategy.id,
+                                trade_date=trade_date,
+                                etf_code=etf_code,
+                                direction="sell",
+                                price=price,
+                                quantity=sell_qty,
+                                amount=round(actual_amount, 2),
+                                reason=signal.reason,
+                            ))
+
+        # 重新计算市值
+        market_value = 0
+        for code, qty in holdings.items():
+            if qty > 0 and code in current_prices:
+                market_value += qty * current_prices[code]
+
+        total_asset = cash + market_value
+        initial = float(strategy.initial_capital)
+        profit = total_asset - initial
+        profit_pct = profit / initial * 100 if initial > 0 else 0
+
+        # 更新持仓记录
+        for code in etf_codes:
+            qty = holdings.get(code, 0)
+            price = current_prices.get(code, 0)
+
+            h = db.query(Holding).filter(
+                Holding.strategy_id == strategy.id,
+                Holding.etf_code == code,
+            ).first()
+
+            if qty > 0 and price > 0:
                 if h:
                     h.quantity = qty
                     h.current_price = price
                     h.market_value = qty * price
-                    h.avg_cost = avg_costs.get(code, 0)
                 else:
                     db.add(Holding(
                         strategy_id=strategy.id,
                         etf_code=code,
                         quantity=qty,
-                        avg_cost=avg_costs.get(code, 0),
+                        avg_cost=price,
                         current_price=price,
                         market_value=qty * price,
                     ))
-
-        # 清除已清仓的持仓
-        for code, qty in holdings.items():
-            if qty <= 0:
-                h = db.query(Holding).filter(
-                    Holding.strategy_id == strategy.id,
-                    Holding.etf_code == code,
-                ).first()
-                if h:
-                    db.delete(h)
-
-        total_asset = cash + market_value
-        initial = float(strategy.initial_capital)
-        profit = total_asset - initial
-        profit_pct = profit / initial * 100
+            elif h and qty <= 0:
+                db.delete(h)
 
         db.add(PortfolioSnapshot(
             strategy_id=strategy.id,
@@ -217,9 +201,7 @@ class PortfolioService:
 
     def run_all_active_strategies(self, db: Session):
         """执行所有活跃策略的当日信号"""
-        from datetime import date as d
-        today = d.today()
-
+        today = date.today()
         strategies = db.query(Strategy).filter(Strategy.status == "active").all()
         for s in strategies:
             try:
@@ -228,15 +210,10 @@ class PortfolioService:
                 logger.error(f"执行策略 {s.id} 失败: {e}")
 
     def catch_up_strategy(self, strategy: Strategy, db: Session):
-        """
-        补跑策略：从策略创建日到今天，逐日执行
-        用于策略首次创建后的补全
-        """
-        from datetime import date as d
-
+        """补跑策略：从策略创建日到今天，逐日执行"""
         start = strategy.created_at.date()
-        today = d.today()
-        etf_codes = strategy.etf_codes or []
+        today = date.today()
+        etf_codes = strategy.get_etf_codes()
 
         if not etf_codes:
             return

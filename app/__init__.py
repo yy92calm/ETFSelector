@@ -9,9 +9,7 @@ from fastapi.responses import FileResponse
 
 from app.config import get_settings
 from app.db.database import init_db
-from app.routes import etf_routes, strategy_routes, backtest_routes, net_value_routes  # noqa: F401
-# portfolio_routes 暂时禁用（实盘模拟服务待重构）
-# from app.routes import portfolio_routes  # noqa: F401
+from app.routes import etf_routes, strategy_routes, backtest_routes, net_value_routes, auto_strategy_routes, portfolio_routes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,11 +20,10 @@ settings = get_settings()
 
 app = FastAPI(
     title=settings.app_name,
-    description="ETF量化选择系统 — 行情获取 · 策略回测 · 模拟实盘",
-    version="0.2.0",
+    description="ETF量化选择系统 — 行情获取 · 策略回测 · 模拟实盘 · AI自动策略",
+    version="0.3.0",
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -35,17 +32,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 静态文件
 static_dir = Path(__file__).parent.parent / "static"
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
 
-# 注册路由
 app.include_router(etf_routes.router)
 app.include_router(strategy_routes.router)
 app.include_router(backtest_routes.router)
-app.include_router(net_value_routes.router)  # 净值数据路由
-# app.include_router(portfolio_routes.router)  # 暂时禁用
+app.include_router(net_value_routes.router)
+app.include_router(auto_strategy_routes.router)
+app.include_router(portfolio_routes.router)
 
 
 @app.on_event("startup")
@@ -58,7 +54,7 @@ def startup():
     scheduler = get_scheduler()
     if not scheduler.running:
         scheduler.start()
-        logger.info(f"定时任务已启动 (每日 {settings.scheduler_hour}:{settings.scheduler_minute:02d})")
+        logger.info(f"定时任务已启动")
 
 
 @app.on_event("shutdown")

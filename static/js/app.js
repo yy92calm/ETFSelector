@@ -13,12 +13,23 @@ async function api(path, options = {}) {
     return data;
 }
 
-function toast(msg, type = 'info') {
+function toast(msg, type = 'info', duration = 5000) {
     const el = document.createElement('div');
-    el.className = `toast toast-${type}`;
-    el.textContent = msg;
+    el.className = `toast toast-${type} toast-dismiss`;
+    el.innerHTML = `<span>${msg}</span><span class="toast-close">×</span>`;
+    
+    el.querySelector('.toast-close').onclick = () => {
+        el.style.animation = 'slideOut 0.2s ease';
+        setTimeout(() => el.remove(), 200);
+    };
+    
     document.body.appendChild(el);
-    setTimeout(() => el.remove(), 3500);
+    setTimeout(() => {
+        if (el.parentNode) {
+            el.style.animation = 'slideOut 0.2s ease';
+            setTimeout(() => el.remove(), 200);
+        }
+    }, duration);
 }
 
 function fmtNum(n, d = 2) {
@@ -60,12 +71,37 @@ document.querySelectorAll('.nav-links a').forEach(a => {
         if (tab === 'market') loadMarket();
         if (tab === 'strategy') loadStrategies();
         if (tab === 'backtest') loadBacktestPage();
+        if (tab === 'auto-strategy') loadAutoStrategyPage();
     });
 });
 
 // ---- Modal ----
-function openModal(id) { document.getElementById(id).classList.add('active'); }
-function closeModal(id) { document.getElementById(id).classList.remove('active'); }
+function openModal(id) { 
+    document.getElementById(id).classList.add('active');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeModal(id) { 
+    document.getElementById(id).classList.remove('active');
+    document.body.style.overflow = '';
+}
+
+// ESC键关闭弹窗
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+        const activeModal = document.querySelector('.modal-overlay.active');
+        if (activeModal) {
+            closeModal(activeModal.id);
+        }
+    }
+});
+
+// 点击背景关闭弹窗
+document.addEventListener('click', (e) => {
+    if (e.target.classList.contains('modal-overlay')) {
+        closeModal(e.target.id);
+    }
+});
 
 // ==================================================================
 //  行情看板
@@ -583,7 +619,7 @@ async function loadStrategies() {
                         <div style="display:flex;gap:8px;">
                             <button class="btn btn-success btn-sm" onclick="quickBacktest(${s.id}, '${s.name}', ${s.initial_capital})" style="padding:4px 12px;">回测</button>
                             <button class="btn btn-outline btn-sm" onclick="editStrategy(${s.id})" style="padding:4px 12px;">编辑</button>
-                            <button class="btn btn-danger btn-sm" onclick="deleteStrategy(${s.id})" style="padding:4px 12px;">删除</button>
+                            <button class="btn btn-danger btn-sm" onclick="showDeleteConfirm(${s.id})" style="padding:4px 12px;">删除</button>
                         </div>
                     </div>
                     
@@ -644,9 +680,35 @@ function updateStrategySelects(strategies) {
     }
 }
 
+function showDeleteConfirm(id) {
+    const modalHtml = `
+        <div class="modal-overlay active" id="modal-delete-confirm">
+            <div class="modal modal-confirm" style="max-width:400px;text-align:center;">
+                <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
+                <div class="modal-title">确认删除策略？</div>
+                <div style="color:var(--text-secondary);font-size:14px;margin:12px 0 24px;">
+                    删除后无法恢复，相关回测记录也会被清除
+                </div>
+                <div class="modal-actions" style="justify-content:center;">
+                    <button class="btn btn-outline" onclick="closeDeleteConfirm()">取消</button>
+                    <button class="btn btn-danger" onclick="confirmDelete(${id})" style="margin-left:12px;">确认删除</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    document.body.style.overflow = 'hidden';
+}
+
+function closeDeleteConfirm() {
+    const modal = document.getElementById('modal-delete-confirm');
+    if (modal) {
+        modal.remove();
+        document.body.style.overflow = '';
+    }
+}
+
 async function deleteStrategy(id) {
-    if (!confirm('确定删除该策略？')) return;
-    
     try {
         await api(`/api/strategy/${id}`, { method: 'DELETE' });
         toast('策略已删除', 'success');
@@ -654,6 +716,11 @@ async function deleteStrategy(id) {
     } catch (e) {
         toast('删除失败: ' + e.message, 'error');
     }
+}
+
+async function confirmDelete(id) {
+    closeDeleteConfirm();
+    await deleteStrategy(id);
 }
 
 // ==================================================================
@@ -1978,4 +2045,443 @@ function renderHistoryChart(netValues, etfCode, etfName) {
             historyChart.resize();
         }
     });
+}
+
+/* ====== AI驱动策略模块 ====== */
+
+let currentAutoStrategyId = null;
+let autoStrategyAllocations = [];
+
+async function loadAutoStrategyPage() {
+    await Promise.all([
+        loadAutoStrategies(),
+        loadSentimentSummary(),
+        loadSentiments(),
+    ]);
+}
+
+async function loadAutoStrategies() {
+    try {
+        const data = await api('/api/auto-strategy/list');
+        if (data.data.strategies && data.data.strategies.length > 0) {
+            currentAutoStrategyId = data.data.strategies[0].id;
+            renderAutoStrategyInfo(data.data.strategies[0]);
+            loadExecutionLogs(currentAutoStrategyId);
+            loadExperiences(currentAutoStrategyId);
+        } else {
+            currentAutoStrategyId = null;
+            document.getElementById('auto-strategy-info').innerHTML =
+                '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">🤖</div><div>请先创建自动策略</div></div>';
+        }
+        document.getElementById('auto-strategy-status').textContent = `共 ${data.data.total} 个策略`;
+    } catch (e) {
+        toast('获取策略列表失败', 'error');
+    }
+}
+
+function renderAutoStrategyInfo(strategy) {
+    const statusClass = strategy.status === 'running' ? 'running' : 'paused';
+    const statusText = strategy.status === 'running' ? '运行中' : '已暂停';
+    const toggleBtnText = strategy.status === 'running' ? '暂停策略' : '恢复运行';
+    const toggleBtnClass = strategy.status === 'running' ? 'btn-warning' : 'btn-success';
+
+    const allocationHtml = Object.entries(strategy.allocation || {}).map(([code, ratio]) => {
+        const etf = allQuotes.find(q => q.etf_code === code);
+        return `
+            <div class="config-item">
+                <span>
+                    <span class="config-etf-code">${code}</span>
+                    <span class="config-etf-name">${etf ? etf.etf_name : ''}</span>
+                </span>
+                <span class="config-ratio">${fmtNum(ratio * 100)}%</span>
+            </div>
+        `;
+    }).join('');
+
+    document.getElementById('auto-strategy-info').innerHTML = `
+        <div style="padding:16px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                <div style="font-weight:600;font-size:16px;">${strategy.name}</div>
+                <span class="auto-strategy-badge ${statusClass}">${statusText}</span>
+            </div>
+            <div style="font-size:13px;color:var(--text-secondary);margin-bottom:12px;">
+                调整次数: ${strategy.adjustment_count || 0} | 最近分析: ${strategy.last_analysis || '暂无'}
+            </div>
+            <div style="font-size:14px;font-weight:600;margin-bottom:8px;">当前配置:</div>
+            ${allocationHtml || '<div style="color:var(--text-secondary);font-size:13px;">暂无配置</div>'}
+            <div style="display:flex;gap:8px;margin-top:16px;border-top:1px solid var(--border);padding-top:12px;">
+                <button class="btn ${toggleBtnClass} btn-sm" onclick="toggleAutoStrategyStatus(${strategy.id}, '${strategy.status}')">${toggleBtnText}</button>
+                <button class="btn btn-danger btn-sm" onclick="deleteAutoStrategy(${strategy.id})">删除策略</button>
+            </div>
+        </div>
+    `;
+}
+
+async function toggleAutoStrategyStatus(strategyId, currentStatus) {
+    try {
+        const endpoint = currentStatus === 'running' ? 'pause' : 'resume';
+        await api(`/api/auto-strategy/${endpoint}?strategy_id=${strategyId}`, { method: 'POST' });
+        toast(currentStatus === 'running' ? '策略已暂停' : '策略已恢复运行', 'success');
+        loadAutoStrategies();
+    } catch (e) {
+        toast('操作失败: ' + e.message, 'error');
+    }
+}
+
+async function deleteAutoStrategy(strategyId) {
+    const modalHtml = `
+        <div class="modal-overlay active" id="modal-delete-auto-strategy">
+            <div class="modal modal-confirm" style="max-width:400px;text-align:center;">
+                <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
+                <div class="modal-title">确认删除自动策略？</div>
+                <div style="color:var(--text-secondary);font-size:14px;margin:12px 0 24px;">
+                    删除后无法恢复，相关执行日志和经验也会被清除
+                </div>
+                <div class="modal-actions" style="justify-content:center;">
+                    <button class="btn btn-outline" onclick="document.getElementById('modal-delete-auto-strategy').remove();document.body.style.overflow='';">取消</button>
+                    <button class="btn btn-danger" onclick="confirmDeleteAutoStrategy(${strategyId})" style="margin-left:12px;">确认删除</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+    document.body.style.overflow = 'hidden';
+}
+
+async function confirmDeleteAutoStrategy(strategyId) {
+    const modal = document.getElementById('modal-delete-auto-strategy');
+    if (modal) {
+        modal.remove();
+        document.body.style.overflow = '';
+    }
+
+    try {
+        await api(`/api/strategy/${strategyId}`, { method: 'DELETE' });
+        toast('自动策略已删除', 'success');
+        currentAutoStrategyId = null;
+        loadAutoStrategies();
+    } catch (e) {
+        toast('删除失败: ' + e.message, 'error');
+    }
+}
+
+async function loadSentimentSummary() {
+    try {
+        const data = await api('/api/auto-strategy/sentiments/summary');
+        const summary = data.data;
+
+        document.getElementById('stat-sentiment-count').textContent = summary.total || 0;
+        document.getElementById('stat-sentiment-positive').textContent = summary.positive || 0;
+        document.getElementById('stat-sentiment-negative').textContent = summary.negative || 0;
+        document.getElementById('stat-sentiment-avg').textContent = summary.avg_score || '-';
+    } catch (e) {
+        console.error('获取舆情汇总失败', e);
+    }
+}
+
+async function loadSentiments() {
+    try {
+        const data = await api('/api/auto-strategy/sentiments?days=1');
+        const sentiments = data.data.sentiments || [];
+
+        if (sentiments.length === 0) {
+            document.getElementById('sentiment-list').innerHTML =
+                '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📡</div><div>点击"采集舆情"获取数据</div></div>';
+            return;
+        }
+
+        const sourceLabels = {
+            'eastmoney': '东财',
+            'cls': '财联社',
+            'ths': '同花顺',
+            'sina': '新浪',
+            'jin10': '金十',
+            'eastmoney_hot': '东财热点',
+            'eastmoney_keyword': '东财关键词'
+        };
+
+        const html = sentiments.map(s => {
+            const scoreClass = s.sentiment_score > 0 ? 'text-success' : s.sentiment_score < 0 ? 'text-danger' : '';
+            const label = s.sentiment_label === 'positive' ? '✅' : s.sentiment_label === 'negative' ? '⚠️' : '➖';
+            const sourceLabel = sourceLabels[s.source] || s.source;
+            return `
+                <div class="config-item" style="margin-bottom:8px;">
+                    <span style="flex:1;">
+                        <span class="badge" style="font-size:11px;margin-right:6px;background:var(--primary);color:white;">${sourceLabel}</span>
+                        ${label} ${s.title || s.content?.substring(0, 50) || 'N/A'}
+                    </span>
+                    <span class="${scoreClass}" style="font-weight:600;">${s.sentiment_score?.toFixed(2) || '-'}</span>
+                </div>
+            `;
+        }).join('');
+
+        document.getElementById('sentiment-list').innerHTML = html;
+    } catch (e) {
+        toast('获取舆情数据失败', 'error');
+    }
+}
+
+async function loadExecutionLogs(strategyId) {
+    try {
+        const data = await api(`/api/auto-strategy/logs?strategy_id=${strategyId}&days=7`);
+        const logs = data.data.logs || [];
+
+        if (logs.length === 0) {
+            document.getElementById('auto-strategy-logs').innerHTML =
+                '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📋</div><div>暂无执行日志</div></div>';
+            return;
+        }
+
+        const html = logs.map(log => {
+            const statusIcon = log.status === 'success' ? '✅' : log.status === 'skipped' ? '⏭️' : '❌';
+            return `
+                <div class="config-item" style="margin-bottom:8px;">
+                    <span>${statusIcon} ${log.log_date} - ${log.action_type}</span>
+                    <span style="color:var(--text-secondary);font-size:12px;">${log.safety_reason || ''}</span>
+                </div>
+            `;
+        }).join('');
+
+        document.getElementById('auto-strategy-logs').innerHTML = html;
+    } catch (e) {
+        console.error('获取执行日志失败', e);
+    }
+}
+
+async function loadExperiences(strategyId) {
+    try {
+        const data = await api(`/api/auto-strategy/experiences?strategy_id=${strategyId}`);
+        const experiences = data.data.experiences || [];
+
+        if (experiences.length === 0) {
+            document.getElementById('experience-list').innerHTML =
+                '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">💡</div><div>暂无历史经验</div></div>';
+            return;
+        }
+
+        const html = experiences.map(exp => {
+            const typeIcon = exp.experience_type === 'success' ? '✅' : exp.experience_type === 'failure' ? '⚠️' : '💡';
+            const score = exp.effectiveness_score?.toFixed(1) || 'N/A';
+            return `
+                <div class="config-item" style="margin-bottom:8px;">
+                    <span style="flex:1;">${typeIcon} ${exp.title}</span>
+                    <span style="font-size:12px;color:var(--text-secondary);">评分: ${score}</span>
+                </div>
+            `;
+        }).join('');
+
+        document.getElementById('experience-list').innerHTML = html;
+    } catch (e) {
+        console.error('获取经验失败', e);
+    }
+}
+
+// ---- 创建自动策略弹窗 ----
+
+function showCreateAutoStrategyModal() {
+    autoStrategyAllocations = [];
+    document.getElementById('as-name').value = 'AI自动策略';
+    document.getElementById('as-capital').value = '100000';
+    document.getElementById('as-max-adjustments').value = '1';
+    document.getElementById('as-enable-memory').checked = true;
+    document.getElementById('as-etf-search').value = '';
+    updateAutoStrategyAllocationDisplay();
+    initAutoStrategyETFSearch();
+    openModal('modal-create-auto-strategy');
+}
+
+function initAutoStrategyETFSearch() {
+    const searchInput = document.getElementById('as-etf-search');
+    const resultsDiv = document.getElementById('as-etf-results');
+
+    searchInput.value = '';
+    const newInput = searchInput.cloneNode(true);
+    searchInput.parentNode.replaceChild(newInput, searchInput);
+
+    newInput.addEventListener('input', function() {
+        const keyword = this.value.trim().toLowerCase();
+        if (!keyword) {
+            resultsDiv.classList.remove('active');
+            return;
+        }
+
+        const matches = allQuotes.filter(etf => {
+            if (autoStrategyAllocations.find(a => a.code === etf.etf_code)) return false;
+            return etf.etf_code.toLowerCase().includes(keyword) ||
+                   etf.etf_name.toLowerCase().includes(keyword);
+        }).slice(0, 10);
+
+        if (matches.length > 0) {
+            resultsDiv.innerHTML = matches.map(etf => `
+                <div class="etf-search-item" onclick="addAutoStrategyAllocation('${etf.etf_code}', '${etf.etf_name}')">
+                    <span class="code">${etf.etf_code}</span>
+                    <span class="name">${etf.etf_name}</span>
+                </div>
+            `).join('');
+            resultsDiv.classList.add('active');
+        } else {
+            resultsDiv.innerHTML = '<div class="etf-search-item"><span class="name">无匹配结果</span></div>';
+            resultsDiv.classList.add('active');
+        }
+    });
+
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('#modal-create-auto-strategy .etf-search-container')) {
+            resultsDiv.classList.remove('active');
+        }
+    });
+}
+
+function addAutoStrategyAllocation(code, name) {
+    autoStrategyAllocations.push({
+        code: code,
+        name: name.slice(0, 15),
+        ratio: 0
+    });
+
+    document.getElementById('as-etf-search').value = '';
+    document.getElementById('as-etf-results').classList.remove('active');
+    updateAutoStrategyAllocationDisplay();
+}
+
+function removeAutoStrategyAllocation(code) {
+    autoStrategyAllocations = autoStrategyAllocations.filter(a => a.code !== code);
+    updateAutoStrategyAllocationDisplay();
+}
+
+function updateAutoStrategyAllocationRatio(code, ratio) {
+    const allocation = autoStrategyAllocations.find(a => a.code === code);
+    if (allocation) {
+        allocation.ratio = parseFloat(ratio) || 0;
+    }
+    updateAutoStrategyAllocationDisplay();
+}
+
+function updateAutoStrategyAllocationDisplay() {
+    const container = document.getElementById('as-allocation-list');
+
+    if (autoStrategyAllocations.length === 0) {
+        container.innerHTML = '<div style="color:var(--text-secondary);font-size:14px;padding:8px;">留空将使用默认均衡配置</div>';
+        document.getElementById('as-allocation-total').textContent = '当前占比总和: 0%';
+        document.getElementById('as-allocation-warning').textContent = '';
+        return;
+    }
+
+    container.innerHTML = autoStrategyAllocations.map(a => `
+        <div style="display:flex;align-items:center;margin-bottom:8px;padding:8px;background:var(--bg-secondary);border-radius:4px;">
+            <span style="flex:1;font-weight:600;">${a.code}</span>
+            <span style="flex:2;color:var(--text-secondary);font-size:13px;">${a.name}</span>
+            <input type="number" value="${a.ratio}" min="0" max="100" step="1"
+                   onchange="updateAutoStrategyAllocationRatio('${a.code}', this.value)"
+                   style="width:70px;margin-right:8px;padding:4px;border:1px solid var(--border);border-radius:4px;text-align:right;">
+            <span style="width:20px;color:var(--text-secondary);">%</span>
+            <button class="btn btn-outline btn-sm" onclick="removeAutoStrategyAllocation('${a.code}')" style="margin-left:8px;padding:2px 8px;">删除</button>
+        </div>
+    `).join('');
+
+    const totalRatio = autoStrategyAllocations.reduce((sum, a) => sum + a.ratio, 0);
+    document.getElementById('as-allocation-total').textContent = `当前占比总和: ${totalRatio.toFixed(1)}%`;
+
+    const warning = document.getElementById('as-allocation-warning');
+    if (totalRatio > 100) {
+        warning.textContent = '⚠️ 占比总和超过100%！';
+        warning.style.color = 'var(--danger)';
+    } else if (totalRatio < 100) {
+        warning.textContent = `还可配置 ${(100 - totalRatio).toFixed(1)}%`;
+        warning.style.color = 'var(--text-secondary)';
+    } else {
+        warning.textContent = '✅ 配置完整';
+        warning.style.color = 'var(--success)';
+    }
+}
+
+async function submitCreateAutoStrategy() {
+    const name = document.getElementById('as-name').value.trim();
+    if (!name) {
+        toast('请输入策略名称', 'warning');
+        return;
+    }
+
+    let initialAllocation = null;
+    if (autoStrategyAllocations.length > 0) {
+        const totalRatio = autoStrategyAllocations.reduce((sum, a) => sum + a.ratio, 0);
+        if (Math.abs(totalRatio - 100) > 0.1) {
+            toast(`ETF配置占比总和需等于100%，当前总和${totalRatio.toFixed(1)}%`, 'error');
+            return;
+        }
+        initialAllocation = {};
+        autoStrategyAllocations.forEach(a => {
+            initialAllocation[a.code] = a.ratio / 100;
+        });
+    }
+
+    const btn = document.getElementById('as-submit-btn');
+    btn.disabled = true;
+    btn.textContent = '创建中...';
+
+    try {
+        const data = await api('/api/auto-strategy/create', {
+            method: 'POST',
+            body: JSON.stringify({
+                name: name,
+                initial_allocation: initialAllocation,
+                initial_capital: Number(document.getElementById('as-capital').value),
+                max_daily_adjustments: Number(document.getElementById('as-max-adjustments').value),
+                enable_memory: document.getElementById('as-enable-memory').checked,
+            }),
+        });
+        toast('自动策略创建成功', 'success');
+        currentAutoStrategyId = data.data.strategy_id;
+        closeModal('modal-create-auto-strategy');
+        loadAutoStrategies();
+    } catch (e) {
+        toast('创建失败: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '创建策略';
+    }
+}
+
+async function triggerSentimentCollect() {
+    try {
+        toast('开始采集舆情...', 'info');
+        const data = await api('/api/auto-strategy/trigger-collect', { method: 'POST' });
+        toast(`舆情采集完成: ${data.data.news_count}条`, 'success');
+        loadSentimentSummary();
+        loadSentiments();
+    } catch (e) {
+        toast('采集失败: ' + e.message, 'error');
+    }
+}
+
+async function triggerMarketAnalyze() {
+    if (!currentAutoStrategyId) {
+        toast('请先创建自动策略', 'warning');
+        return;
+    }
+
+    try {
+        toast('开始AI分析...', 'info');
+        const data = await api(`/api/auto-strategy/trigger-analyze?strategy_id=${currentAutoStrategyId}`, { method: 'POST' });
+        toast(`AI分析完成: ${data.data.market_sentiment}`, 'success');
+        loadAutoStrategies();
+    } catch (e) {
+        toast('分析失败: ' + e.message, 'error');
+    }
+}
+
+async function triggerReview() {
+    if (!currentAutoStrategyId) {
+        toast('请先创建自动策略', 'warning');
+        return;
+    }
+
+    try {
+        toast('开始复盘...', 'info');
+        const data = await api(`/api/auto-strategy/trigger-review?strategy_id=${currentAutoStrategyId}&review_type=weekly`, { method: 'POST' });
+        toast(`复盘完成: 生成${data.data.experiences_generated}条经验`, 'success');
+        loadExperiences(currentAutoStrategyId);
+    } catch (e) {
+        toast('复盘失败: ' + e.message, 'error');
+    }
 }

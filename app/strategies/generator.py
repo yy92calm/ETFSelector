@@ -22,7 +22,7 @@ class ETFAllocationAgent:
 
 你的任务：
 1. 通过多轮对话理解用户投资需求（风险偏好、资产类型、投资目标等）
-2. 从可用ETF列表中选择合适的ETF组合
+2. **严格从可用ETF列表中选择ETF代码**，禁止选择列表之外的ETF
 3. 根据用户需求自由分配配置比例
 4. 用自然语言友好回复用户
 
@@ -34,11 +34,12 @@ class ETFAllocationAgent:
   "confidence": "high/medium/low"
 }
 
-注意：
+⚠️ 严格约束：
 - reply字段：自然语言回复
 - allocation字段：比例总和必须等于1.0
 - confidence字段：信心程度（high/medium/low）
-- 完全自由发挥，根据用户需求自主决策"""
+- **allocation中的ETF代码必须是可用ETF列表中的代码，使用其他代码将被系统拒绝**
+- 完全自由发挥，但必须在可用ETF范围内选择"""
 
     def __init__(self):
         self.client = None
@@ -160,9 +161,10 @@ class ETFAllocationAgent:
         # 用户消息
         user_part = f'\n用户消息：\n"{user_message}"'
         
-        # ETF列表（格式化为简洁列表）
-        etf_part = f"\n可用ETF（{len(etf_list)}只）：\n"
+        # ETF列表（格式化为简洁列表，强调范围限制）
+        etf_part = f"\n⚠️ 可用ETF列表（共{len(etf_list)}只，仅限从中选择）：\n"
         etf_part += "\n".join([f"{etf['code']}: {etf['name']}" for etf in etf_list])
+        etf_part += "\n\n重要：allocation中的ETF代码必须严格使用上述列表中的代码，使用其他代码将无效。"
         
         return f"{history_part}{current_part}{user_part}{etf_part}\n\n请返回JSON格式的配置方案。"
     

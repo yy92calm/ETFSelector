@@ -7,7 +7,6 @@ from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
 
 from app.models.strategy import Strategy
-from app.strategies.registry import get_template_config, list_templates
 from app.strategies.portfolio_rebalance import PortfolioRebalanceStrategy
 
 logger = logging.getLogger(__name__)
@@ -15,31 +14,6 @@ logger = logging.getLogger(__name__)
 
 class StrategyService:
 
-    def create_template_strategy(self, data: dict, db: Session) -> Strategy:
-        """创建模板配置策略"""
-        template_name = data.get("template_name")
-        
-        # 获取模板配置
-        template_config = get_template_config(template_name)
-        
-        strategy = Strategy(
-            name=data["name"],
-            description=data.get("description", "") or template_config["description"],
-            strategy_type="template",
-            
-            # 配置组合字段
-            allocation_config=template_config["allocation_config"],
-            rebalance_freq=template_config["rebalance_freq"],
-            rebalance_threshold=template_config["rebalance_threshold"],
-            
-            initial_capital=data.get("initial_capital", 100000),
-        )
-        db.add(strategy)
-        db.commit()
-        db.refresh(strategy)
-        logger.info(f"创建配置组合策略: {strategy.name}, 配置: {strategy.allocation_config}")
-        return strategy
-    
     def create_custom_strategy(self, data: dict, db: Session) -> Strategy:
         """创建自定义配置策略"""
         allocation_config = data.get("allocation_config")

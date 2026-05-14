@@ -7,17 +7,20 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.schemas.schemas import APIResponse, StrategyCreate, AIStrategyRequest, StrategyUpdate, AIChatRequest
 from app.services.strategy_service import get_strategy_service
-from app.strategies.registry import list_templates
+from app.models.etf import ETFBasic
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/strategy", tags=["配置组合策略"])
 
 
-@router.get("/templates", response_model=APIResponse)
-def get_strategy_templates():
-    """获取所有配置模板"""
-    templates = list_templates()
-    return APIResponse(data={"templates": templates})
+@router.get("/etfs", response_model=APIResponse)
+def get_available_etfs(db: Session = Depends(get_db)):
+    """获取数据库中所有可用ETF列表"""
+    etfs = db.query(ETFBasic).all()
+    return APIResponse(data={
+        "etfs": [{"code": etf.etf_code, "name": etf.etf_name} for etf in etfs],
+        "total": len(etfs),
+    })
 
 
 @router.get("/list", response_model=APIResponse)
@@ -46,25 +49,11 @@ def get_strategy_list(db: Session = Depends(get_db)):
 
 @router.post("/create", response_model=APIResponse)
 def create_strategy(req: StrategyCreate, db: Session = Depends(get_db)):
-    """创建模板配置策略"""
-    svc = get_strategy_service()
-    try:
-        strategy = svc.create_template_strategy(req.model_dump(), db)
-        return APIResponse(message="配置策略创建成功", data={
-            "strategy_id": strategy.id,
-            "allocation_config": strategy.allocation_config
-        })
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.post("/create-custom", response_model=APIResponse)
-def create_custom_strategy(req: StrategyCreate, db: Session = Depends(get_db)):
-    """创建自定义配置策略"""
+    """创建配置策略"""
     svc = get_strategy_service()
     try:
         strategy = svc.create_custom_strategy(req.model_dump(), db)
-        return APIResponse(message="自定义配置策略创建成功", data={
+        return APIResponse(message="配置策略创建成功", data={
             "strategy_id": strategy.id,
             "allocation_config": strategy.allocation_config
         })

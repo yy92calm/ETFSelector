@@ -1,6 +1,6 @@
 """策略模型 - ETF配置组合"""
 
-from sqlalchemy import Column, String, Integer, Text, DateTime, JSON, Float
+from sqlalchemy import Column, String, Integer, Text, DateTime, JSON, Float, Boolean, Date
 from datetime import datetime
 from app.db.database import Base
 
@@ -32,6 +32,20 @@ class Strategy(Base):
     template_name = Column(String(50), nullable=True, comment="模板名称（旧版，已废弃）")
     params = Column(JSON, nullable=True, comment="策略参数（旧版，已废弃）")
     etf_codes = Column(JSON, nullable=True, comment="关联ETF代码列表（旧版，已废弃）")
+    
+    # ===== AI全自动策略新增字段 =====
+    strategy_source = Column(String(20), default='manual', comment="策略来源: manual/auto_generated")
+    auto_strategy_status = Column(String(20), nullable=True, comment="自动策略状态: running/paused/stopped")
+    last_auto_analysis_date = Column(Date, nullable=True, comment="最近自动分析日期")
+    auto_adjustment_count = Column(Integer, default=0, comment="自动调整累计次数")
+    max_daily_adjustments = Column(Integer, default=1, comment="每日最大调整次数")
+    
+    # AI分析结果缓存
+    last_analysis_result = Column(JSON, nullable=True, comment="最近AI分析结果")
+    
+    # 记忆机制配置
+    enable_memory = Column(Boolean, default=True, comment="是否启用记忆机制")
+    experience_limit = Column(Integer, default=50, comment="最大经验条数")
 
     def __repr__(self):
         return f"<Strategy {self.id}: {self.name}>"
@@ -41,3 +55,11 @@ class Strategy(Base):
         if self.allocation_config:
             return list(self.allocation_config.keys())
         return []
+    
+    def is_auto_strategy(self):
+        """判断是否为自动策略"""
+        return self.strategy_source == 'auto_generated'
+    
+    def can_adjust_today(self):
+        """判断今日是否还能调整"""
+        return self.auto_adjustment_count < self.max_daily_adjustments

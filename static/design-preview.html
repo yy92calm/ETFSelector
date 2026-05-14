@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>设计改进对比演示</title>
+    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/modern-design.css">
+    <style>
+        /* 演示页面特定样式 */
+        .demo-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 24px;
+            margin: 24px;
+        }
+        
+        .demo-section {
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            padding: 24px;
+            background: white;
+        }
+        
+        .demo-section.old-design {
+            /* 使用旧版样式 */
+        }
+        
+        .demo-section.new-design {
+            /* 使用新版样式 */
+        }
+        
+        .section-title {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 16px;
+            padding: 12px;
+            text-align: center;
+            border-radius: 8px;
+        }
+        
+        .old-title {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .new-title {
+            background: #f9fafb;
+            color: #111827;
+            border: 1px solid #e5e7eb;
+        }
+        
+        .demo-navbar {
+            margin-bottom: 24px;
+        }
+        
+        .comparison-note {
+            font-size: 14px;
+            color: #6b7280;
+            text-align: center;
+            margin-top: 8px;
+            padding: 8px;
+            background: #f3f4f6;
+            border-radius: 6px;
+        }
+    </style>
+</head>
+<body>
+
+<div style="max-width: 1400px; margin: 0 auto; padding: 24px;">
+    <h1 style="font-size: 32px; text-align: center; margin-bottom: 8px;">ETFSelector 界面设计改进对比</h1>
+    <p style="text-align: center; color: #6b7280; font-size: 16px; margin-bottom: 32px;">左侧为当前设计，右侧为现代化改进方案</p>
+    
+    <!-- 导航栏对比 -->
+    <div class="demo-container">
+        <div class="demo-section old-design">
+            <div class="section-title old-title">当前设计</div>
+            
+            <div class="demo-navbar">
+                <nav class="navbar">
+                    <h1>ETF量化选择系统</h1>
+                    <div class="nav-links">
+                        <a href="#" class="active">行情看板</a>
+                        <a href="#">策略管理</a>
+                        <a href="#">策略回测</a>
+                        <a href="#">实盘模拟</a>
+                    </div>
+                </nav>
+            </div>
+            
+            <div class="comparison-note">特点：紫蓝渐变背景，较花哨</div>
+        </div>
+        
+        <div class="demo-section new-design">
+            <div class="section-title new-title">现代化设计</div>
+            
+            <div class="demo-navbar">
+                <nav class="navbar">
+                    <h1>ETF量化选择系统</h1>
+                    <div class="nav-links">
+                        <a href="#" class="active">行情看板</a>
+                        <a href="#">策略管理</a>
+                        <a href="#">策略回测</a>
+                        <a href="#">实盘模拟</a>
+                    </div>
+                </nav>
+            </div>
+            
+            <div class="comparison-note">特点：简洁白色背景，更专业</div>
+        </div>
+    </div>
+    
+    <!-- 按钮对比 -->
+    <div class="demo-container" style="margin-top: 32px;">
+        <div class="demo-section old-design">
+            <h3 style="margin-bottom: 16px;">按钮系统 - 当前设计</h3>
+            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <button class="btn btn-primary">主要按钮</button>
+                <button class="btn btn-success">成功按钮</button>
+                <button class="btn btn-warning">警告按钮</button>
+                <button class="btn btn-danger">危险按钮</button>
+                <button class="btn btn-outline">轮廓按钮</button>
+            </div>
+            <div class="comparison-note" style="margin-top: 16px;">特点：渐变背景，阴影较轻</div>
+        </div>
+        
+        <div class="demo-section new-design">
+            <h3 style="margin-bottom: 16px;">按钮系统 - 现代化设计</h3>
+            <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+                <button class="btn btn-primary">主要按钮</button>
+                <button class="btn btn-success">成功按钮</button>
+                <button class="btn btn-warning">警告按钮</button>
+                <button class="btn btn-danger">危险按钮</button>
+                <button class="btn btn-outline">轮廓按钮</button>
+            </div>
+            <div class="comparison-note" style="margin-top: 16px;">特点：纯色背景，多层阴影，微交互</div>
+        </div>
+    </div>
+    
+    <!-- 卡片对比 -->
+    <div class="demo-container" style="margin-top: 32px;">
+        <div class="demo-section old-design">
+            <h3 style="margin-bottom: 16px;">卡片设计 - 当前</h3>
+            <div class="card">
+                <div class="card-title">全市场ETF行情</div>
+                <div style="padding: 16px; color: #64748b; font-size: 14px;">
+                    这是一个卡片内容示例，展示了当前的卡片样式。<br>
+                    特点：蓝色竖线装饰，阴影较轻。
+                </div>
+            </div>
+            <div class="comparison-note">圆角：12px | 阴影：轻微</div>
+        </div>
+        
+        <div class="demo-section new-design">
+            <h3 style="margin-bottom: 16px;">卡片设计 - 现代化</h3>
+            <div class="card">
+                <div class="card-title">全市场ETF行情</div>
+                <div style="padding: 16px; color: #6b7280; font-size: 15px;">
+                    这是一个卡片内容示例，展示了现代化改进方案。<br>
+                    特点：渐变装饰条，多层阴影，优雅hover效果。
+                </div>
+            </div>
+            <div class="comparison-note">圆角：20px | 阴影：多层柔和</div>
+        </div>
+    </div>
+    
+    <!-- 标签对比 -->
+    <div class="demo-container" style="margin-top: 32px;">
+        <div class="demo-section old-design">
+            <h3 style="margin-bottom: 16px;">标签系统 - 当前</h3>
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                <button class="filter-tab active">全部</button>
+                <button class="filter-tab">广发</button>
+                <button class="filter-tab">易方达</button>
+                <button class="filter-tab">华夏</button>
+            </div>
+            <div style="margin-top: 16px;">
+                <span class="badge badge-active">运行中</span>
+                <span class="badge badge-paused">暂停</span>
+                <span class="badge badge-template">模板</span>
+                <span class="badge badge-ai">AI生成</span>
+            </div>
+            <div class="comparison-note" style="margin-top: 16px;">圆角：16px | 边框：无</div>
+        </div>
+        
+        <div class="demo-section new-design">
+            <h3 style="margin-bottom: 16px;">标签系统 - 现代化</h3>
+            <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <button class="filter-tab active">全部</button>
+                <button class="filter-tab">广发</button>
+                <button class="filter-tab">易方达</button>
+                <button class="filter-tab">华夏</button>
+            </div>
+            <div style="margin-top: 16px;">
+                <span class="badge badge-active">运行中</span>
+                <span class="badge badge-paused">暂停</span>
+                <span class="badge badge-template">模板</span>
+                <span class="badge badge-ai">AI生成</span>
+            </div>
+            <div class="comparison-note" style="margin-top: 16px;">圆角：9999px | 边框：优雅</div>
+        </div>
+    </div>
+    
+    <!-- 统计卡片对比 -->
+    <div class="demo-container" style="margin-top: 32px;">
+        <div class="demo-section old-design">
+            <h3 style="margin-bottom: 16px;">统计卡片 - 当前</h3>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value">125</div>
+                    <div class="stat-label">总ETF数</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value text-success">85</div>
+                    <div class="stat-label">上涨数</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value text-danger">40</div>
+                    <div class="stat-label">下跌数</div>
+                </div>
+            </div>
+            <div class="comparison-note">字号：24px | 圆角：8px</div>
+        </div>
+        
+        <div class="demo-section new-design">
+            <h3 style="margin-bottom: 16px;">统计卡片 - 现代化</h3>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value">125</div>
+                    <div class="stat-label">总ETF数</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value text-success">85</div>
+                    <div class="stat-label">上涨数</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value text-danger">40</div>
+                    <div class="stat-label">下跌数</div>
+                </div>
+            </div>
+            <div class="comparison-note">字号：28px | 圆角：20px</div>
+        </div>
+    </div>
+    
+    <!-- 表格对比 -->
+    <div class="demo-container" style="margin-top: 32px;">
+        <div class="demo-section old-design">
+            <h3 style="margin-bottom: 16px;">表格设计 - 当前</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>代码</th>
+                            <th>名称</th>
+                            <th class="text-right">净值</th>
+                            <th class="text-right">增长率</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>159915</td>
+                            <td>创业板ETF</td>
+                            <td class="text-right">1.250</td>
+                            <td class="text-right text-success">+2.5%</td>
+                        </tr>
+                        <tr>
+                            <td>510050</td>
+                            <td>50ETF</td>
+                            <td class="text-right">2.850</td>
+                            <td class="text-right text-danger">-0.8%</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="comparison-note">padding: 10px | 表头灰色背景</div>
+        </div>
+        
+        <div class="demo-section new-design">
+            <h3 style="margin-bottom: 16px;">表格设计 - 现代化</h3>
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>代码</th>
+                            <th>名称</th>
+                            <th class="text-right">净值</th>
+                            <th class="text-right">增长率</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>159915</td>
+                            <td>创业板ETF</td>
+                            <td class="text-right">1.250</td>
+                            <td class="text-right text-success">+2.5%</td>
+                        </tr>
+                        <tr>
+                            <td>510050</td>
+                            <td>50ETF</td>
+                            <td class="text-right">2.850</td>
+                            <td class="text-right text-danger">-0.8%</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="comparison-note">padding: 16px | 表头sticky + 圆角</div>
+        </div>
+    </div>
+    
+    <!-- Toggle开关对比 -->
+    <div class="demo-container" style="margin-top: 32px;">
+        <div class="demo-section old-design">
+            <h3 style="margin-bottom: 16px;">Toggle开关 - 当前</h3>
+            <label class="toggle-switch">
+                <input type="checkbox" checked>
+                <span class="toggle-slider"></span>
+            </label>
+            <span style="margin-left: 12px; font-size: 14px;">启用自动再平衡</span>
+            <div class="comparison-note" style="margin-top: 16px;">宽度：48px | 圆角：28px</div>
+        </div>
+        
+        <div class="demo-section new-design">
+            <h3 style="margin-bottom: 16px;">Toggle开关 - 现代化</h3>
+            <label class="toggle-switch">
+                <input type="checkbox" checked>
+                <span class="toggle-slider"></span>
+            </label>
+            <span style="margin-left: 12px; font-size: 15px;">启用自动再平衡</span>
+            <div class="comparison-note" style="margin-top: 16px;">宽度：52px | 圆角：9999px</div>
+        </div>
+    </div>
+    
+    <!-- 表单对比 -->
+    <div class="demo-container" style="margin-top: 32px;">
+        <div class="demo-section old-design">
+            <h3 style="margin-bottom: 16px;">表单输入 - 当前</h3>
+            <div class="form-group">
+                <label>ETF代码搜索</label>
+                <input type="text" placeholder="输入ETF代码或名称...">
+            </div>
+            <div class="form-group">
+                <label>再平衡频率</label>
+                <select>
+                    <option>每月检查</option>
+                    <option>每季度检查</option>
+                </select>
+            </div>
+            <div class="comparison-note" style="margin-top: 16px;">padding: 8px | focus: 蓝色边框</div>
+        </div>
+        
+        <div class="demo-section new-design">
+            <h3 style="margin-bottom: 16px;">表单输入 - 现代化</h3>
+            <div class="form-group">
+                <label>ETF代码搜索</label>
+                <input type="text" placeholder="输入ETF代码或名称...">
+            </div>
+            <div class="form-group">
+                <label>再平衡频率</label>
+                <select>
+                    <option>每月检查</option>
+                    <option>每季度检查</option>
+                </select>
+            </div>
+            <div class="comparison-note" style="margin-top: 16px;">padding: 12px | focus: 蓝色边框 + 阴影环</div>
+        </div>
+    </div>
+    
+    <!-- Toast通知对比 -->
+    <div class="demo-container" style="margin-top: 32px;">
+        <div class="demo-section old-design">
+            <h3 style="margin-bottom: 16px;">Toast通知 - 当前</h3>
+            <div class="toast toast-success" style="position: relative; top: 0; right: 0;">
+                <span>✓ 操作成功完成</span>
+                <span class="toast-dismiss"></span>
+            </div>
+            <div class="toast toast-error" style="position: relative; top: 0; right: 0; margin-top: 8px;">
+                <span>✗ 操作失败</span>
+                <span class="toast-dismiss"></span>
+            </div>
+            <div class="comparison-note" style="margin-top: 16px;">圆角：8px | 阴影：中等</div>
+        </div>
+        
+        <div class="demo-section new-design">
+            <h3 style="margin-bottom: 16px;">Toast通知 - 现代化</h3>
+            <div class="toast toast-success" style="position: relative; top: 0; right: 0;">
+                <span>✓ 操作成功完成</span>
+                <span class="toast-dismiss"></span>
+            </div>
+            <div class="toast toast-error" style="position: relative; top: 0; right: 0; margin-top: 8px;">
+                <span>✗ 操作失败</span>
+                <span class="toast-dismiss"></span>
+            </div>
+            <div class="comparison-note" style="margin-top: 16px;">圆角：12px | 阴影：大 + 模糊背景</div>
+        </div>
+    </div>
+    
+    <!-- Modal对比 -->
+    <div class="demo-container" style="margin-top: 32px;">
+        <div class="demo-section old-design">
+            <h3 style="margin-bottom: 16px;">Modal弹窗 - 当前</h3>
+            <div class="modal" style="max-width: 100%; position: relative;">
+                <div class="modal-title">创建资产配置策略</div>
+                <div class="form-group">
+                    <label>策略名称</label>
+                    <input type="text" value="稳健增长组合">
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-outline">取消</button>
+                    <button class="btn btn-primary">创建策略</button>
+                </div>
+            </div>
+            <div class="comparison-note" style="margin-top: 16px;">圆角：12px | 阴影：大</div>
+        </div>
+        
+        <div class="demo-section new-design">
+            <h3 style="margin-bottom: 16px;">Modal弹窗 - 现代化</h3>
+            <div class="modal" style="max-width: 100%; position: relative;">
+                <div class="modal-title">创建资产配置策略</div>
+                <div class="form-group">
+                    <label>策略名称</label>
+                    <input type="text" value="稳健增长组合">
+                </div>
+                <div class="modal-actions">
+                    <button class="btn btn-outline">取消</button>
+                    <button class="btn btn-primary">创建策略</button>
+                </div>
+            </div>
+            <div class="comparison-note" style="margin-top: 16px;">圆角：20px | 阴影：超大 + 模糊背景</div>
+        </div>
+    </div>
+    
+    <!-- 设计改进总结 -->
+    <div style="margin-top: 48px; padding: 32px; background: linear-gradient(135deg, #f9fafb, #f3f4f6); border-radius: 16px; border: 1px solid #e5e7eb;">
+        <h2 style="font-size: 24px; margin-bottom: 24px; color: #111827;">设计改进总结</h2>
+        
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px;">
+            <div style="padding: 16px; background: white; border-radius: 12px; border: 1px solid #e5e7eb;">
+                <h4 style="color: #3b82f6; margin-bottom: 8px;">色彩系统</h4>
+                <p style="font-size: 14px; color: #6b7280;">
+                    • 建立完整的50-900色阶<br>
+                    • 更柔和、更专业<br>
+                    • 增加透明度应用<br>
+                    • 导航栏简化为白色
+                </p>
+            </div>
+            
+            <div style="padding: 16px; background: white; border-radius: 12px; border: 1px solid #e5e7eb;">
+                <h4 style="color: #3b82f6; margin-bottom: 8px;">字体系统</h4>
+                <p style="font-size: 14px; color: #6b7280;">
+                    • 增大字号跳跃<br>
+                    • 强化标题视觉重量<br>
+                    • 优化行高至1.5<br>
+                    • 基础字号15px
+                </p>
+            </div>
+            
+            <div style="padding: 16px; background: white; border-radius: 12px; border: 1px solid #e5e7eb;">
+                <h4 style="color: #3b82f6; margin-bottom: 8px;">布局与间距</h4>
+                <p style="font-size: 14px; color: #6b7280;">
+                    • 基于4px的统一间距体系<br>
+                    • 增加视觉呼吸感<br>
+                    • 容器宽度1440px<br>
+                    • Grid系统化
+                </p>
+            </div>
+            
+            <div style="padding: 16px; background: white; border-radius: 12px; border: 1px solid #e5e7eb;">
+                <h4 style="color: #3b82f6; margin-bottom: 8px;">圆角与阴影</h4>
+                <p style="font-size: 14px; color: #6b7280;">
+                    • 圆角增大至20px<br>
+                    • 多层柔和阴影<br>
+                    • 增加深度感<br>
+                    • 统一圆角系统
+                </p>
+            </div>
+            
+            <div style="padding: 16px; background: white; border-radius: 12px; border: 1px solid #e5e7eb;">
+                <h4 style="color: #3b82f6; margin-bottom: 8px;">微交互</h4>
+                <p style="font-size: 14px; color: #6b7280;">
+                    • 增加hover反馈<br>
+                    • 平滑过渡动画<br>
+                    • 按钮active效果<br>
+                    • 卡片hover提升
+                </p>
+            </div>
+            
+            <div style="padding: 16px; background: white; border-radius: 12px; border: 1px solid #e5e7eb;">
+                <h4 style="color: #3b82f6; margin-bottom: 8px;">响应式</h4>
+                <p style="font-size: 14px; color: #6b7280;">
+                    • 3个断点：1200px、768px、480px<br>
+                    • 优化移动端体验<br>
+                    • 导航栏自适应<br>
+                    • 表格横向滚动
+                </p>
+            </div>
+        </div>
+        
+        <div style="margin-top: 24px; padding: 16px; background: white; border-radius: 12px; border-left: 4px solid #10b981;">
+            <h4 style="color: #111827; margin-bottom: 8px;">现代化设计趋势参考</h4>
+            <p style="font-size: 14px; color: #6b7280;">
+                参考 <strong>Stripe</strong>（简洁专业）、<strong>Linear</strong>（现代感强）、<strong>Vercel</strong>（极简主义）的设计风格，
+                结合金融量化系统的专业需求，打造既现代又可靠的界面体验。
+            </p>
+        </div>
+    </div>
+    
+    <div style="margin-top: 32px; padding: 24px; background: white; border-radius: 16px; border: 1px solid #e5e7eb;">
+        <h3 style="margin-bottom: 16px;">使用说明</h3>
+        <p style="font-size: 15px; color: #6b7280; line-height: 1.8;">
+            1. 新的CSS文件已保存在 <code style="background: #f3f4f6; padding: 4px 8px; border-radius: 4px;">/static/css/modern-design.css</code><br>
+            2. 要应用新设计，请在 <code style="background: #f3f4f6; padding: 4px 8px; border-radius: 4px;">index.html</code> 中替换旧的CSS引用：<br>
+            <code style="background: #f3f4f6; padding: 8px; border-radius: 4px; display: block; margin-top: 8px;">
+                &lt;link rel="stylesheet" href="/static/css/style.css"&gt;<br>
+                改为：<br>
+                &lt;link rel="stylesheet" href="/static/css/modern-design.css"&gt;
+            </code><br>
+            3. 所有功能保持不变，仅改进视觉设计<br>
+            4. CSS变量系统化，便于后续定制和维护
+        </p>
+    </div>
+</div>
+
+</body>
+</html>
