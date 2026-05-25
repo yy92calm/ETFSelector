@@ -2,7 +2,7 @@
 
 import logging
 from datetime import date, datetime, timedelta
-from typing import List
+from typing import List, Dict
 from sqlalchemy.orm import Session, object_session
 
 from app.models.experience import Experience, ExperienceUsageRecord
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class ExperienceManager:
-    """经验生命周期管理 - 权重衰减、过期清理、有效性验证"""
+    """经验生命周期管理 - 权重衰减、过期清理、有效性验证、智能匹配"""
 
     LIFECYCLE_CONFIG = {
         "expire_days": 90,
@@ -20,6 +20,7 @@ class ExperienceManager:
         "min_weight": 0.3,
         "validation_threshold": 3,
         "effectiveness_threshold": 6.0,
+        "failure_priority_boost": 2.0,
     }
     
     def evaluate_experience_usages(self, strategy_id: int, db: Session):
@@ -191,3 +192,92 @@ class ExperienceManager:
                 Experience.review_status == "pending",
             ).count(),
         }
+    
+    def get_smart_matched_experiences(
+        self,
+        strategy_id: int,
+        current_scenario: Dict,
+        db: Session
+    ) -> List[Dict]:
+        """获取智能匹配的经验"""
+        from app.services.smart_experience_matcher import SmartExperienceMatcher
+        matcher = SmartExperienceMatcher()
+        
+        matched = matcher.match_experiences_by_scenario(strategy_id, current_scenario, db)
+        
+        experiences = [m["experience"] for m in matched]
+        conflicts = matcher.detect_experience_conflicts(experiences)
+        
+        prioritized = matcher.prioritize_failure_experiences(experiences)
+        
+        return {
+            "matched_experiences": matched[:10],
+            "conflicts": conflicts,
+            "prioritized_experiences": [
+                {
+                    "id": e.id,
+                    "title": e.title,
+                    "type": e.experience_type,
+                    "key_insight": e.key_insight,
+                    "effectiveness_score": e.effectiveness_score,
+                } for e in prioritized
+            ],
+            "total_matched": len(matched),
+            "total_conflicts": len(conflicts),
+        }
+    
+    def apply_scenario_based_weight_adjustment(
+        self,
+        strategy_id: int,
+        current_scenario: Dict,
+        db: Session
+    ) -> Dict:
+        """应用场景权重调整"""
+        from app.services.smart_experience_matcher import SmartExperienceMatcher
+        matcher = SmartExperienceMatcher()
+        
+        matched = matcher.match_experiences_by_scenario(strategy_id, current_scenario, db)
+        
+        adjustment_records = []
+        for m in matched:
+            exp = m["experience"]
+            old_weight = exp.weight or 1.0
+            new_weight = m["adjusted_weight"]
+            
+            exp.weight = new_weight
+            
+            adjustment_records.append({
+                "experience_id": exp.id,
+                "title": exp.title,
+                "old_weight": old_weight,
+                "new_weight": new_weight,
+                "scenario_similarity": m["scenario_similarity"],
+            })
+        
+        db.commit()
+        
+        return {
+            "adjusted_count": len(adjustment_records),
+            "adjustments": adjustment_records,
+        }
+    
+    def boost_failure_experience_weights(self, strategy_id: int, db: Session) -> int:
+        """强化失败经验权重"""
+        failure_experiences = db.query(Experience).filter(
+            Experience.strategy_id == strategy_id,
+            Experience.is_active == True,
+            Experience.experience_type == "failure",
+        ).all()
+        
+        boosted_count = 0
+        for exp in failure_experiences:
+            current_weight = exp.weight or 1.0
+            boosted_weight = current_weight * self.LIFECYCLE_CONFIG["failure_priority_boost"]
+            
+            exp.weight = min(2.0, boosted_weight)
+            boosted_count += 1
+        
+        db.commit()
+        logger.info(f"强化{boosted_count}条失败经验权重")
+        
+        return boosted_count

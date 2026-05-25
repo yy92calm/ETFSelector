@@ -54,3 +54,11 @@ logs/
 # Node modules (if using frontend build tools)
 node_modules/
 npm-debug.log
+
+# Sisyphus sessions
+.sisyphus/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3

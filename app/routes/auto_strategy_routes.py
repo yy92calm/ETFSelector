@@ -296,3 +296,190 @@ def list_auto_strategies(db: Session = Depends(get_db)):
         } for s in strategies],
         "total": len(strategies),
     })
+
+
+# ========== 增强功能路由 ==========
+
+@router.get("/enhanced/technical-indicators", response_model=APIResponse)
+def get_technical_indicators(etf_code: str, db: Session = Depends(get_db)):
+    """获取技术指标分析"""
+    from app.services.technical_indicator_service import TechnicalIndicatorService
+    
+    svc = TechnicalIndicatorService()
+    indicators = svc.calculate_all_indicators(etf_code, db)
+    
+    return APIResponse(data=indicators)
+
+
+@router.get("/enhanced/market-sentiment-index", response_model=APIResponse)
+def get_market_sentiment_index(target_date: date = None, db: Session = Depends(get_db)):
+    """获取市场情绪指数"""
+    from app.services.market_environment_service import MarketEnvironmentService
+    
+    if not target_date:
+        target_date = date.today()
+    
+    svc = MarketEnvironmentService()
+    index = svc.build_market_sentiment_index(target_date, db)
+    
+    return APIResponse(data=index)
+
+
+@router.get("/enhanced/market-regime", response_model=APIResponse)
+def get_market_regime(target_date: date = None, db: Session = Depends(get_db)):
+    """识别市场阶段"""
+    from app.services.market_environment_service import MarketEnvironmentService
+    
+    if not target_date:
+        target_date = date.today()
+    
+    svc = MarketEnvironmentService()
+    regime = svc.get_market_regime(target_date, db)
+    
+    return APIResponse(data=regime)
+
+
+@router.get("/enhanced/similar-environments", response_model=APIResponse)
+def find_similar_environments(
+    strategy_id: int,
+    target_date: date = None,
+    top_k: int = 5,
+    db: Session = Depends(get_db)
+):
+    """查找相似历史市场环境"""
+    from app.services.market_environment_service import MarketEnvironmentService
+    
+    if not target_date:
+        target_date = date.today()
+    
+    svc = MarketEnvironmentService()
+    similar = svc.find_similar_market_environments(strategy_id, target_date, db, top_k)
+    
+    return APIResponse(data=similar)
+
+
+@router.post("/enhanced/smart-experience-match", response_model=APIResponse)
+def smart_match_experiences(strategy_id: int, db: Session = Depends(get_db)):
+    """智能经验匹配"""
+    from app.services.smart_experience_matcher import SmartExperienceMatcher
+    
+    matcher = SmartExperienceMatcher()
+    current_scenario = matcher.get_current_market_scenario(date.today(), db)
+    matched = matcher.match_experiences_by_scenario(strategy_id, current_scenario, db)
+    
+    return APIResponse(data={
+        "current_scenario": current_scenario,
+        "matched_experiences": matched,
+        "total_matched": len(matched),
+    })
+
+
+@router.post("/enhanced/experience-conflict-detection", response_model=APIResponse)
+def detect_experience_conflicts(strategy_id: int, db: Session = Depends(get_db)):
+    """检测经验冲突"""
+    from app.services.smart_experience_matcher import SmartExperienceMatcher
+    
+    matcher = SmartExperienceMatcher()
+    experiences = db.query(Experience).filter(
+        Experience.strategy_id == strategy_id,
+        Experience.is_active == True,
+    ).all()
+    
+    conflicts = matcher.detect_experience_conflicts(experiences)
+    
+    return APIResponse(data={
+        "conflicts": conflicts,
+        "total_conflicts": len(conflicts),
+    })
+
+
+@router.get("/enhanced/risk-dashboard", response_model=APIResponse)
+def get_risk_dashboard(strategy_id: int, db: Session = Depends(get_db)):
+    """获取风险仪表盘"""
+    from app.services.risk_controller import RiskController
+    
+    controller = RiskController()
+    dashboard = controller.get_risk_dashboard(strategy_id, db)
+    
+    return APIResponse(data=dashboard)
+
+
+@router.get("/enhanced/circuit-breaker-check", response_model=APIResponse)
+def check_circuit_breaker(strategy_id: int, db: Session = Depends(get_db)):
+    """检查熔断条件"""
+    from app.services.risk_controller import RiskController
+    
+    controller = RiskController()
+    result = controller.check_circuit_breaker(strategy_id, db)
+    
+    return APIResponse(data=result)
+
+
+@router.get("/enhanced/drawdown-protection", response_model=APIResponse)
+def apply_drawdown_protection(strategy_id: int, db: Session = Depends(get_db)):
+    """应用回撤保护"""
+    from app.services.risk_controller import RiskController
+    
+    controller = RiskController()
+    result = controller.apply_drawdown_protection(strategy_id, db)
+    
+    return APIResponse(data=result)
+
+
+@router.get("/enhanced/stress-test", response_model=APIResponse)
+def run_stress_test(strategy_id: int, db: Session = Depends(get_db)):
+    """运行压力测试"""
+    from app.services.risk_controller import RiskController
+    
+    controller = RiskController()
+    result = controller.run_stress_test(strategy_id, db)
+    
+    return APIResponse(data=result)
+
+
+@router.post("/enhanced/detect-anomalies", response_model=APIResponse)
+def detect_anomalies(strategy_id: int, db: Session = Depends(get_db)):
+    """检测异常情况"""
+    from app.services.review_service import ReviewService
+    
+    svc = ReviewService()
+    anomalies = svc.detect_anomalies(strategy_id, db)
+    
+    return APIResponse(data={
+        "anomalies": anomalies,
+        "total_anomalies": len(anomalies),
+        "should_trigger_review": len(anomalies) > 0,
+    })
+
+
+@router.post("/enhanced/suggest-parameter-adjustments", response_model=APIResponse)
+def suggest_parameter_adjustments(strategy_id: int, db: Session = Depends(get_db)):
+    """建议参数调整"""
+    from app.services.review_service import ReviewService
+    
+    svc = ReviewService()
+    suggestions = svc.suggest_parameter_adjustments(strategy_id, db)
+    
+    return APIResponse(data=suggestions)
+
+
+@router.post("/enhanced/full-risk-check", response_model=APIResponse)
+def full_risk_check(strategy_id: int, db: Session = Depends(get_db)):
+    """全面风险检查并可能暂停策略"""
+    from app.services.risk_controller import RiskController
+    
+    controller = RiskController()
+    
+    circuit_breaker = controller.check_circuit_breaker(strategy_id, db)
+    drawdown = controller.apply_drawdown_protection(strategy_id, db)
+    budget = controller.check_risk_budget(strategy_id, db)
+    
+    should_pause = controller.should_pause_strategy(strategy_id, db)
+    
+    return APIResponse(data={
+        "circuit_breaker": circuit_breaker,
+        "drawdown": drawdown,
+        "risk_budget": budget,
+        "strategy_paused": should_pause,
+        "overall_status": "paused" if should_pause else "running",
+    })

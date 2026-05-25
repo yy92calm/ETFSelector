@@ -2069,6 +2069,11 @@ async function loadAutoStrategies() {
             loadExecutionLogs(currentAutoStrategyId);
             loadExperiences(currentAutoStrategyId);
             loadReviewReport();
+            loadTechnicalIndicators();
+            loadMarketEnvironment();
+            loadRiskDashboard();
+            loadSmartExperiences();
+            loadAnomalies();
         } else {
             currentAutoStrategyId = null;
             document.getElementById('auto-strategy-info').innerHTML =
@@ -2595,4 +2600,618 @@ function renderReviewReport(report) {
     `;
 
     document.getElementById('review-report-content').innerHTML = html;
+}
+
+/* ====== 增强功能展示模块 ====== */
+
+async function loadEnhancedData() {
+    if (!currentAutoStrategyId) {
+        toast('请先创建自动策略', 'warning');
+        return;
+    }
+    
+    toast('正在加载增强数据...', 'info');
+    
+    await Promise.all([
+        loadTechnicalIndicators(),
+        loadMarketEnvironment(),
+        loadRiskDashboard(),
+        loadSmartExperiences(),
+        loadAnomalies(),
+    ]);
+    
+    toast('增强数据加载完成', 'success');
+}
+
+async function loadTechnicalIndicators() {
+    if (!currentAutoStrategyId) {
+        document.getElementById('technical-indicators-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📈</div><div>请先创建策略</div></div>';
+        return;
+    }
+    
+    try {
+        const strategy = await api(`/api/auto-strategy/status?strategy_id=${currentAutoStrategyId}`);
+        const allocation = strategy.data.current_allocation || {};
+        const etfCodes = Object.keys(allocation);
+        
+        if (etfCodes.length === 0) {
+            document.getElementById('technical-indicators-content').innerHTML = 
+                '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📈</div><div>策略无配置ETF</div></div>';
+            return;
+        }
+        
+        const code = etfCodes[0];
+        const data = await api(`/api/auto-strategy/enhanced/technical-indicators?etf_code=${code}`);
+        renderTechnicalIndicators(data.data, etfCodes);
+    } catch (e) {
+        document.getElementById('technical-indicators-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📈</div><div>加载失败: ' + e.message + '</div></div>';
+    }
+}
+
+function renderTechnicalIndicators(indicators, etfCodes) {
+    if (!indicators || indicators.error) {
+        document.getElementById('technical-indicators-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📈</div><div>数据不足</div></div>';
+        return;
+    }
+    
+    const ma = indicators.ma || {};
+    const macd = indicators.macd || {};
+    const rsi = indicators.rsi || {};
+    const bollinger = indicators.bollinger || {};
+    const trend = indicators.trend_signal || {};
+    
+    const html = `
+        <div style="padding:12px;">
+            <div style="font-size:14px;font-weight:600;margin-bottom:12px;color:var(--primary);">
+                ${indicators.etf_code || 'ETF'} 技术指标
+            </div>
+            
+            <!-- MA均线 -->
+            <div style="margin-bottom:16px;">
+                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📊 MA均线</div>
+                <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;">
+                    ${Object.entries(ma).map(([key, val]) => `
+                        <div style="padding:8px;background:rgba(255,255,255,0.5);border-radius:4px;">
+                            <div style="font-size:12px;color:var(--text-secondary);">${key.toUpperCase()}</div>
+                            <div style="font-size:14px;font-weight:600;">${val.value?.toFixed(4) || 'N/A'}</div>
+                            <div style="font-size:11px;color:${val.price_position === 'above' ? 'var(--success)' : 'var(--danger)'};">
+                                ${val.price_position === 'above' ? '↗ 价格上方' : '↘ 价格下方'}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+            
+            <!-- MACD -->
+            <div style="margin-bottom:16px;">
+                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📈 MACD指标</div>
+                <div style="padding:10px;background:rgba(255,255,255,0.5);border-radius:4px;">
+                    <div style="display:flex;gap:12px;margin-bottom:8px;">
+                        <span style="font-size:12px;">MACD: <strong>${macd.macd?.toFixed(4) || 'N/A'}</strong></span>
+                        <span style="font-size:12px;">信号: <strong>${macd.signal?.toFixed(4) || 'N/A'}</strong></span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;">
+                        <div style="font-size:13px;font-weight:600;color:${macd.trend === 'bullish' ? 'var(--success)' : 'var(--danger)'};">
+                            ${macd.trend === 'bullish' ? '金叉 ↗' : '死叉 ↘'}
+                        </div>
+                        <div style="font-size:11px;color:var(--text-secondary);">(${macd.strength || 'neutral'})</div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- RSI -->
+            <div style="margin-bottom:16px;">
+                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">⚡ RSI指标</div>
+                <div style="padding:10px;background:rgba(255,255,255,0.5);border-radius:4px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;">
+                        <div>
+                            <div style="font-size:18px;font-weight:600;">${rsi.value || 'N/A'}</div>
+                            <div style="font-size:11px;color:var(--text-secondary);">相对强弱指数</div>
+                        </div>
+                        <div style="padding:6px 12px;border-radius:4px;background:${rsi.signal === 'overbought' ? 'rgba(239,68,68,0.1)' : rsi.signal === 'oversold' ? 'rgba(16,185,129,0.1)' : 'rgba(255,255,255,0.5)'};">
+                            <div style="font-size:13px;font-weight:600;color:${rsi.signal === 'overbought' ? 'var(--danger)' : rsi.signal === 'oversold' ? 'var(--success)' : 'var(--text)'};">
+                                ${rsi.signal === 'overbought' ? '超买 ⚠️' : rsi.signal === 'oversold' ? '超卖 ✅' : '中性'}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 布林带 -->
+            <div style="margin-bottom:16px;">
+                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📊 布林带</div>
+                <div style="padding:10px;background:rgba(255,255,255,0.5);border-radius:4px;">
+                    <div style="font-size:12px;display:flex;gap:12px;margin-bottom:6px;">
+                        <span>上轨: ${bollinger.upper?.toFixed(4) || 'N/A'}</span>
+                        <span>中轨: ${bollinger.middle?.toFixed(4) || 'N/A'}</span>
+                        <span>下轨: ${bollinger.lower?.toFixed(4) || 'N/A'}</span>
+                    </div>
+                    <div style="font-size:12px;color:var(--text-secondary);">
+                        带宽: ${bollinger.bandwidth?.toFixed(2) || 'N/A'}% | 位置: ${bollinger.position_pct?.toFixed(1) || 'N/A'}%
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 综合趋势 -->
+            <div style="padding:12px;background:linear-gradient(135deg, rgba(59,130,246,0.1) 0%, rgba(16,185,129,0.1) 100%);border-radius:8px;">
+                <div style="font-size:13px;font-weight:600;margin-bottom:6px;">🎯 综合趋势判断</div>
+                <div style="font-size:16px;font-weight:700;color:${trend.trend?.includes('bullish') ? 'var(--success)' : trend.trend?.includes('bearish') ? 'var(--danger)' : 'var(--text)'};">
+                    ${trend.trend === 'strong_bullish' ? '强势多头 ↗↗' : trend.trend === 'bullish' ? '多头 ↗' : trend.trend === 'strong_bearish' ? '强势空头 ↘↘' : trend.trend === 'bearish' ? '空头 ↘' : '震荡 ↔'}
+                </div>
+                <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
+                    看多信号: ${trend.bullish_signals || 0} | 看空信号: ${trend.bearish_signals || 0} | 置信度: ${trend.confidence || 0}%
+                </div>
+            </div>
+            
+            <!-- ETF切换 -->
+            ${etfCodes.length > 1 ? `
+                <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">其他ETF指标:</div>
+                    <div style="display:flex;gap:8px;">
+                        ${etfCodes.map(code => `
+                            <button class="btn btn-sm btn-outline" onclick="loadSingleETFIndicator('${code}')">${code}</button>
+                        `).join('')}
+                    </div>
+                </div>
+            ` : ''}
+        </div>
+    `;
+    
+    document.getElementById('technical-indicators-content').innerHTML = html;
+}
+
+async function loadSingleETFIndicator(etfCode) {
+    try {
+        const data = await api(`/api/auto-strategy/enhanced/technical-indicators?etf_code=${etfCode}`);
+        renderTechnicalIndicators(data.data, [etfCode]);
+    } catch (e) {
+        toast('加载失败: ' + e.message, 'error');
+    }
+}
+
+async function loadMarketEnvironment() {
+    try {
+        const sentiment = await api('/api/auto-strategy/enhanced/market-sentiment-index');
+        const regime = await api('/api/auto-strategy/enhanced/market-regime');
+        
+        renderMarketEnvironment(sentiment.data, regime.data);
+    } catch (e) {
+        document.getElementById('market-environment-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">🌍</div><div>加载失败: ' + e.message + '</div></div>';
+    }
+}
+
+function renderMarketEnvironment(sentiment, regime) {
+    const html = `
+        <div style="padding:12px;">
+            <!-- 市场情绪指数 -->
+            <div style="margin-bottom:16px;">
+                <div style="font-size:14px;font-weight:600;margin-bottom:12px;">📈 市场情绪指数</div>
+                <div style="padding:16px;background:linear-gradient(135deg, ${sentiment.index > 60 ? 'rgba(16,185,129,0.1)' : sentiment.index < 40 ? 'rgba(239,68,68,0.1)' : 'rgba(59,130,246,0.1)'} 0%, rgba(255,255,255,0.5) 100%);border-radius:8px;text-align:center;">
+                    <div style="font-size:32px;font-weight:700;color:${sentiment.index > 60 ? 'var(--success)' : sentiment.index < 40 ? 'var(--danger)' : 'var(--primary)'};">
+                        ${sentiment.index || 50}
+                    </div>
+                    <div style="font-size:13px;color:var(--text-secondary);margin-top:6px;">
+                        ${sentiment.label === 'extreme_greed' ? '极度贪婪 😱' : sentiment.label === 'greed' ? '贪婪 🙂' : sentiment.label === 'neutral' ? '中性 😐' : sentiment.label === 'fear' ? '恐惧 😟' : '极度恐慌 😨'}
+                    </div>
+                    <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
+                        趋势: ${sentiment.trend === 'improving' ? '改善 ↗' : sentiment.trend === 'deteriorating' ? '恶化 ↘' : '稳定 ↔'}
+                    </div>
+                </div>
+                
+                <!-- 情绪构成 -->
+                <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px;">
+                    <div style="padding:8px;background:rgba(255,255,255,0.5);border-radius:4px;text-align:center;">
+                        <div style="font-size:16px;font-weight:600;color:var(--success);">${sentiment.components?.positive_ratio?.toFixed(1) || 0}%</div>
+                        <div style="font-size:11px;color:var(--text-secondary);">正面舆情</div>
+                    </div>
+                    <div style="padding:8px;background:rgba(255,255,255,0.5);border-radius:4px;text-align:center;">
+                        <div style="font-size:16px;font-weight:600;color:var(--danger);">${sentiment.components?.negative_ratio?.toFixed(1) || 0}%</div>
+                        <div style="font-size:11px;color:var(--text-secondary);">负面舆情</div>
+                    </div>
+                    <div style="padding:8px;background:rgba(255,255,255,0.5);border-radius:4px;text-align:center;">
+                        <div style="font-size:16px;font-weight:600;">${sentiment.components?.total_news || 0}</div>
+                        <div style="font-size:11px;color:var(--text-secondary);">总新闻数</div>
+                    </div>
+                </div>
+                
+                <!-- 关键因素 -->
+                ${sentiment.key_factors?.length > 0 ? `
+                    <div style="margin-top:12px;">
+                        <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">关键影响因素:</div>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                            ${sentiment.key_factors.slice(0, 5).map(factor => `
+                                <span style="padding:4px 8px;background:rgba(59,130,246,0.1);border-radius:4px;font-size:11px;">${factor}</span>
+                            `).join('')}
+                        </div>
+                    </div>
+                ` : ''}
+            </div>
+            
+            <!-- 市场阶段 -->
+            <div style="padding:12px;background:linear-gradient(135deg, rgba(99,102,241,0.1) 0%, rgba(168,85,247,0.1) 100%);border-radius:8px;">
+                <div style="font-size:14px;font-weight:600;margin-bottom:8px;">🎯 市场阶段识别</div>
+                <div style="font-size:16px;font-weight:700;margin-bottom:8px;">
+                    ${regime.regime === 'bull_quiet' ? '牛市平稳期 ↗' : regime.regime === 'bull_volatile' ? '牛市动荡期 ↗⚠️' : regime.regime === 'bear_quiet' ? '熊市平稳期 ↘' : regime.regime === 'bear_panic' ? '熊市恐慌期 ↘😱' : regime.regime === 'crisis' ? '危机模式 🚨' : '震荡整理期 ↔'}
+                </div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-bottom:8px;">
+                    置信度: ${regime.confidence || 0}%
+                </div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
+                    ${regime.characteristics?.map(c => `
+                        <span style="padding:4px 8px;background:rgba(255,255,255,0.5);border-radius:4px;font-size:11px;">${c}</span>
+                    `).join('')}
+                </div>
+                <div style="padding:8px;background:rgba(255,255,255,0.3);border-radius:4px;font-size:12px;color:var(--text-secondary);">
+                    💡 建议: ${regime.suggested_action || '谨慎操作'}
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.getElementById('market-environment-content').innerHTML = html;
+}
+
+async function loadRiskDashboard() {
+    if (!currentAutoStrategyId) {
+        document.getElementById('risk-dashboard-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">🛡️</div><div>请先创建策略</div></div>';
+        return;
+    }
+    
+    try {
+        const data = await api(`/api/auto-strategy/enhanced/risk-dashboard?strategy_id=${currentAutoStrategyId}`);
+        renderRiskDashboard(data.data);
+    } catch (e) {
+        document.getElementById('risk-dashboard-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">🛡️</div><div>加载失败: ' + e.message + '</div></div>';
+    }
+}
+
+function renderRiskDashboard(dashboard) {
+    const level = dashboard.overall_risk_level || 'unknown';
+    const circuit = dashboard.circuit_breaker || {};
+    const drawdown = dashboard.drawdown_protection || {};
+    const budget = dashboard.risk_budget || {};
+    const stress = dashboard.stress_test_summary || {};
+    const alerts = dashboard.risk_alerts || [];
+    
+    const levelColor = level === 'critical' ? 'var(--danger)' : level === 'high' ? '#f59e0b' : level === 'medium' ? 'var(--primary)' : 'var(--success)';
+    
+    const html = `
+        <div style="padding:16px;">
+            <!-- 总体风险等级 -->
+            <div style="padding:20px;background:linear-gradient(135deg, ${level === 'critical' ? 'rgba(239,68,68,0.15)' : level === 'high' ? 'rgba(245,158,11,0.15)' : level === 'medium' ? 'rgba(59,130,246,0.15)' : 'rgba(16,185,129,0.15)'} 0%, rgba(255,255,255,0.5) 100%);border-radius:12px;text-align:center;margin-bottom:16px;">
+                <div style="font-size:28px;margin-bottom:8px;">${level === 'critical' ? '🚨' : level === 'high' ? '⚠️' : level === 'medium' ? '⚡' : '✅'}</div>
+                <div style="font-size:20px;font-weight:700;color:${levelColor};">
+                    ${level === 'critical' ? '高风险' : level === 'high' ? '较高风险' : level === 'medium' ? '中等风险' : '低风险'}
+                </div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">整体风险等级</div>
+            </div>
+            
+            <!-- 风险警报 -->
+            ${alerts.length > 0 ? `
+                <div style="padding:12px;background:rgba(239,68,68,0.1);border-radius:8px;margin-bottom:16px;border-left:3px solid var(--danger);">
+                    <div style="font-size:14px;font-weight:600;margin-bottom:8px;">⚠️ 风险警报</div>
+                    ${alerts.map(alert => `
+                        <div style="font-size:13px;margin-bottom:4px;">${alert}</div>
+                    `).join('')}
+                </div>
+            ` : ''}
+            
+            <!-- 风险模块 -->
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;">
+                <!-- 熔断状态 -->
+                <div style="padding:12px;background:rgba(255,255,255,0.5);border-radius:8px;">
+                    <div style="font-size:13px;font-weight:600;margin-bottom:6px;">🛑 熔断状态</div>
+                    <div style="font-size:15px;font-weight:700;color:${circuit.status === 'triggered' ? 'var(--danger)' : 'var(--success)'};">
+                        ${circuit.status === 'triggered' ? '已触发' : '正常'}
+                    </div>
+                    ${circuit.status === 'triggered' ? `
+                        <div style="font-size:11px;color:var(--danger);margin-top:4px;">${circuit.reason || '未知原因'}</div>
+                        <div style="font-size:10px;color:var(--text-secondary);">冷静期: ${circuit.cooldown_days || 0}天</div>
+                    ` : `
+                        <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">未触发熔断条件</div>
+                    `}
+                </div>
+                
+                <!-- 回撤保护 -->
+                <div style="padding:12px;background:rgba(255,255,255,0.5);border-radius:8px;">
+                    <div style="font-size:13px;font-weight:600;margin-bottom:6px;">📉 回撤监控</div>
+                    <div style="font-size:15px;font-weight:700;color:${drawdown.status === 'critical' ? 'var(--danger)' : drawdown.status === 'warning' ? '#f59e0b' : 'var(--success)'};">
+                        ${drawdown.drawdown_pct?.toFixed(2) || 0}% ${drawdown.status === 'critical' ? '⚠️' : drawdown.status === 'warning' ? '⚡' : ''}
+                    </div>
+                    <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
+                        ${drawdown.status === 'critical' ? '临界回撤' : drawdown.status === 'warning' ? '警戒回撤' : drawdown.status === 'alert' ? '预警回撤' : '安全范围'}
+                    </div>
+                </div>
+                
+                <!-- 风险预算 -->
+                <div style="padding:12px;background:rgba(255,255,255,0.5);border-radius:8px;">
+                    <div style="font-size:13px;font-weight:600;margin-bottom:6px;">📊 风险预算</div>
+                    <div style="font-size:15px;font-weight:700;color:${budget.status === 'violation' ? 'var(--danger)' : 'var(--success)'};">
+                        ${budget.status === 'violation' ? '违规' : '合规'}
+                    </div>
+                    <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
+                        最大持仓: ${budget.max_single_position?.toFixed(2) || 0}%
+                    </div>
+                </div>
+            </div>
+            
+            <!-- 压力测试 -->
+            <div style="padding:12px;background:rgba(99,102,241,0.05);border-radius:8px;">
+                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">💪 压力测试结果</div>
+                <div style="display:flex;justify-content:space-between;align-items:center;padding:8px;background:rgba(255,255,255,0.5);border-radius:4px;margin-bottom:8px;">
+                    <div>
+                        <div style="font-size:11px;color:var(--text-secondary);">最坏场景</div>
+                        <div style="font-size:14px;font-weight:600;">${stress.worst_case?.scenario || '市场暴跌'}</div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div style="font-size:11px;color:var(--text-secondary);">预估损失</div>
+                        <div style="font-size:16px;font-weight:700;color:var(--danger);">
+                            ${stress.worst_case?.shock_pct?.toFixed(0) || 0}%
+                        </div>
+                    </div>
+                </div>
+                <div style="font-size:12px;color:var(--text-secondary);">
+                    ${stress.risk_assessment || '风险适中'}
+                </div>
+            </div>
+        </div>
+    `;
+    
+    document.getElementById('risk-dashboard-content').innerHTML = html;
+}
+
+async function loadSmartExperiences() {
+    if (!currentAutoStrategyId) {
+        document.getElementById('smart-experience-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">💡</div><div>请先创建策略</div></div>';
+        return;
+    }
+    
+    try {
+        const data = await api(`/api/auto-strategy/enhanced/smart-experience-match?strategy_id=${currentAutoStrategyId}`, { method: 'POST' });
+        renderSmartExperiences(data.data);
+    } catch (e) {
+        document.getElementById('smart-experience-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">💡</div><div>加载失败: ' + e.message + '</div></div>';
+    }
+}
+
+function renderSmartExperiences(data) {
+    const scenario = data.current_scenario || {};
+    const matched = data.matched_experiences || [];
+    
+    const html = `
+        <div style="padding:12px;">
+            <!-- 当前场景 -->
+            <div style="padding:12px;background:rgba(59,130,246,0.05);border-radius:8px;margin-bottom:16px;">
+                <div style="font-size:13px;font-weight:600;margin-bottom:6px;">🎯 当前市场场景</div>
+                <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                    ${scenario.scenario_tags?.map(tag => `
+                        <span style="padding:4px 8px;background:rgba(59,130,246,0.1);border-radius:4px;font-size:11px;">${tag}</span>
+                    `).join('') || '<span style="color:var(--text-secondary);font-size:12px;">暂无场景标签</span>'}
+                </div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:8px;">
+                    情绪: ${scenario.sentiment_level || '未知'} | 趋势: ${scenario.trend_hint || '未知'}
+                </div>
+            </div>
+            
+            <!-- 匹配的经验 -->
+            <div style="margin-bottom:16px;">
+                <div style="font-size:14px;font-weight:600;margin-bottom:8px;">
+                    匹配经验 (共 ${data.total_matched || 0} 条)
+                </div>
+                ${matched.length > 0 ? matched.slice(0, 5).map(m => `
+                    <div style="padding:12px;background:rgba(255,255,255,0.5);border-radius:8px;margin-bottom:8px;border-left:3px solid ${m.experience?.experience_type === 'failure' ? 'var(--danger)' : m.experience?.experience_type === 'success' ? 'var(--success)' : 'var(--primary)'};">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                            <div style="font-size:14px;font-weight:600;">
+                                ${m.experience?.experience_type === 'failure' ? '⚠️' : m.experience?.experience_type === 'success' ? '✅' : '💡'} 
+                                ${m.experience?.title || '经验'}
+                            </div>
+                            <div style="font-size:12px;background:rgba(59,130,246,0.1);padding:4px 8px;border-radius:4px;">
+                                相似度: ${m.scenario_similarity?.toFixed(2) || 0}
+                            </div>
+                        </div>
+                        ${m.experience?.key_insight ? `
+                            <div style="font-size:12px;color:var(--text-secondary);margin-bottom:4px;">"${m.experience.key_insight}"</div>
+                        ` : ''}
+                        <div style="display:flex;gap:8px;font-size:11px;color:var(--text-secondary);">
+                            <span>权重: ${m.adjusted_weight?.toFixed(2) || 1}</span>
+                            ${m.tags_matched?.length > 0 ? `<span>匹配标签: ${m.tags_matched.join(', ')}</span>` : ''}
+                        </div>
+                    </div>
+                `).join('') : `
+                    <div style="padding:12px;background:rgba(255,255,255,0.5);border-radius:8px;text-align:center;">
+                        <div style="font-size:28px;margin-bottom:8px;opacity:0.5;">🔍</div>
+                        <div style="font-size:13px;color:var(--text-secondary);">暂无匹配经验</div>
+                    </div>
+                `}
+            </div>
+            
+            <!-- 操作按钮 -->
+            <div style="display:flex;gap:8px;">
+                <button class="btn btn-sm btn-outline" onclick="detectExperienceConflicts()">检测冲突</button>
+                <button class="btn btn-sm btn-outline" onclick="updateExperienceWeights()">更新权重</button>
+            </div>
+        </div>
+    `;
+    
+    document.getElementById('smart-experience-content').innerHTML = html;
+}
+
+async function detectExperienceConflicts() {
+    if (!currentAutoStrategyId) return;
+    
+    try {
+        const data = await api(`/api/auto-strategy/enhanced/experience-conflict-detection?strategy_id=${currentAutoStrategyId}`, { method: 'POST' });
+        const conflicts = data.data.conflicts || [];
+        
+        if (conflicts.length > 0) {
+            toast(`检测到${conflicts.length}个经验冲突`, 'warning');
+        } else {
+            toast('未发现经验冲突', 'success');
+        }
+    } catch (e) {
+        toast('检测失败: ' + e.message, 'error');
+    }
+}
+
+async function updateExperienceWeights() {
+    if (!currentAutoStrategyId) return;
+    
+    try {
+        const data = await api(`/api/auto-strategy/enhanced/update-experience-weights?strategy_id=${currentAutoStrategyId}`, { method: 'POST' });
+        toast(`更新${data.data.updated_count}条经验权重`, 'success');
+        loadSmartExperiences();
+    } catch (e) {
+        toast('更新失败: ' + e.message, 'error');
+    }
+}
+
+async function loadAnomalies() {
+    if (!currentAutoStrategyId) {
+        document.getElementById('anomaly-detection-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">⚠️</div><div>请先创建策略</div></div>';
+        return;
+    }
+    
+    try {
+        const data = await api(`/api/auto-strategy/enhanced/detect-anomalies?strategy_id=${currentAutoStrategyId}`, { method: 'POST' });
+        renderAnomalies(data.data);
+    } catch (e) {
+        document.getElementById('anomaly-detection-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">⚠️</div><div>加载失败: ' + e.message + '</div></div>';
+    }
+}
+
+function renderAnomalies(data) {
+    const anomalies = data.anomalies || [];
+    const shouldReview = data.should_trigger_review || false;
+    
+    const html = `
+        <div style="padding:12px;">
+            <!-- 异常状态 -->
+            <div style="padding:16px;background:${anomalies.length > 0 ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.1)'};border-radius:8px;text-align:center;margin-bottom:16px;">
+                <div style="font-size:28px;margin-bottom:8px;">${anomalies.length > 0 ? '⚠️' : '✅'}</div>
+                <div style="font-size:16px;font-weight:700;color:${anomalies.length > 0 ? 'var(--danger)' : 'var(--success)'};">
+                    ${anomalies.length > 0 ? `检测到 ${anomalies.length} 个异常` : '策略运行正常'}
+                </div>
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">
+                    ${shouldReview ? '建议触发复盘分析' : '无需特殊处理'}
+                </div>
+            </div>
+            
+            <!-- 异常列表 -->
+            ${anomalies.length > 0 ? `
+                <div style="margin-bottom:16px;">
+                    <div style="font-size:14px;font-weight:600;margin-bottom:8px;">异常详情</div>
+                    ${anomalies.map(a => `
+                        <div style="padding:12px;background:rgba(239,68,68,0.05);border-radius:8px;margin-bottom:8px;border-left:3px solid ${a.severity === 'high' ? 'var(--danger)' : '#f59e0b'};">
+                            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                                <div style="font-size:13px;font-weight:600;">
+                                    ${a.type === 'large_loss' ? '📉 大幅亏损' : a.type === 'consecutive_failure' ? '🔄 连续失败' : a.type === 'drawdown_spike' ? '⬇️ 回撤突增' : '⚠️ 异常'}
+                                </div>
+                                <div style="font-size:11px;padding:4px 8px;border-radius:4px;background:${a.severity === 'high' ? 'rgba(239,68,68,0.2)' : 'rgba(245,158,11,0.2)'};">
+                                    ${a.severity === 'high' ? '高严重性' : '中等严重性'}
+                                </div>
+                            </div>
+                            <div style="font-size:12px;color:var(--text-secondary);">
+                                ${a.message || '未知异常'}
+                            </div>
+                            ${a.date ? `
+                                <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">发生时间: ${a.date}</div>
+                            ` : ''}
+                            ${a.loss_pct ? `
+                                <div style="font-size:11px;color:var(--danger);margin-top:4px;">损失幅度: ${a.loss_pct}%</div>
+                            ` : ''}
+                            ${a.drawdown_pct ? `
+                                <div style="font-size:11px;color:var(--danger);margin-top:4px;">回撤幅度: ${a.drawdown_pct}%</div>
+                            ` : ''}
+                        </div>
+                    `).join('')}
+                </div>
+                
+                <!-- 操作按钮 -->
+                <div style="display:flex;gap:8px;">
+                    <button class="btn btn-sm btn-warning" onclick="triggerAnomalyReview()">触发异常复盘</button>
+                    <button class="btn btn-sm btn-outline" onclick="suggestParameterAdjustments()">参数调优建议</button>
+                </div>
+            ` : `
+                <div style="padding:20px;background:rgba(255,255,255,0.5);border-radius:8px;text-align:center;">
+                    <div style="font-size:48px;margin-bottom:12px;">✨</div>
+                    <div style="font-size:14px;color:var(--text-secondary);">策略运行健康，无异常情况</div>
+                </div>
+            `}
+        </div>
+    `;
+    
+    document.getElementById('anomaly-detection-content').innerHTML = html;
+}
+
+async function triggerAnomalyReview() {
+    if (!currentAutoStrategyId) return;
+    
+    try {
+        const anomalyData = await api(`/api/auto-strategy/enhanced/detect-anomalies?strategy_id=${currentAutoStrategyId}`, { method: 'POST' });
+        const anomalies = anomalyData.data.anomalies || [];
+        
+        if (anomalies.length === 0) {
+            toast('无异常需要复盘', 'info');
+            return;
+        }
+        
+        const anomalyType = anomalies[0].type;
+        toast('正在触发异常复盘...', 'info');
+        
+        const data = await api(`/api/auto-strategy/trigger-anomaly-review?strategy_id=${currentAutoStrategyId}&anomaly_type=${anomalyType}`, { method: 'POST' });
+        
+        toast('异常复盘完成', 'success');
+        loadAnomalies();
+        loadReviewReport();
+    } catch (e) {
+        toast('复盘失败: ' + e.message, 'error');
+    }
+}
+
+async function suggestParameterAdjustments() {
+    if (!currentAutoStrategyId) return;
+    
+    try {
+        const data = await api(`/api/auto-strategy/enhanced/suggest-parameter-adjustments?strategy_id=${currentAutoStrategyId}`, { method: 'POST' });
+        const suggestions = data.data.suggestions || [];
+        
+        if (suggestions.length > 0) {
+            let msg = '参数调优建议:\n';
+            suggestions.forEach(s => {
+                msg += `${s.parameter}: ${s.current} → ${s.suggested} (${s.reason})\n`;
+            });
+            toast(msg, 'info', 5000);
+        } else {
+            toast('暂无参数调整建议', 'info');
+        }
+    } catch (e) {
+        toast('获取建议失败: ' + e.message, 'error');
+    }
+}
+
+// ---- 折叠功能 ----
+
+function toggleSentimentDetail() {
+    const container = document.getElementById('sentiment-detail-container');
+    const icon = document.getElementById('sentiment-toggle-icon');
+    
+    if (container.style.display === 'none') {
+        container.style.display = 'block';
+        icon.style.transform = 'rotate(180deg)';
+        icon.textContent = '▲';
+    } else {
+        container.style.display = 'none';
+        icon.style.transform = 'rotate(0deg)';
+        icon.textContent = '▼';
+    }
 }

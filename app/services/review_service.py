@@ -21,7 +21,7 @@ settings = get_settings()
 
 
 class ReviewService:
-    """复盘分析服务 - 定期回顾策略执行并生成经验"""
+    """复盘分析服务 - 定期回顾策略执行并生成经验、异常触发、深度分析"""
 
     EXPERIENCE_GENERATION_PROMPT = """你是专业的投资复盘分析师。
 
@@ -69,6 +69,62 @@ class ReviewService:
 - 经验应具有通用性和可复用性
 - 避免过于具体的细节
 - 总结规律而非单次事件"""
+
+    DEEP_ANALYSIS_PROMPT = """你是专业的投资策略分析师。
+
+请对以下异常情况进行深度分析：
+
+## 异常概况
+- 异常类型: {anomaly_type}
+- 异常程度: {severity}
+- 影响范围: {impact_summary}
+
+## 相关数据
+{related_data}
+
+## 市场环境
+{market_environment}
+
+请进行深度分析，输出JSON格式：
+{{
+  "root_cause_analysis": {{
+    "primary_cause": "根本原因描述",
+    "contributing_factors": ["因素1", "因素2"],
+    "trigger_event": "触发事件"
+  }},
+  "impact_assessment": {{
+    "financial_impact": "财务影响描述",
+    "strategy_health": "策略健康度评分(0-100)",
+    "long_term_effect": "长期影响判断"
+  }},
+  "corrective_actions": {{
+    "immediate": ["立即行动1", "立即行动2"],
+    "short_term": ["短期调整1", "短期调整2"],
+    "systemic": ["系统性改进1"]
+  }},
+  "lessons_learned": {{
+    "key_insight": "核心洞察",
+    "preventive_measures": ["预防措施1"],
+    "similar_risks": ["类似风险场景"]
+  }},
+  "parameter_adjustments": {{
+    "max_daily_adjustments": {{current: 1, suggested: 2, reason: "理由"}},
+    "risk_limits": {{suggested_changes: "具体建议"}}
+  }}
+}}"""
+
+    REVIEW_CONFIG = {
+        "anomaly_thresholds": {
+            "large_loss": -0.05,
+            "consecutive_failure": 3,
+            "drawdown_spike": -0.03,
+        },
+        "review_types": {
+            "daily": 1,
+            "weekly": 7,
+            "monthly": 30,
+        },
+    }
 
     def __init__(self):
         self.llm_client = None
@@ -159,6 +215,302 @@ class ReviewService:
         } for exp in recent_experiences]
         
         return self._build_review_report(period_data, experiences_list, start_date, end_date)
+    
+    def detect_anomalies(self, strategy_id: int, db: Session) -> List[Dict]:
+        """检测异常情况"""
+        anomalies = []
+        
+        snapshots = db.query(PortfolioSnapshot).filter(
+            PortfolioSnapshot.strategy_id == strategy_id
+        ).order_by(PortfolioSnapshot.trade_date.desc()).limit(30).all()
+        
+        if len(snapshots) < 2:
+            return anomalies
+        
+        large_loss_threshold = self.REVIEW_CONFIG["anomaly_thresholds"]["large_loss"]
+        for i, snapshot in enumerate(snapshots[:5]):
+            if snapshot.profit_pct and snapshot.profit_pct < large_loss_threshold:
+                anomalies.append({
+                    "type": "large_loss",
+                    "severity": "high",
+                    "date": snapshot.trade_date.isoformat(),
+                    "loss_pct": round(snapshot.profit_pct * 100, 2),
+                    "message": f"单日大幅亏损{abs(snapshot.profit_pct):.2%}",
+                })
+        
+        consecutive_failures = 0
+        logs = db.query(AutoStrategyLog).filter(
+            AutoStrategyLog.strategy_id == strategy_id
+        ).order_by(AutoStrategyLog.log_date.desc()).limit(10).all()
+        
+        for log in logs:
+            if log.status != "success":
+                consecutive_failures += 1
+            else:
+                break
+        
+        if consecutive_failures >= self.REVIEW_CONFIG["anomaly_thresholds"]["consecutive_failure"]:
+            anomalies.append({
+                "type": "consecutive_failure",
+                "severity": "medium",
+                "count": consecutive_failures,
+                "message": f"连续{consecutive_failures}次策略调整失败",
+            })
+        
+        if len(snapshots) >= 5:
+            recent_drawdown = self._calculate_recent_drawdown(snapshots[:5])
+            if recent_drawdown < self.REVIEW_CONFIG["anomaly_thresholds"]["drawdown_spike"]:
+                anomalies.append({
+                    "type": "drawdown_spike",
+                    "severity": "high",
+                    "drawdown_pct": round(recent_drawdown * 100, 2),
+                    "message": f"近期回撤突增{abs(recent_drawdown):.2%}",
+                })
+        
+        return anomalies
+    
+    def trigger_anomaly_review(self, strategy_id: int, anomaly: Dict, db: Session) -> Dict:
+        """异常触发复盘"""
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+        if not strategy:
+            return {"error": "策略不存在"}
+        
+        related_data = self._collect_anomaly_related_data(strategy_id, anomaly, db)
+        market_environment = self._get_market_environment_summary(anomaly.get("date"), db)
+        
+        deep_analysis = self._perform_deep_analysis(anomaly, related_data, market_environment)
+        
+        if deep_analysis and "error" not in deep_analysis:
+            corrective_experience = self._create_corrective_experience(
+                strategy_id, anomaly, deep_analysis, db
+            )
+            
+            return {
+                "anomaly_type": anomaly["type"],
+                "deep_analysis": deep_analysis,
+                "corrective_experience": corrective_experience,
+                "review_triggered": True,
+            }
+        
+        return {
+            "anomaly_type": anomaly["type"],
+            "deep_analysis": deep_analysis,
+            "review_triggered": True,
+        }
+    
+    def _calculate_recent_drawdown(self, snapshots: List[PortfolioSnapshot]) -> float:
+        """计算近期回撤"""
+        if not snapshots:
+            return 0
+        
+        peak = max(s.total_asset for s in snapshots if s.total_asset)
+        current = snapshots[0].total_asset
+        
+        return (peak - current) / peak if peak > 0 else 0
+    
+    def _collect_anomaly_related_data(self, strategy_id: int, anomaly: Dict, db: Session) -> Dict:
+        """收集异常相关数据"""
+        anomaly_date = anomaly.get("date")
+        
+        if anomaly_date:
+            try:
+                anomaly_date = date.fromisoformat(anomaly_date)
+            except:
+                anomaly_date = date.today()
+        else:
+            anomaly_date = date.today()
+        
+        logs = db.query(AutoStrategyLog).filter(
+            AutoStrategyLog.strategy_id == strategy_id,
+            AutoStrategyLog.log_date >= anomaly_date - timedelta(days=3),
+            AutoStrategyLog.log_date <= anomaly_date + timedelta(days=1),
+        ).all()
+        
+        sentiments = db.query(SentimentData).filter(
+            SentimentData.data_date >= anomaly_date - timedelta(days=3),
+            SentimentData.data_date <= anomaly_date + timedelta(days=1),
+        ).all()
+        
+        snapshots = db.query(PortfolioSnapshot).filter(
+            PortfolioSnapshot.strategy_id == strategy_id,
+            PortfolioSnapshot.trade_date >= anomaly_date - timedelta(days=3),
+            PortfolioSnapshot.trade_date <= anomaly_date + timedelta(days=1),
+        ).all()
+        
+        return {
+            "logs": [{"date": l.log_date.isoformat(), "status": l.status, "action": l.action_type} for l in logs],
+            "sentiments": [{"date": s.data_date.isoformat(), "score": s.sentiment_score} for s in sentiments],
+            "snapshots": [{"date": s.trade_date.isoformat(), "profit_pct": s.profit_pct} for s in snapshots],
+        }
+    
+    def _get_market_environment_summary(self, anomaly_date: str, db: Session) -> Dict:
+        """获取市场环境摘要"""
+        target_date = date.today()
+        if anomaly_date:
+            try:
+                target_date = date.fromisoformat(anomaly_date)
+            except:
+                pass
+        
+        sentiments = db.query(SentimentData).filter(
+            SentimentData.data_date == target_date
+        ).limit(20).all()
+        
+        avg_sentiment = sum(s.sentiment_score or 0 for s in sentiments) / len(sentiments) if sentiments else 0
+        
+        return {
+            "avg_sentiment_score": round(avg_sentiment, 3),
+            "news_count": len(sentiments),
+            "market_sentiment": "positive" if avg_sentiment > 0.1 else "negative" if avg_sentiment < -0.1 else "neutral",
+        }
+    
+    def _perform_deep_analysis(self, anomaly: Dict, related_data: Dict, market_env: Dict) -> Dict:
+        """执行深度分析"""
+        if not self.llm_client:
+            return {"error": "LLM客户端未配置"}
+        
+        prompt = self.DEEP_ANALYSIS_PROMPT.format(
+            anomaly_type=anomaly["type"],
+            severity=anomaly["severity"],
+            impact_summary=anomaly["message"],
+            related_data=json.dumps(related_data, ensure_ascii=False),
+            market_environment=json.dumps(market_env, ensure_ascii=False),
+        )
+        
+        try:
+            response = self.llm_client.chat.completions.create(
+                model=settings.llm_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=2000,
+            )
+            
+            content = response.choices[0].message.content
+            return self._parse_json_response(content)
+        
+        except Exception as e:
+            logger.error(f"深度分析失败: {e}")
+            return {"error": str(e)}
+    
+    def _create_corrective_experience(
+        self,
+        strategy_id: int,
+        anomaly: Dict,
+        deep_analysis: Dict,
+        db: Session
+    ) -> Dict:
+        """创建纠正性经验"""
+        lessons = deep_analysis.get("lessons_learned", {})
+        corrective = deep_analysis.get("corrective_actions", {})
+        
+        exp = Experience(
+            strategy_id=strategy_id,
+            experience_type="failure",
+            scenario_tags=[anomaly["type"]],
+            title=f"{anomaly['message']}应对经验",
+            description=lessons.get("key_insight", ""),
+            market_condition=anomaly.get("date"),
+            action_taken=corrective.get("immediate", []),
+            result="negative",
+            key_insight=lessons.get("key_insight", ""),
+            generated_date=date.today(),
+            expires_date=date.today() + timedelta(days=90),
+        )
+        
+        db.add(exp)
+        db.commit()
+        
+        return {
+            "experience_id": exp.id,
+            "title": exp.title,
+            "key_insight": exp.key_insight,
+        }
+    
+    def suggest_parameter_adjustments(self, strategy_id: int, db: Session) -> Dict:
+        """建议参数调整"""
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+        if not strategy:
+            return {"error": "策略不存在"}
+        
+        anomalies = self.detect_anomalies(strategy_id, db)
+        
+        suggestions = []
+        
+        if any(a["type"] == "consecutive_failure" for a in anomalies):
+            suggestions.append({
+                "parameter": "max_daily_adjustments",
+                "current": strategy.max_daily_adjustments or 1,
+                "suggested": 2,
+                "reason": "连续失败次数过多，建议增加调整频率以快速响应市场",
+            })
+        
+        if any(a["type"] == "large_loss" for a in anomalies):
+            suggestions.append({
+                "parameter": "max_allocation_change",
+                "current": 0.10,
+                "suggested": 0.05,
+                "reason": "单日大幅亏损，建议降低单次调整幅度限制",
+            })
+        
+        if any(a["type"] == "drawdown_spike" for a in anomalies):
+            suggestions.append({
+                "parameter": "auto_strategy_status",
+                "current": strategy.auto_strategy_status,
+                "suggested": "paused",
+                "reason": "回撤突增，建议暂停策略等待市场稳定",
+            })
+        
+        return {
+            "strategy_id": strategy_id,
+            "suggestions": suggestions,
+            "confidence": len(anomalies) > 0,
+        }
+    
+    def compare_periods(
+        self,
+        strategy_id: int,
+        period1_start: date,
+        period1_end: date,
+        period2_start: date,
+        period2_end: date,
+        db: Session
+    ) -> Dict:
+        """跨周期对比分析"""
+        period1_data = self._collect_period_data(strategy_id, period1_start, period1_end, db)
+        period2_data = self._collect_period_data(strategy_id, period2_start, period2_end, db)
+        
+        comparison = {
+            "period1": {
+                "start": period1_start.isoformat(),
+                "end": period1_end.isoformat(),
+                "success_rate": period1_data["success_count"] / period1_data["total_count"] if period1_data["total_count"] > 0 else 0,
+                "avg_return": period1_data["avg_return"],
+            },
+            "period2": {
+                "start": period2_start.isoformat(),
+                "end": period2_end.isoformat(),
+                "success_rate": period2_data["success_count"] / period2_data["total_count"] if period2_data["total_count"] > 0 else 0,
+                "avg_return": period2_data["avg_return"],
+            },
+            "performance_change": {
+                "success_rate_diff": round(
+                    (period2_data["success_count"] / period2_data["total_count"] - 
+                     period1_data["success_count"] / period1_data["total_count"]) * 100, 2
+                ) if period1_data["total_count"] > 0 and period2_data["total_count"] > 0 else 0,
+                "avg_return_diff": round(
+                    period2_data["avg_return"] - period1_data["avg_return"], 2
+                ),
+            },
+        }
+        
+        if comparison["performance_change"]["success_rate_diff"] > 10:
+            comparison["conclusion"] = "第二周期表现明显改善"
+        elif comparison["performance_change"]["success_rate_diff"] < -10:
+            comparison["conclusion"] = "第二周期表现明显恶化"
+        else:
+            comparison["conclusion"] = "表现基本持平"
+        
+        return comparison
     
     def _build_review_report(self, period_data: Dict, experiences: List[Dict], 
                              start_date: date, end_date: date) -> Dict:
