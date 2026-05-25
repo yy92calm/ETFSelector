@@ -1205,3 +1205,22 @@ tbody tr:last-child td {
     max-width: 400px;
     text-align: center;
 }
+
+.stat-mini {
+    text-align: center;
+    padding: 12px;
+    background: rgba(255, 255, 255, 0.5);
+    border-radius: 8px;
+}
+
+.stat-mini-value {
+    font-size: 20px;
+    font-weight: 700;
+    color: var(--text);
+}
+
+.stat-mini-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-top: 4px;
+}

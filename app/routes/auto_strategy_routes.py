@@ -140,6 +140,81 @@ def trigger_review(strategy_id: int, review_type: str = "weekly", db: Session = 
     return APIResponse(message="复盘完成", data=result)
 
 
+@router.post("/trigger-daily-pipeline", response_model=APIResponse)
+def trigger_daily_pipeline(strategy_id: int, db: Session = Depends(get_db)):
+    """一键触发每日自驱动管道"""
+    from app.services.net_value_service import get_net_value_service
+    from app.services.portfolio_service import get_portfolio_service
+    from app.services.sentiment_service import SentimentService
+    from app.services.auto_analysis_service import AutoAnalysisService
+    from app.services.auto_strategy_executor import AutoStrategyExecutor
+    
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        raise HTTPException(status_code=404, detail="策略不存在")
+        
+    results = {}
+    today = date.today()
+    
+    # 步骤1: 更新净值行情 (行情模块)
+    try:
+        nv_svc = get_net_value_service()
+        nv_result = nv_svc.batch_update_net_values(db, limit=6)
+        results["net_value_update"] = {"status": "success", "detail": nv_result}
+    except Exception as e:
+        logger.error(f"每日管道-净值更新失败: {e}", exc_info=True)
+        results["net_value_update"] = {"status": "failed", "error": str(e)}
+        
+    # 步骤2: 组合再平衡交易 (交易执行)
+    try:
+        port_svc = get_portfolio_service()
+        port_svc.run_strategy_for_date(strategy, today, db)
+        results["portfolio_rebalance"] = {"status": "success"}
+    except Exception as e:
+        logger.error(f"每日管道-再平衡失败: {e}", exc_info=True)
+        results["portfolio_rebalance"] = {"status": "failed", "error": str(e)}
+        
+    # 步骤3: 采集舆情与观点情绪 (舆情模块)
+    try:
+        sent_svc = SentimentService()
+        sent_result = sent_svc.collect_daily_sentiment(today, db)
+        results["sentiment_collection"] = {"status": "success", "detail": sent_result}
+    except Exception as e:
+        logger.error(f"每日管道-舆情采集失败: {e}", exc_info=True)
+        results["sentiment_collection"] = {"status": "failed", "error": str(e)}
+        
+    # 步骤4: AI舆情与市场环境分析 (AI市场分析)
+    try:
+        analysis_svc = AutoAnalysisService()
+        analysis_result = analysis_svc.analyze_market(strategy_id, today, db)
+        results["ai_market_analysis"] = {"status": "success", "detail": analysis_result}
+    except Exception as e:
+        logger.error(f"每日管道-AI市场分析失败: {e}", exc_info=True)
+        results["ai_market_analysis"] = {"status": "failed", "error": str(e)}
+        
+    # 步骤5: 策略AI驱动权重分配调整 (策略调整)
+    try:
+        executor_svc = AutoStrategyExecutor()
+        adjust_result = executor_svc.execute_auto_strategy(strategy_id, today, db)
+        results["strategy_adjustment"] = {"status": "success", "detail": adjust_result}
+    except Exception as e:
+        logger.error(f"每日管道-策略调整失败: {e}", exc_info=True)
+        results["strategy_adjustment"] = {"status": "failed", "error": str(e)}
+        
+    return APIResponse(message="一键每日管道运行完成", data=results)
+
+
+@router.get("/review-report", response_model=APIResponse)
+def get_review_report(strategy_id: int, review_type: str = "weekly", db: Session = Depends(get_db)):
+    """获取复盘报告（不触发LLM）"""
+    from app.services.review_service import ReviewService
+    
+    svc = ReviewService()
+    report = svc.get_review_report(strategy_id, review_type, db)
+    
+    return APIResponse(data=report)
+
+
 @router.post("/create", response_model=APIResponse)
 def create_auto_strategy(req: dict, db: Session = Depends(get_db)):
     """创建自动策略"""

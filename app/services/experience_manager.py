@@ -1,11 +1,12 @@
 """经验生命周期管理"""
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import List
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, object_session
 
 from app.models.experience import Experience, ExperienceUsageRecord
+from app.models.portfolio import PortfolioSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,67 @@ class ExperienceManager:
         "effectiveness_threshold": 6.0,
     }
     
+    def evaluate_experience_usages(self, strategy_id: int, db: Session):
+        """评估待验证的经验应用记录，计算收益和结果"""
+        pending_records = db.query(ExperienceUsageRecord).filter(
+            ExperienceUsageRecord.strategy_id == strategy_id,
+            ExperienceUsageRecord.result == None
+        ).all()
+        
+        logger.info(f"策略{strategy_id}发现{len(pending_records)}条待评估的经验使用记录")
+        for rec in pending_records:
+            # 找到 usage_date 当日或之前的最后一个快照作为 A_0
+            base_snapshot = db.query(PortfolioSnapshot).filter(
+                PortfolioSnapshot.strategy_id == strategy_id,
+                PortfolioSnapshot.trade_date <= rec.usage_date
+            ).order_by(PortfolioSnapshot.trade_date.desc()).first()
+            
+            if not base_snapshot:
+                continue
+                
+            # 寻找 usage_date 之后的所有快照，按日期升序排列
+            future_snapshots = db.query(PortfolioSnapshot).filter(
+                PortfolioSnapshot.strategy_id == strategy_id,
+                PortfolioSnapshot.trade_date > rec.usage_date
+            ).order_by(PortfolioSnapshot.trade_date.asc()).all()
+            
+            # 如果未来快照数量 >= 5，我们取第 5 个（即 index 4）进行评估
+            # 如果未来快照数量 < 5，但当前日期距离 usage_date 已经超过 7 天，我们也取最新的快照进行评估
+            if len(future_snapshots) >= 5:
+                target_snapshot = future_snapshots[4]
+            elif len(future_snapshots) > 0 and (date.today() - rec.usage_date).days >= 7:
+                target_snapshot = future_snapshots[-1]
+            else:
+                # 依然等待更多数据，跳过
+                continue
+                
+            # 计算收益率
+            a_0 = base_snapshot.total_asset
+            a_t = target_snapshot.total_asset
+            if a_0 > 0:
+                return_pct = (a_t - a_0) / a_0 * 100
+            else:
+                return_pct = 0.0
+                
+            # 结果分类:
+            # 收益率 > 0.05% -> positive
+            # 收益率 < -0.05% -> negative
+            # 其他 -> neutral
+            if return_pct > 0.05:
+                result = "positive"
+            elif return_pct < -0.05:
+                result = "negative"
+            else:
+                result = "neutral"
+                
+            rec.result = result
+            rec.return_pct = round(return_pct, 4)
+            rec.is_validated = True
+            rec.validated_at = datetime.utcnow()
+            
+        db.commit()
+        logger.info(f"策略{strategy_id}经验使用记录评估完成")
+        
     def update_experience_lifecycle(self, strategy_id: int, db: Session):
         """更新经验生命周期"""
         experiences = db.query(Experience).filter(
@@ -53,18 +115,18 @@ class ExperienceManager:
     
     def _validate_if_needed(self, exp: Experience):
         """有效性验证"""
-        if exp.application_count >= self.LIFECYCLE_CONFIG["validation_threshold"] and not exp.is_validated:
+        if exp.application_count >= self.LIFECYCLE_CONFIG["validation_threshold"]:
             self._calculate_effectiveness(exp)
             exp.is_validated = True
     
     def _calculate_effectiveness(self, exp: Experience):
         """计算有效性"""
-        records = self._get_usage_records(exp.id, limit=10)
+        records = self._get_usage_records(exp, limit=10)
         
         if len(records) >= 3:
             positive = sum(1 for r in records if r.result == "positive")
             exp.success_rate = positive / len(records)
-            exp.effectiveness_score = min(10, exp.success_rate * 10)
+            exp.effectiveness_score = min(10.0, exp.success_rate * 10)
             
             exp.success_count = positive
             exp.failure_count = len(records) - positive
@@ -76,9 +138,15 @@ class ExperienceManager:
                 exp.review_status = "pending"
                 logger.warning(f"经验{exp.id}效果评分过低: {exp.effectiveness_score}")
     
-    def _get_usage_records(self, experience_id: int, limit: int = 10) -> List[ExperienceUsageRecord]:
+    def _get_usage_records(self, exp: Experience, limit: int = 10) -> List[ExperienceUsageRecord]:
         """获取使用记录"""
-        pass
+        db = object_session(exp)
+        if db:
+            return db.query(ExperienceUsageRecord).filter(
+                ExperienceUsageRecord.experience_id == exp.id,
+                ExperienceUsageRecord.is_validated == True
+            ).order_by(ExperienceUsageRecord.usage_date.desc()).limit(limit).all()
+        return []
     
     def prune_low_effectiveness(self, strategy_id: int, db: Session) -> int:
         """清理低效经验"""

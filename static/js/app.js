@@ -2068,10 +2068,13 @@ async function loadAutoStrategies() {
             renderAutoStrategyInfo(data.data.strategies[0]);
             loadExecutionLogs(currentAutoStrategyId);
             loadExperiences(currentAutoStrategyId);
+            loadReviewReport();
         } else {
             currentAutoStrategyId = null;
             document.getElementById('auto-strategy-info').innerHTML =
                 '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">🤖</div><div>请先创建自动策略</div></div>';
+            document.getElementById('review-report-content').innerHTML =
+                '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📊</div><div>请先创建自动策略</div></div>';
         }
         document.getElementById('auto-strategy-status').textContent = `共 ${data.data.total} 个策略`;
     } catch (e) {
@@ -2481,7 +2484,115 @@ async function triggerReview() {
         const data = await api(`/api/auto-strategy/trigger-review?strategy_id=${currentAutoStrategyId}&review_type=weekly`, { method: 'POST' });
         toast(`复盘完成: 生成${data.data.experiences_generated}条经验`, 'success');
         loadExperiences(currentAutoStrategyId);
+        
+        if (data.data.review_report) {
+            renderReviewReport(data.data.review_report);
+        }
     } catch (e) {
         toast('复盘失败: ' + e.message, 'error');
     }
+}
+
+async function loadReviewReport() {
+    if (!currentAutoStrategyId) {
+        document.getElementById('review-report-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📊</div><div>请先创建自动策略</div></div>';
+        return;
+    }
+
+    try {
+        const data = await api(`/api/auto-strategy/review-report?strategy_id=${currentAutoStrategyId}&review_type=weekly`);
+        renderReviewReport(data.data);
+    } catch (e) {
+        document.getElementById('review-report-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📊</div><div>获取报告失败: ' + e.message + '</div></div>';
+    }
+}
+
+function renderReviewReport(report) {
+    if (!report) {
+        document.getElementById('review-report-content').innerHTML = 
+            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📊</div><div>暂无复盘报告</div></div>';
+        return;
+    }
+
+    const period = report.period || {};
+    const stats = report.statistics || {};
+    const sentiment = report.sentiment_analysis || {};
+    const cases = report.cases || {};
+    const experiences = report.generated_experiences || [];
+    const summary = report.summary || '';
+
+    let html = `
+        <div style="padding:12px;background:linear-gradient(135deg, rgba(59,130,246,0.08) 0%, rgba(16,185,129,0.08) 100%);border-radius:8px;margin-bottom:16px;">
+            <div style="font-size:13px;color:var(--text-secondary);margin-bottom:4px;">
+                复盘周期: ${period.start_date || '-'} ~ ${period.end_date || '-'} (${period.days || 0}天)
+            </div>
+            <div style="font-size:15px;font-weight:600;color:var(--text);">${summary}</div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+            <div class="stat-mini">
+                <div class="stat-mini-value">${stats.total_executions || 0}</div>
+                <div class="stat-mini-label">执行次数</div>
+            </div>
+            <div class="stat-mini">
+                <div class="stat-mini-value" style="color:var(--success);">${stats.success_count || 0}</div>
+                <div class="stat-mini-label">成功次数</div>
+            </div>
+            <div class="stat-mini">
+                <div class="stat-mini-value" style="color:${stats.success_rate >= 50 ? 'var(--success)' : 'var(--danger)'};">${stats.success_rate || 0}%</div>
+                <div class="stat-mini-label">成功率</div>
+            </div>
+            <div class="stat-mini">
+                <div class="stat-mini-value">${stats.avg_return >= 0 ? '+' : ''}${stats.avg_return || 0}%</div>
+                <div class="stat-mini-label">平均收益</div>
+            </div>
+        </div>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+            <div>
+                <div style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--danger);">⚠️ 失败案例</div>
+                <div style="max-height:150px;overflow-y:auto;">
+                    ${(cases.failures || []).map(c => `
+                        <div style="padding:8px;background:rgba(239,68,68,0.05);border-radius:4px;margin-bottom:4px;font-size:13px;">
+                            <div style="color:var(--text-secondary);">${c.date || '-'}</div>
+                            <div style="color:var(--danger);">${c.reason || '未知原因'}</div>
+                        </div>
+                    `).join('') || '<div style="color:var(--text-secondary);font-size:13px;">本周无失败案例 ✅</div>'}
+                </div>
+            </div>
+            <div>
+                <div style="font-size:14px;font-weight:600;margin-bottom:8px;color:var(--success);">✅ 成功案例</div>
+                <div style="max-height:150px;overflow-y:auto;">
+                    ${(cases.successes || []).map(c => `
+                        <div style="padding:8px;background:rgba(16,185,129,0.05);border-radius:4px;margin-bottom:4px;font-size:13px;">
+                            <div style="color:var(--text-secondary);">${c.date || '-'}</div>
+                            <div style="color:var(--success);">${c.analysis?.suggested_action || '调整成功'}</div>
+                        </div>
+                    `).join('') || '<div style="color:var(--text-secondary);font-size:13px;">本周无成功调整案例</div>'}
+                </div>
+            </div>
+        </div>
+
+        <div style="margin-bottom:12px;">
+            <div style="font-size:14px;font-weight:600;margin-bottom:8px;">📈 舆情环境</div>
+            <div style="display:flex;gap:16px;font-size:13px;color:var(--text-secondary);">
+                <span>平均评分: ${sentiment.avg_score?.toFixed(2) || 'N/A'}</span>
+                <span>正面占比: ${(sentiment.positive_ratio * 100)?.toFixed(1) || 0}%</span>
+            </div>
+        </div>
+
+        <div>
+            <div style="font-size:14px;font-weight:600;margin-bottom:8px;">💡 生成的经验</div>
+            ${experiences.length > 0 ? experiences.map(exp => `
+                <div style="padding:10px;background:rgba(255,255,255,0.5);border-radius:6px;margin-bottom:6px;border-left:3px solid ${exp.type === 'success' ? 'var(--success)' : exp.type === 'failure' ? 'var(--danger)' : 'var(--primary)'};">
+                    <div style="font-size:14px;font-weight:500;">${exp.type === 'success' ? '✅' : exp.type === 'failure' ? '⚠️' : '💡'} ${exp.title || '经验'}</div>
+                    ${exp.key_insight ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:4px;">"${exp.key_insight}"</div>` : ''}
+                </div>
+            `).join('') : '<div style="color:var(--text-secondary);font-size:13px;">暂无生成经验</div>'}
+        </div>
+    `;
+
+    document.getElementById('review-report-content').innerHTML = html;
 }

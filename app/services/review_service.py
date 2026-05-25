@@ -14,7 +14,7 @@ from app.models.strategy import Strategy
 from app.models.auto_strategy_log import AutoStrategyLog
 from app.models.portfolio import PortfolioSnapshot, TradeRecord
 from app.models.sentiment import SentimentData
-from app.models.experience import Experience, ExperienceUsageRecord, Experience
+from app.models.experience import Experience, ExperienceUsageRecord
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -80,6 +80,18 @@ class ReviewService:
     
     def trigger_review(self, strategy_id: int, review_type: str, db: Session) -> Dict:
         """触发复盘分析"""
+        # 1. 评估历史经验使用成效，更新生命周期，清理低效经验
+        from app.services.experience_manager import ExperienceManager
+        exp_manager = ExperienceManager()
+        try:
+            exp_manager.evaluate_experience_usages(strategy_id, db)
+            exp_manager.update_experience_lifecycle(strategy_id, db)
+            pruned_count = exp_manager.prune_low_effectiveness(strategy_id, db)
+            if pruned_count > 0:
+                logger.info(f"策略{strategy_id}在复盘中自动清理了 {pruned_count} 条低效经验")
+        except Exception as e:
+            logger.error(f"处理经验生命周期失败: {e}", exc_info=True)
+
         period_days = 7 if review_type == "weekly" else 30
         end_date = date.today()
         start_date = end_date - timedelta(days=period_days)
@@ -88,6 +100,7 @@ class ReviewService:
         experiences = self._generate_experiences_with_llm(period_data)
         
         saved_count = 0
+        saved_experiences = []
         for exp_data in experiences:
             if self._validate_experience(exp_data):
                 exp = Experience(
@@ -105,12 +118,91 @@ class ReviewService:
                 )
                 db.add(exp)
                 saved_count += 1
+                saved_experiences.append({
+                    "type": exp.experience_type,
+                    "title": exp.title,
+                    "key_insight": exp.key_insight,
+                })
         
         db.commit()
         self._cleanup_expired_experiences(strategy_id, db)
         
         logger.info(f"策略{strategy_id}复盘完成: 生成{saved_count}条经验")
-        return {"experiences_generated": saved_count, "review_type": review_type}
+        
+        # 返回详细的复盘报告
+        return {
+            "experiences_generated": saved_count,
+            "review_type": review_type,
+            "review_report": self._build_review_report(period_data, saved_experiences, start_date, end_date),
+        }
+    
+    def get_review_report(self, strategy_id: int, review_type: str, db: Session) -> Dict:
+        """获取复盘报告（不触发LLM生成）"""
+        period_days = 7 if review_type == "weekly" else 30
+        end_date = date.today()
+        start_date = end_date - timedelta(days=period_days)
+        
+        period_data = self._collect_period_data(strategy_id, start_date, end_date, db)
+        
+        # 获取最新经验
+        recent_experiences = db.query(Experience).filter(
+            Experience.strategy_id == strategy_id,
+            Experience.is_active == True,
+            Experience.generated_date >= start_date,
+        ).order_by(Experience.generated_date.desc()).limit(10).all()
+        
+        experiences_list = [{
+            "type": exp.experience_type,
+            "title": exp.title,
+            "key_insight": exp.key_insight,
+            "effectiveness_score": exp.effectiveness_score,
+        } for exp in recent_experiences]
+        
+        return self._build_review_report(period_data, experiences_list, start_date, end_date)
+    
+    def _build_review_report(self, period_data: Dict, experiences: List[Dict], 
+                             start_date: date, end_date: date) -> Dict:
+        """构建复盘报告"""
+        return {
+            "period": {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "days": period_data["period_days"],
+            },
+            "statistics": {
+                "total_executions": period_data["total_count"],
+                "success_count": period_data["success_count"],
+                "failure_count": period_data["failure_count"],
+                "success_rate": round(period_data["success_count"] / period_data["total_count"] * 100, 1) if period_data["total_count"] > 0 else 0,
+                "avg_return": period_data["avg_return"],
+                "max_loss": period_data["max_loss"],
+            },
+            "sentiment_analysis": period_data["sentiment_patterns"],
+            "cases": {
+                "failures": period_data["failure_cases"],
+                "successes": period_data["success_cases"],
+            },
+            "generated_experiences": experiences,
+            "summary": self._generate_summary(period_data),
+        }
+    
+    def _generate_summary(self, period_data: Dict) -> str:
+        """生成复盘总结"""
+        total = period_data["total_count"]
+        success = period_data["success_count"]
+        avg_return = period_data["avg_return"]
+        
+        if total == 0:
+            return "本周无自动策略执行记录"
+        
+        success_rate = success / total * 100
+        
+        if success_rate >= 80:
+            return f"本周策略执行表现优秀，成功率{success_rate:.0f}%，平均收益{avg_return:.2f}%"
+        elif success_rate >= 50:
+            return f"本周策略执行表现中等，成功率{success_rate:.0f}%，需关注失败案例分析"
+        else:
+            return f"本周策略执行表现欠佳，成功率{success_rate:.0f}%，建议暂停并调整策略参数"
     
     def _collect_period_data(self, strategy_id: int, start_date: date, end_date: date, db: Session) -> Dict:
         """收集周期数据"""

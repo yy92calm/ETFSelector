@@ -232,6 +232,19 @@
         </div>
 
         <div class="card" style="margin-top:20px;">
+            <div class="card-title">
+                <span>本周复盘报告</span>
+                <button class="btn btn-sm btn-outline" onclick="loadReviewReport()" style="margin-left:auto;font-size:12px;">刷新报告</button>
+            </div>
+            <div id="review-report-content" style="max-height:400px;overflow-y:auto;">
+                <div class="empty-state-mini">
+                    <div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📊</div>
+                    <div>点击"触发复盘"或等待周日自动复盘</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top:20px;">
             <div class="card-title">执行日志</div>
             <div id="auto-strategy-logs" style="max-height:200px;overflow-y:auto;">
                 <div class="empty-state-mini">
