@@ -1224,3 +1224,52 @@ tbody tr:last-child td {
     color: var(--text-secondary);
     margin-top: 4px;
 }
+
+/* ====== 子导航 Tabs ====== */
+.sub-nav-tabs {
+    display: flex;
+    gap: 4px;
+    padding: 12px 0;
+    margin-bottom: 16px;
+    border-bottom: 1px solid var(--border-light);
+}
+
+.sub-nav-tab {
+    padding: 8px 16px;
+    font-size: 14px;
+    color: var(--text-secondary);
+    text-decoration: none;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+    position: relative;
+}
+
+.sub-nav-tab:hover {
+    color: var(--primary);
+    background: var(--primary-50);
+}
+
+.sub-nav-tab.active {
+    color: var(--primary);
+    font-weight: 600;
+    background: var(--primary-50);
+}
+
+.sub-nav-tab.active::after {
+    content: '';
+    position: absolute;
+    bottom: -13px;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--primary);
+}
+
+.subtab-content {
+    display: none;
+}
+
+.subtab-content.active {
+    display: block;
+    animation: fadeIn 0.3s ease;
+}

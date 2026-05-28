@@ -302,13 +302,53 @@ def list_auto_strategies(db: Session = Depends(get_db)):
 
 @router.get("/enhanced/technical-indicators", response_model=APIResponse)
 def get_technical_indicators(etf_code: str, db: Session = Depends(get_db)):
-    """获取技术指标分析"""
+    """获取单个ETF技术指标分析"""
     from app.services.technical_indicator_service import TechnicalIndicatorService
     
     svc = TechnicalIndicatorService()
     indicators = svc.calculate_all_indicators(etf_code, db)
     
     return APIResponse(data=indicators)
+
+
+@router.get("/enhanced/technical-indicators-batch", response_model=APIResponse)
+def get_technical_indicators_batch(db: Session = Depends(get_db)):
+    """批量获取所有ETF技术指标分析"""
+    from app.services.technical_indicator_service import TechnicalIndicatorService
+    from app.models.etf import ETFBasic
+    
+    svc = TechnicalIndicatorService()
+    
+    etfs = db.query(ETFBasic).limit(20).all()
+    etf_codes = [e.etf_code for e in etfs]
+    
+    indicators = svc.batch_calculate_indicators(etf_codes, db)
+    
+    summary_list = []
+    for code, data in indicators.items():
+        if data.get("error"):
+            continue
+        
+        trend = data.get("trend_signal", {})
+        macd = data.get("macd", {})
+        rsi = data.get("rsi", {})
+        ma = data.get("ma", {})
+        
+        summary_list.append({
+            "etf_code": code,
+            "trend": trend.get("trend", "neutral"),
+            "trend_confidence": trend.get("confidence", 0),
+            "macd_signal": macd.get("trend", "neutral"),
+            "rsi_value": rsi.get("value"),
+            "rsi_signal": rsi.get("signal", "neutral"),
+            "ma5_above": ma.get("ma5", {}).get("price_position", "neutral"),
+            "latest_date": data.get("latest_date"),
+        })
+    
+    return APIResponse(data={
+        "indicators": summary_list,
+        "total": len(summary_list),
+    })
 
 
 @router.get("/enhanced/market-sentiment-index", response_model=APIResponse)

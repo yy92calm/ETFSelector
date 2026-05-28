@@ -75,8 +75,21 @@ class TechnicalIndicatorService:
         ema_fast = self._calculate_ema(prices, fast)
         ema_slow = self._calculate_ema(prices, slow)
         
-        macd_line = [f - s for f, s in zip(ema_fast, ema_slow)]
-        signal_line = self._calculate_ema(macd_line, signal)
+        if not ema_fast or not ema_slow:
+            return {}
+        
+        valid_ema_fast = [f for f in ema_fast if f is not None]
+        valid_ema_slow = [s for s in ema_slow if s is not None]
+        
+        if len(valid_ema_fast) < len(valid_ema_slow):
+            valid_ema_fast = valid_ema_fast[-len(valid_ema_slow):]
+        
+        macd_line = [f - s for f, s in zip(valid_ema_fast, valid_ema_slow)]
+        
+        if not macd_line:
+            return {}
+        
+        signal_line = self._calculate_ema_simple(macd_line, signal)
         histogram = [m - s for m, s in zip(macd_line[-len(signal_line):], signal_line)]
         
         latest_macd = macd_line[-1] if macd_line else 0
@@ -88,8 +101,21 @@ class TechnicalIndicatorService:
             "signal": round(latest_signal, 4),
             "histogram": round(latest_hist, 4),
             "trend": "bullish" if latest_macd > latest_signal else "bearish",
-            "strength": "strong" if abs(latest_hist) > abs(histogram[-2]) else "weak" if len(histogram) > 1 else "neutral",
+            "strength": "strong" if (len(histogram) > 1 and abs(latest_hist) > abs(histogram[-2])) else "weak" if len(histogram) > 1 else "neutral",
         }
+    
+    def _calculate_ema_simple(self, data: List[float], period: int) -> List[float]:
+        """计算EMA（简化版，不返回None）"""
+        if len(data) < period:
+            return []
+        
+        multiplier = 2 / (period + 1)
+        ema = [sum(data[:period]) / period]
+        
+        for val in data[period:]:
+            ema.append((val - ema[-1]) * multiplier + ema[-1])
+        
+        return ema
     
     def _calculate_rsi(self, prices: List[float]) -> Dict:
         """计算RSI指标"""

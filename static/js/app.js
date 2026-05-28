@@ -59,12 +59,6 @@ document.querySelectorAll('.nav-links a').forEach(a => {
         a.classList.add('active');
         const tab = a.dataset.tab;
         
-        // 实盘模拟功能尚未完善提示
-        if (tab === 'portfolio') {
-            toast('⚠️ 实盘模拟功能正在开发中，敬请期待！', 'warning');
-            return;
-        }
-        
         document.querySelectorAll('.tab-content').forEach(x => x.classList.remove('active'));
         document.getElementById('tab-' + tab).classList.add('active');
 
@@ -72,6 +66,26 @@ document.querySelectorAll('.nav-links a').forEach(a => {
         if (tab === 'strategy') loadStrategies();
         if (tab === 'backtest') loadBacktestPage();
         if (tab === 'auto-strategy') loadAutoStrategyPage();
+    });
+});
+
+// ---- AI策略子导航切换 ----
+document.querySelectorAll('.sub-nav-tab').forEach(a => {
+    a.addEventListener('click', (e) => {
+        e.preventDefault();
+        document.querySelectorAll('.sub-nav-tab').forEach(x => x.classList.remove('active'));
+        a.classList.add('active');
+        const subtab = a.dataset.subtab;
+        
+        document.querySelectorAll('.subtab-content').forEach(x => x.classList.remove('active'));
+        document.getElementById('subtab-' + subtab).classList.add('active');
+
+        // 子页面加载
+        if (subtab === 'overview') loadAutoStrategyOverview();
+        if (subtab === 'sentiment') loadSentimentPage();
+        if (subtab === 'technical') loadTechnicalPage();
+        if (subtab === 'risk') loadRiskPage();
+        if (subtab === 'review') loadReviewPage();
     });
 });
 
@@ -2053,11 +2067,7 @@ let currentAutoStrategyId = null;
 let autoStrategyAllocations = [];
 
 async function loadAutoStrategyPage() {
-    await Promise.all([
-        loadAutoStrategies(),
-        loadSentimentSummary(),
-        loadSentiments(),
-    ]);
+    await loadAutoStrategyOverview();
 }
 
 async function loadAutoStrategies() {
@@ -2066,20 +2076,10 @@ async function loadAutoStrategies() {
         if (data.data.strategies && data.data.strategies.length > 0) {
             currentAutoStrategyId = data.data.strategies[0].id;
             renderAutoStrategyInfo(data.data.strategies[0]);
-            loadExecutionLogs(currentAutoStrategyId);
-            loadExperiences(currentAutoStrategyId);
-            loadReviewReport();
-            loadTechnicalIndicators();
-            loadMarketEnvironment();
-            loadRiskDashboard();
-            loadSmartExperiences();
-            loadAnomalies();
         } else {
             currentAutoStrategyId = null;
             document.getElementById('auto-strategy-info').innerHTML =
                 '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">🤖</div><div>请先创建自动策略</div></div>';
-            document.getElementById('review-report-content').innerHTML =
-                '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📊</div><div>请先创建自动策略</div></div>';
         }
         document.getElementById('auto-strategy-status').textContent = `共 ${data.data.total} 个策略`;
     } catch (e) {
@@ -2450,13 +2450,29 @@ async function submitCreateAutoStrategy() {
     }
 }
 
+async function loadSentimentSummary() {
+    try {
+        const data = await api('/api/auto-strategy/sentiments/summary');
+        const summary = data.data;
+
+        document.getElementById('stat-sentiment-count').textContent = summary.total || 0;
+        document.getElementById('stat-sentiment-positive').textContent = summary.positive || 0;
+        document.getElementById('stat-sentiment-negative').textContent = summary.negative || 0;
+        document.getElementById('stat-sentiment-avg').textContent = summary.avg_score || '-';
+    } catch (e) {
+        console.error('获取舆情汇总失败', e);
+    }
+}
+
 async function triggerSentimentCollect() {
     try {
         toast('开始采集舆情...', 'info');
         const data = await api('/api/auto-strategy/trigger-collect', { method: 'POST' });
         toast(`舆情采集完成: ${data.data.news_count}条`, 'success');
+        
         loadSentimentSummary();
-        loadSentiments();
+        loadSentimentSummaryForTable();
+        loadSentimentTable();
     } catch (e) {
         toast('采集失败: ' + e.message, 'error');
     }
@@ -2625,8 +2641,6 @@ async function loadEnhancedData() {
 
 async function loadTechnicalIndicators() {
     if (!currentAutoStrategyId) {
-        document.getElementById('technical-indicators-content').innerHTML = 
-            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📈</div><div>请先创建策略</div></div>';
         return;
     }
     
@@ -2636,23 +2650,20 @@ async function loadTechnicalIndicators() {
         const etfCodes = Object.keys(allocation);
         
         if (etfCodes.length === 0) {
-            document.getElementById('technical-indicators-content').innerHTML = 
-                '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📈</div><div>策略无配置ETF</div></div>';
             return;
         }
         
         const code = etfCodes[0];
         const data = await api(`/api/auto-strategy/enhanced/technical-indicators?etf_code=${code}`);
-        renderTechnicalIndicators(data.data, etfCodes);
+        renderTechnicalIndicators(data.data, code);
     } catch (e) {
-        document.getElementById('technical-indicators-content').innerHTML = 
-            '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📈</div><div>加载失败: ' + e.message + '</div></div>';
+        console.error('加载技术指标失败', e);
     }
 }
 
-function renderTechnicalIndicators(indicators, etfCodes) {
+function renderTechnicalIndicators(indicators, etfCode) {
     if (!indicators || indicators.error) {
-        document.getElementById('technical-indicators-content').innerHTML = 
+        document.getElementById('technical-indicators-detail').innerHTML = 
             '<div class="empty-state-mini"><div style="font-size:28px;margin-bottom:8px;opacity:0.5;">📈</div><div>数据不足</div></div>';
         return;
     }
@@ -2664,21 +2675,17 @@ function renderTechnicalIndicators(indicators, etfCodes) {
     const trend = indicators.trend_signal || {};
     
     const html = `
-        <div style="padding:12px;">
-            <div style="font-size:14px;font-weight:600;margin-bottom:12px;color:var(--primary);">
-                ${indicators.etf_code || 'ETF'} 技术指标
-            </div>
-            
+        <div style="padding:16px;">
             <!-- MA均线 -->
             <div style="margin-bottom:16px;">
-                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📊 MA均线</div>
+                <div style="font-size:14px;font-weight:600;margin-bottom:12px;">📊 MA均线</div>
                 <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px;">
                     ${Object.entries(ma).map(([key, val]) => `
-                        <div style="padding:8px;background:rgba(255,255,255,0.5);border-radius:4px;">
+                        <div style="padding:12px;background:var(--bg-secondary);border-radius:6px;">
                             <div style="font-size:12px;color:var(--text-secondary);">${key.toUpperCase()}</div>
-                            <div style="font-size:14px;font-weight:600;">${val.value?.toFixed(4) || 'N/A'}</div>
-                            <div style="font-size:11px;color:${val.price_position === 'above' ? 'var(--success)' : 'var(--danger)'};">
-                                ${val.price_position === 'above' ? '↗ 价格上方' : '↘ 价格下方'}
+                            <div style="font-size:16px;font-weight:600;">${val.value?.toFixed(4) || 'N/A'}</div>
+                            <div style="font-size:12px;color:${val.price_position === 'above' ? 'var(--success)' : 'var(--danger)'};">
+                                ${val.price_position === 'above' ? '↗ 价格上方' : '↘ 价格下方'} (${val.distance_pct}%)
                             </div>
                         </div>
                     `).join('')}
@@ -2687,34 +2694,33 @@ function renderTechnicalIndicators(indicators, etfCodes) {
             
             <!-- MACD -->
             <div style="margin-bottom:16px;">
-                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📈 MACD指标</div>
-                <div style="padding:10px;background:rgba(255,255,255,0.5);border-radius:4px;">
-                    <div style="display:flex;gap:12px;margin-bottom:8px;">
-                        <span style="font-size:12px;">MACD: <strong>${macd.macd?.toFixed(4) || 'N/A'}</strong></span>
-                        <span style="font-size:12px;">信号: <strong>${macd.signal?.toFixed(4) || 'N/A'}</strong></span>
+                <div style="font-size:14px;font-weight:600;margin-bottom:12px;">📈 MACD指标</div>
+                <div style="padding:12px;background:var(--bg-secondary);border-radius:6px;">
+                    <div style="display:flex;gap:16px;margin-bottom:8px;">
+                        <span>MACD: <strong>${macd.macd?.toFixed(4) || 'N/A'}</strong></span>
+                        <span>信号: <strong>${macd.signal?.toFixed(4) || 'N/A'}</strong></span>
+                        <span>柱状: <strong>${macd.histogram?.toFixed(4) || 'N/A'}</strong></span>
                     </div>
                     <div style="display:flex;align-items:center;gap:8px;">
-                        <div style="font-size:13px;font-weight:600;color:${macd.trend === 'bullish' ? 'var(--success)' : 'var(--danger)'};">
+                        <div style="font-size:14px;font-weight:600;color:${macd.trend === 'bullish' ? 'var(--success)' : 'var(--danger)'};">
                             ${macd.trend === 'bullish' ? '金叉 ↗' : '死叉 ↘'}
                         </div>
-                        <div style="font-size:11px;color:var(--text-secondary);">(${macd.strength || 'neutral'})</div>
+                        <div style="font-size:12px;color:var(--text-secondary);">(${macd.strength || 'neutral'})</div>
                     </div>
                 </div>
             </div>
             
             <!-- RSI -->
             <div style="margin-bottom:16px;">
-                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">⚡ RSI指标</div>
-                <div style="padding:10px;background:rgba(255,255,255,0.5);border-radius:4px;">
-                    <div style="display:flex;justify-content:space-between;align-items:center;">
-                        <div>
-                            <div style="font-size:18px;font-weight:600;">${rsi.value || 'N/A'}</div>
-                            <div style="font-size:11px;color:var(--text-secondary);">相对强弱指数</div>
-                        </div>
-                        <div style="padding:6px 12px;border-radius:4px;background:${rsi.signal === 'overbought' ? 'rgba(239,68,68,0.1)' : rsi.signal === 'oversold' ? 'rgba(16,185,129,0.1)' : 'rgba(255,255,255,0.5)'};">
-                            <div style="font-size:13px;font-weight:600;color:${rsi.signal === 'overbought' ? 'var(--danger)' : rsi.signal === 'oversold' ? 'var(--success)' : 'var(--text)'};">
-                                ${rsi.signal === 'overbought' ? '超买 ⚠️' : rsi.signal === 'oversold' ? '超卖 ✅' : '中性'}
-                            </div>
+                <div style="font-size:14px;font-weight:600;margin-bottom:12px;">⚡ RSI指标</div>
+                <div style="padding:12px;background:var(--bg-secondary);border-radius:6px;display:flex;justify-content:space-between;align-items:center;">
+                    <div>
+                        <div style="font-size:24px;font-weight:700;">${rsi.value || 'N/A'}</div>
+                        <div style="font-size:12px;color:var(--text-secondary);">相对强弱指数</div>
+                    </div>
+                    <div style="padding:8px 16px;border-radius:6px;background:${rsi.signal === 'overbought' ? 'rgba(239,68,68,0.1)' : rsi.signal === 'oversold' ? 'rgba(16,185,129,0.1)' : 'var(--bg)'};">
+                        <div style="font-size:14px;font-weight:600;color:${rsi.signal === 'overbought' ? 'var(--danger)' : rsi.signal === 'oversold' ? 'var(--success)' : 'var(--text)'};">
+                            ${rsi.signal === 'overbought' ? '超买 ⚠️' : rsi.signal === 'oversold' ? '超卖 ✅' : '中性'}
                         </div>
                     </div>
                 </div>
@@ -2722,9 +2728,9 @@ function renderTechnicalIndicators(indicators, etfCodes) {
             
             <!-- 布林带 -->
             <div style="margin-bottom:16px;">
-                <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📊 布林带</div>
-                <div style="padding:10px;background:rgba(255,255,255,0.5);border-radius:4px;">
-                    <div style="font-size:12px;display:flex;gap:12px;margin-bottom:6px;">
+                <div style="font-size:14px;font-weight:600;margin-bottom:12px;">📊 布林带</div>
+                <div style="padding:12px;background:var(--bg-secondary);border-radius:6px;">
+                    <div style="font-size:13px;display:flex;gap:16px;margin-bottom:8px;">
                         <span>上轨: ${bollinger.upper?.toFixed(4) || 'N/A'}</span>
                         <span>中轨: ${bollinger.middle?.toFixed(4) || 'N/A'}</span>
                         <span>下轨: ${bollinger.lower?.toFixed(4) || 'N/A'}</span>
@@ -2736,40 +2742,19 @@ function renderTechnicalIndicators(indicators, etfCodes) {
             </div>
             
             <!-- 综合趋势 -->
-            <div style="padding:12px;background:linear-gradient(135deg, rgba(59,130,246,0.1) 0%, rgba(16,185,129,0.1) 100%);border-radius:8px;">
-                <div style="font-size:13px;font-weight:600;margin-bottom:6px;">🎯 综合趋势判断</div>
-                <div style="font-size:16px;font-weight:700;color:${trend.trend?.includes('bullish') ? 'var(--success)' : trend.trend?.includes('bearish') ? 'var(--danger)' : 'var(--text)'};">
+            <div style="padding:16px;background:linear-gradient(135deg, rgba(59,130,246,0.1) 0%, rgba(16,185,129,0.1) 100%);border-radius:8px;">
+                <div style="font-size:14px;font-weight:600;margin-bottom:8px;">🎯 综合趋势判断</div>
+                <div style="font-size:20px;font-weight:700;color:${trend.trend?.includes('bullish') ? 'var(--success)' : trend.trend?.includes('bearish') ? 'var(--danger)' : 'var(--text)'};">
                     ${trend.trend === 'strong_bullish' ? '强势多头 ↗↗' : trend.trend === 'bullish' ? '多头 ↗' : trend.trend === 'strong_bearish' ? '强势空头 ↘↘' : trend.trend === 'bearish' ? '空头 ↘' : '震荡 ↔'}
                 </div>
-                <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
+                <div style="font-size:12px;color:var(--text-secondary);margin-top:8px;">
                     看多信号: ${trend.bullish_signals || 0} | 看空信号: ${trend.bearish_signals || 0} | 置信度: ${trend.confidence || 0}%
                 </div>
             </div>
-            
-            <!-- ETF切换 -->
-            ${etfCodes.length > 1 ? `
-                <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
-                    <div style="font-size:12px;color:var(--text-secondary);margin-bottom:6px;">其他ETF指标:</div>
-                    <div style="display:flex;gap:8px;">
-                        ${etfCodes.map(code => `
-                            <button class="btn btn-sm btn-outline" onclick="loadSingleETFIndicator('${code}')">${code}</button>
-                        `).join('')}
-                    </div>
-                </div>
-            ` : ''}
         </div>
     `;
     
-    document.getElementById('technical-indicators-content').innerHTML = html;
-}
-
-async function loadSingleETFIndicator(etfCode) {
-    try {
-        const data = await api(`/api/auto-strategy/enhanced/technical-indicators?etf_code=${etfCode}`);
-        renderTechnicalIndicators(data.data, [etfCode]);
-    } catch (e) {
-        toast('加载失败: ' + e.message, 'error');
-    }
+    document.getElementById('technical-indicators-detail').innerHTML = html;
 }
 
 async function loadMarketEnvironment() {
@@ -3213,5 +3198,344 @@ function toggleSentimentDetail() {
         container.style.display = 'none';
         icon.style.transform = 'rotate(0deg)';
         icon.textContent = '▼';
+    }
+}
+
+/* ====== 子页面加载函数 ====== */
+
+async function loadAutoStrategyOverview() {
+    await Promise.all([
+        loadAutoStrategies(),
+        loadSentimentSummary(),
+    ]);
+}
+
+async function loadSentimentPage() {
+    await Promise.all([
+        loadSentimentSummaryForTable(),
+        loadSentimentTable(),
+        loadMarketEnvironment(),
+    ]);
+}
+
+async function loadSentimentSummaryForTable() {
+    try {
+        const data = await api('/api/auto-strategy/sentiments/summary');
+        const summary = data.data;
+
+        document.getElementById('sentiment-total').textContent = summary.total || 0;
+        document.getElementById('sentiment-positive-count').textContent = summary.positive || 0;
+        document.getElementById('sentiment-negative-count').textContent = summary.negative || 0;
+        document.getElementById('sentiment-avg-score').textContent = summary.avg_score || '-';
+    } catch (e) {
+        console.error('获取舆情汇总失败', e);
+    }
+}
+
+async function loadSentimentTable() {
+    try {
+        const data = await api('/api/auto-strategy/sentiments?days=1');
+        const sentiments = data.data.sentiments || [];
+
+        if (sentiments.length === 0) {
+            document.getElementById('sentiment-table').innerHTML = 
+                '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">暂无舆情数据</td></tr>';
+            return;
+        }
+
+        const sourceLabels = {
+            'eastmoney': '东财',
+            'cls': '财联社',
+            'ths': '同花顺',
+            'sina': '新浪',
+            'jin10': '金十',
+            'eastmoney_hot': '热点',
+            'eastmoney_keyword': '关键词'
+        };
+
+        const html = sentiments.map((s, idx) => {
+            const score = s.sentiment_score || 0;
+            const scoreClass = score > 0 ? 'text-success' : score < 0 ? 'text-danger' : '';
+            const labelIcon = s.sentiment_label === 'positive' ? '✅' : s.sentiment_label === 'negative' ? '⚠️' : '➖';
+            const labelText = s.sentiment_label === 'positive' ? '正面' : s.sentiment_label === 'negative' ? '负面' : '中性';
+            const labelClass = s.sentiment_label === 'positive' ? 'badge-success' : s.sentiment_label === 'negative' ? 'badge-danger' : '';
+            
+            const title = s.title || s.content?.substring(0, 60) || '无标题';
+            const time = s.publish_time ? new Date(s.publish_time).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'}) : '-';
+            const sourceLabel = sourceLabels[s.source] || s.source;
+
+            return `
+                <tr onclick="showSentimentDetail(${idx})" style="cursor:pointer;">
+                    <td><span class="badge" style="font-size:11px;background:var(--primary);color:white;">${sourceLabel}</span></td>
+                    <td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;">${title}</td>
+                    <td><span class="badge ${labelClass}">${labelIcon} ${labelText}</span></td>
+                    <td class="${scoreClass}" style="font-weight:600;">${score.toFixed(2)}</td>
+                    <td style="font-size:12px;color:var(--text-secondary);">${time}</td>
+                    <td><button class="btn btn-sm btn-outline" onclick="event.stopPropagation();showSentimentDetail(${idx})">详情</button></td>
+                </tr>
+            `;
+        }).join('');
+
+        document.getElementById('sentiment-table').innerHTML = html;
+        
+        window.currentSentiments = sentiments;
+        
+    } catch (e) {
+        document.getElementById('sentiment-table').innerHTML = 
+            `<tr><td colspan="6" style="text-align:center;color:var(--danger);">加载失败: ${e.message}</td></tr>`;
+    }
+}
+
+function showSentimentDetail(index) {
+    const sentiments = window.currentSentiments || [];
+    const s = sentiments[index];
+    
+    if (!s) {
+        toast('舆情数据不存在', 'error');
+        return;
+    }
+
+    const sourceLabels = {
+        'eastmoney': '东方财富',
+        'cls': '财联社',
+        'ths': '同花顺',
+        'sina': '新浪财经',
+        'jin10': '金十数据',
+        'eastmoney_hot': '东方财富热点',
+        'eastmoney_keyword': '东方财富关键词'
+    };
+
+    const score = s.sentiment_score || 0;
+    const scoreClass = score > 0 ? 'text-success' : score < 0 ? 'text-danger' : '';
+    const labelIcon = s.sentiment_label === 'positive' ? '✅' : s.sentiment_label === 'negative' ? '⚠️' : '➖';
+    const labelText = s.sentiment_label === 'positive' ? '正面情绪' : s.sentiment_label === 'negative' ? '负面情绪' : '中性情绪';
+    const sourceLabel = sourceLabels[s.source] || s.source;
+    const relatedEtfs = s.related_etfs || [];
+    const keyFactors = s.key_factors || [];
+    const publishTime = s.publish_time ? new Date(s.publish_time).toLocaleString('zh-CN') : '未知时间';
+
+    const html = `
+        <div style="padding:20px;">
+            <!-- 来源与时间 -->
+            <div style="display:flex;gap:16px;margin-bottom:16px;font-size:13px;color:var(--text-secondary);">
+                <span><strong>来源:</strong> ${sourceLabel}</span>
+                <span><strong>发布时间:</strong> ${publishTime}</span>
+            </div>
+
+            <!-- 标题 -->
+            <div style="margin-bottom:16px;">
+                <div style="font-size:14px;font-weight:600;color:var(--text-secondary);margin-bottom:6px;">标题</div>
+                <div style="font-size:16px;font-weight:600;color:var(--text);padding:12px;background:var(--bg-secondary);border-radius:8px;">
+                    ${s.title || '无标题'}
+                </div>
+            </div>
+
+            <!-- 内容概要 -->
+            <div style="margin-bottom:20px;">
+                <div style="font-size:14px;font-weight:600;color:var(--text-secondary);margin-bottom:6px;">内容概要</div>
+                <div style="font-size:14px;color:var(--text);padding:12px;background:var(--bg-secondary);border-radius:8px;line-height:1.6;">
+                    ${s.content || '暂无详细内容'}
+                </div>
+            </div>
+
+            <!-- 情绪分析 -->
+            <div style="padding:16px;background:linear-gradient(135deg, rgba(59,130,246,0.1) 0%, rgba(16,185,129,0.1) 100%);border-radius:8px;margin-bottom:20px;">
+                <div style="font-size:14px;font-weight:600;margin-bottom:12px;">🧠 AI情绪分析</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+                    <div style="text-align:center;padding:12px;background:var(--bg);border-radius:8px;">
+                        <div style="font-size:12px;color:var(--text-secondary);">情绪判断</div>
+                        <div style="font-size:18px;font-weight:700;margin-top:6px;">
+                            <span style="${s.sentiment_label === 'positive' ? 'color:var(--success)' : s.sentiment_label === 'negative' ? 'color:var(--danger)' : 'color:var(--text)'};">
+                                ${labelIcon} ${labelText}
+                            </span>
+                        </div>
+                    </div>
+                    <div style="text-align:center;padding:12px;background:var(--bg);border-radius:8px;">
+                        <div style="font-size:12px;color:var(--text-secondary);">情绪评分</div>
+                        <div style="font-size:24px;font-weight:700;margin-top:6px;${scoreClass ? 'color:' + scoreClass : ''}">
+                            ${score.toFixed(2)}
+                        </div>
+                        <div style="font-size:11px;color:var(--text-secondary);">范围: -1 到 1</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 相关ETF -->
+            ${relatedEtfs.length > 0 ? `
+                <div style="margin-bottom:16px;">
+                    <div style="font-size:14px;font-weight:600;margin-bottom:8px;">📌 相关ETF</div>
+                    <div style="display:flex;gap:8px;">
+                        ${relatedEtfs.map(code => `
+                            <span class="badge" style="background:var(--primary);color:white;">${code}</span>
+                        `).join('')}
+                    </div>
+                </div>
+            ` : ''}
+
+            <!-- 关键因素 -->
+            ${keyFactors.length > 0 ? `
+                <div style="margin-bottom:16px;">
+                    <div style="font-size:14px;font-weight:600;margin-bottom:8px;">💡 影响因素</div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                        ${keyFactors.map(factor => `
+                            <span style="padding:6px 12px;background:var(--bg-secondary);border-radius:6px;font-size:13px;">${factor}</span>
+                        `).join('')}
+                    </div>
+                </div>
+            ` : ''}
+        </div>
+    `;
+
+    document.getElementById('sentiment-detail-body').innerHTML = html;
+    openModal('modal-sentiment-detail');
+}
+
+async function loadSentiments() {
+    await loadSentimentTable();
+}
+
+async function loadTechnicalPage() {
+    await loadAllTechnicalIndicators();
+}
+
+async function loadAllTechnicalIndicators() {
+    try {
+        document.getElementById('technical-indicators-table').innerHTML = 
+            '<tr><td colspan="9" style="text-align:center;color:var(--text-secondary);">正在加载...</td></tr>';
+        
+        const data = await api('/api/auto-strategy/enhanced/technical-indicators-batch');
+        const indicators = data.data.indicators || [];
+        
+        if (indicators.length === 0) {
+            document.getElementById('technical-indicators-table').innerHTML = 
+                '<tr><td colspan="9" style="text-align:center;color:var(--text-secondary);">暂无数据</td></tr>';
+            return;
+        }
+        
+        const html = indicators.map(item => {
+            const trendClass = item.trend.includes('bullish') ? 'text-success' : item.trend.includes('bearish') ? 'text-danger' : '';
+            const trendText = item.trend === 'strong_bullish' ? '强势多头↗↗' : 
+                              item.trend === 'bullish' ? '多头↗' : 
+                              item.trend === 'strong_bearish' ? '强势空头↘↘' : 
+                              item.trend === 'bearish' ? '空头↘' : '震荡↔';
+            
+            const macdClass = item.macd_signal === 'bullish' ? 'text-success' : item.macd_signal === 'bearish' ? 'text-danger' : '';
+            const macdText = item.macd_signal === 'bullish' ? '金叉✓' : item.macd_signal === 'bearish' ? '死叉✗' : '中性';
+            
+            const rsiClass = item.rsi_signal === 'overbought' ? 'text-danger' : item.rsi_signal === 'oversold' ? 'text-success' : '';
+            const rsiText = item.rsi_value != null ? fmtNum(item.rsi_value, 1) : '-';
+            const rsiSignalText = item.rsi_signal === 'overbought' ? '超买⚠️' : item.rsi_signal === 'oversold' ? '超卖✅' : '中性';
+            
+            const ma5Text = item.ma5_above === 'above' ? '上方✓' : item.ma5_above === 'below' ? '下方✗' : '-';
+            const ma5Class = item.ma5_above === 'above' ? 'text-success' : item.ma5_above === 'below' ? 'text-danger' : '';
+            
+            return `
+                <tr>
+                    <td><span class="etf-code">${item.etf_code}</span></td>
+                    <td class="${trendClass}"><strong>${trendText}</strong></td>
+                    <td>${item.trend_confidence}%</td>
+                    <td class="${macdClass}">${macdText}</td>
+                    <td>${rsiText}</td>
+                    <td class="${rsiClass}">${rsiSignalText}</td>
+                    <td class="${ma5Class}">${ma5Text}</td>
+                    <td style="font-size:12px;color:var(--text-secondary);">${item.latest_date || '-'}</td>
+                    <td><button class="btn btn-sm btn-outline" onclick="showTechnicalDetail('${item.etf_code}')">详情</button></td>
+                </tr>
+            `;
+        }).join('');
+        
+        document.getElementById('technical-indicators-table').innerHTML = html;
+        
+    } catch (e) {
+        document.getElementById('technical-indicators-table').innerHTML = 
+            `<tr><td colspan="9" style="text-align:center;color:var(--danger);">加载失败: ${e.message}</td></tr>`;
+    }
+}
+
+async function showTechnicalDetail(etfCode) {
+    try {
+        document.getElementById('technical-detail-card').style.display = 'block';
+        document.getElementById('technical-detail-title').textContent = `${etfCode} 详细指标`;
+        document.getElementById('technical-indicators-detail').innerHTML = 
+            '<div style="text-align:center;padding:20px;color:var(--text-secondary);">正在加载...</div>';
+        
+        const data = await api(`/api/auto-strategy/enhanced/technical-indicators?etf_code=${etfCode}`);
+        renderTechnicalIndicators(data.data, [etfCode]);
+        
+    } catch (e) {
+        document.getElementById('technical-indicators-detail').innerHTML = 
+            `<div style="text-align:center;color:var(--danger);">加载失败: ${e.message}</div>`;
+    }
+}
+
+function hideTechnicalDetail() {
+    document.getElementById('technical-detail-card').style.display = 'none';
+}
+
+async function loadSingleETFIndicator(etfCode) {
+    await showTechnicalDetail(etfCode);
+}
+
+async function loadRiskPage() {
+    await Promise.all([
+        loadRiskDashboard(),
+        loadAnomalies(),
+        loadSmartExperiences(),
+    ]);
+}
+
+async function loadReviewPage() {
+    if (currentAutoStrategyId) {
+        await Promise.all([
+            loadReviewReport(),
+            loadExecutionLogs(currentAutoStrategyId),
+            loadExperiences(currentAutoStrategyId),
+        ]);
+    }
+}
+
+async function loadReviewData() {
+    await loadReviewPage();
+}
+
+async function loadSentimentData() {
+    await loadSentimentPage();
+}
+
+async function runStressTest() {
+    if (!currentAutoStrategyId) {
+        toast('请先创建自动策略', 'warning');
+        return;
+    }
+    
+    try {
+        toast('正在运行压力测试...', 'info');
+        const data = await api(`/api/auto-strategy/enhanced/stress-test?strategy_id=${currentAutoStrategyId}`);
+        const result = data.data;
+        
+        toast(`压力测试完成: 最大潜在损失 ${result.max_potential_loss_pct?.toFixed(2) || 'N/A'}%`, 'success');
+        loadRiskDashboard();
+    } catch (e) {
+        toast('压力测试失败: ' + e.message, 'error');
+    }
+}
+
+async function checkCircuitBreaker() {
+    if (!currentAutoStrategyId) {
+        toast('请先创建自动策略', 'warning');
+        return;
+    }
+    
+    try {
+        const data = await api(`/api/auto-strategy/enhanced/circuit-breaker-check?strategy_id=${currentAutoStrategyId}`);
+        const result = data.data;
+        
+        if (result.triggered) {
+            toast(`⚠️ 熔断触发: ${result.reason}`, 'warning');
+        } else {
+            toast('✅ 熔断未触发，策略运行正常', 'success');
+        }
+    } catch (e) {
+        toast('检查失败: ' + e.message, 'error');
     }
 }
