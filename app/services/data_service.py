@@ -1,6 +1,6 @@
 """
 ETF数据获取服务
-ETF列表从akshare获取（仅广发、易方达、华夏），净值从证监会获取
+所有行情数据通过 efinance 获取
 """
 
 import logging
@@ -29,7 +29,7 @@ class DataService:
     # ------------------------------------------------------------------ #
     def fetch_etf_list(self) -> pd.DataFrame:
         """
-        从akshare获取ETF列表
+        从efinance获取ETF列表
         返回DataFrame包含: etf_code, etf_name 等字段
         """
         df = self.data_source.fetch_etf_list()
@@ -100,11 +100,7 @@ class DataService:
         end_date: Optional[str] = None,
     ) -> pd.DataFrame:
         """
-        从Baostock获取广发基金ETF的日K线数据（通过指数映射）
-        自动频率限制（1分钟10次）
-        
-        注意：此方法不进行广发基金ETF验证，调用前请确保etf_code是广发基金ETF
-        验证方式：数据库中名称包含'广发' 或使用 _is_gf_etf() 方法
+        从efinance获取ETF真实日K线数据
         
         Args:
             etf_code: ETF代码，如 510300, 159915
@@ -112,16 +108,15 @@ class DataService:
             end_date: 结束日期 YYYYMMDD（默认今天）
         
         Returns:
-            DataFrame: 日K线数据，如果无指数映射则返回空DataFrame
+            DataFrame: 日K线数据
         """
         if end_date is None:
             end_date = datetime.now().strftime("%Y%m%d")
         
-        # 使用Baostock数据源获取行情
         df = self.data_source.fetch_etf_daily(etf_code, start_date, end_date)
         
         if df.empty:
-            logger.warning(f"{etf_code} Baostock未获取到数据（可能无指数映射或非广发基金ETF）")
+            logger.warning(f"{etf_code} efinance未获取到数据")
         
         return df
     
@@ -178,10 +173,10 @@ class DataService:
     # ------------------------------------------------------------------ #
     def update_today_quotes(self, db: Session) -> Dict:
         """
-        获取广发基金ETF最新交易日行情并存储
-        只处理名称包含'广发'的ETF，使用Baostock接口
+        获取ETF最新交易日行情并存储
+        使用efinance接口
         
-        返回 {success_count, fail_count, failed_codes, gf_etf_count}
+        返回 {success_count, fail_count, failed_codes, etf_count}
         """
         # 先同步广发基金ETF列表
         self.sync_etf_list(db)
@@ -193,16 +188,16 @@ class DataService:
         
         etf_codes = [etf.etf_code for etf in gf_etfs]
         
-        logger.info(f"开始更新 {len(etf_codes)} 只广发基金ETF的最新行情")
+        logger.info(f"开始更新 {len(etf_codes)} 只ETF的最新行情")
         
         if not etf_codes:
-            logger.warning("数据库中没有广发基金ETF")
+            logger.warning("数据库中没有ETF")
             return {
                 "success_count": 0,
                 "fail_count": 0,
                 "failed_codes": [],
                 "gf_etf_count": 0,
-                "message": "数据库中没有广发基金ETF"
+                "message": "数据库中没有ETF"
             }
         
         # 计算最近的交易日（向后查找最近7天）
@@ -222,7 +217,7 @@ class DataService:
             "target_dates": target_dates,
         }
         
-        for code in etf_codes:  # 只更新广发基金ETF的行情
+        for code in etf_codes:
             success = False
             for target_date in target_dates:
                 try:
@@ -247,7 +242,7 @@ class DataService:
                 result["failed_codes"].append(code)
                 logger.warning(f"✗ {code} 更新失败")
         
-        logger.info(f"广发基金ETF行情更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}")
+        logger.info(f"ETF行情更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}")
         return result
 
     # ------------------------------------------------------------------ #
@@ -321,11 +316,11 @@ class DataService:
         self, start_date: str, end_date: str, db: Session
     ) -> Dict:
         """
-        批量更新指定日期范围内广发基金ETF的行情数据
-        只处理名称包含'广发'的ETF，使用Baostock接口
+        批量更新指定日期范围内ETF的行情数据
+        使用efinance接口
         
         start_date/end_date: 格式 YYYYMMDD
-        返回: {success_count, fail_count, gf_etf_count, failed_codes}
+        返回: {success_count, fail_count, etf_count, failed_codes}
         """
         # 获取所有广发基金ETF代码（名称包含'广发'）
         gf_etfs = db.query(ETFBasic).filter(
@@ -346,7 +341,7 @@ class DataService:
             logger.warning("数据库中没有广发基金ETF")
             return result
         
-        logger.info(f"开始更新 {len(etf_codes)} 只广发基金ETF {start_date}~{end_date} 的行情数据")
+        logger.info(f"开始更新 {len(etf_codes)} 只ETF {start_date}~{end_date} 的行情数据")
         
         for code in etf_codes:
             try:
@@ -362,13 +357,13 @@ class DataService:
                 else:
                     result["fail_count"] += 1
                     result["failed_codes"].append(code)
-                    logger.warning(f"✗ {code} 未获取到数据（可能无指数映射）")
+                    logger.warning(f"✗ {code} 未获取到数据")
             except Exception as e:
                 result["fail_count"] += 1
                 result["failed_codes"].append(code)
                 logger.error(f"✗ {code} 更新失败: {e}")
         
-        logger.info(f"广发基金ETF批量更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}")
+        logger.info(f"ETF批量更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}")
         return result
 
     # ------------------------------------------------------------------ #

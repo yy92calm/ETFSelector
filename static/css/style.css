@@ -1273,3 +1273,8 @@ tbody tr:last-child td {
     display: block;
     animation: fadeIn 0.3s ease;
 }
+
+html, body {
+    overflow: auto;
+    height: auto;
+}

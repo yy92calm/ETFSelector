@@ -91,12 +91,15 @@ document.querySelectorAll('.sub-nav-tab').forEach(a => {
 
 // ---- Modal ----
 function openModal(id) { 
-    document.getElementById(id).classList.add('active');
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.add('active');
     document.body.style.overflow = 'hidden';
 }
 
 function closeModal(id) { 
-    document.getElementById(id).classList.remove('active');
+    const el = document.getElementById(id);
+    if (el) el.classList.remove('active');
     document.body.style.overflow = '';
 }
 
@@ -157,7 +160,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
 async function loadMarket() {
     try {
-        // 获取净值概览数据（来自证监会官方披露）
+        // 获取净值概览数据（来自efinance）
         const res = await api('/api/net-value/overview?limit=500');
         allQuotes = res.data?.etfs || [];
         
@@ -355,7 +358,7 @@ async function syncETFList() {
 }
 
 async function updateTodayQuotes() {
-    toast('正在从证监会更新数据库中所有ETF的最近净值...', 'info');
+    toast('正在从efinance更新所有ETF净值...', 'info');
     try {
         // 更新数据库中所有ETF的最近一个工作日净值
         const res = await api('/api/net-value/batch-update?days_limit=1', { method: 'POST' });
@@ -1463,14 +1466,13 @@ async function submitUpdateRange() {
     
     const btn = document.getElementById('range-submit-btn');
     btn.disabled = true;
-    btn.textContent = '从证监会拉取中...';
+    btn.textContent = '数据拉取中...';
     
     try {
-        // 使用证监会净值数据源，传递天数限制
         const res = await api(`/api/net-value/batch-update?days_limit=${daysLimit}`, { 
             method: 'POST'
         });
-        toast(`证监会净值拉取完成: 成功 ${res.data.success_count}, 失败 ${res.data.fail_count}, 共 ${res.data.total} 只ETF`, 'success');
+        toast(`净值拉取完成: 成功 ${res.data.success_count}, 失败 ${res.data.fail_count}, 共 ${res.data.total} 只ETF`, 'success');
         closeModal('modal-update-range');
         // 刷新行情数据
         loadMarket();
@@ -1901,11 +1903,11 @@ async function catchUpStrategy() {
 
 
 // ==================================================================
-//  更新最新净值数据（从证监会）
+//  更新最新净值数据（从efinance）
 // ==================================================================
 
 async function updateLatestNetValues() {
-    if (!confirm('确定要从证监会拉取所有ETF的最新净值数据吗？\n预计耗时约20秒（20只ETF × 1秒）')) {
+    if (!confirm('确定要拉取所有ETF的最新净值数据吗？')) {
         return;
     }
     
@@ -2447,20 +2449,6 @@ async function submitCreateAutoStrategy() {
     } finally {
         btn.disabled = false;
         btn.textContent = '创建策略';
-    }
-}
-
-async function loadSentimentSummary() {
-    try {
-        const data = await api('/api/auto-strategy/sentiments/summary');
-        const summary = data.data;
-
-        document.getElementById('stat-sentiment-count').textContent = summary.total || 0;
-        document.getElementById('stat-sentiment-positive').textContent = summary.positive || 0;
-        document.getElementById('stat-sentiment-negative').textContent = summary.negative || 0;
-        document.getElementById('stat-sentiment-avg').textContent = summary.avg_score || '-';
-    } catch (e) {
-        console.error('获取舆情汇总失败', e);
     }
 }
 
@@ -3513,7 +3501,8 @@ async function runStressTest() {
         const data = await api(`/api/auto-strategy/enhanced/stress-test?strategy_id=${currentAutoStrategyId}`);
         const result = data.data;
         
-        toast(`压力测试完成: 最大潜在损失 ${result.max_potential_loss_pct?.toFixed(2) || 'N/A'}%`, 'success');
+        const lossPct = result.worst_case ? Math.abs(result.worst_case.shock_pct * 100).toFixed(2) : 'N/A';
+        toast(`压力测试完成: 最大潜在损失 ${lossPct}%`, 'success');
         loadRiskDashboard();
     } catch (e) {
         toast('压力测试失败: ' + e.message, 'error');
@@ -3530,7 +3519,7 @@ async function checkCircuitBreaker() {
         const data = await api(`/api/auto-strategy/enhanced/circuit-breaker-check?strategy_id=${currentAutoStrategyId}`);
         const result = data.data;
         
-        if (result.triggered) {
+        if (result.status === 'triggered') {
             toast(`⚠️ 熔断触发: ${result.reason}`, 'warning');
         } else {
             toast('✅ 熔断未触发，策略运行正常', 'success');

@@ -104,6 +104,17 @@ def trigger_sentiment_collect(db: Session = Depends(get_db)):
     return APIResponse(message="舆情采集完成", data=result)
 
 
+@router.post("/reanalyze-sentiments", response_model=APIResponse)
+def reanalyze_sentiments(target_date: date = None, db: Session = Depends(get_db)):
+    """重新分析已有舆情的情感评分（关键词回退）"""
+    from app.services.sentiment_service import SentimentService
+    
+    svc = SentimentService()
+    count = svc.reanalyze_all(target_date, db)
+    
+    return APIResponse(message=f"重新分析完成，共处理 {count} 条", data={"processed": count})
+
+
 @router.post("/trigger-analyze", response_model=APIResponse)
 def trigger_market_analyze(strategy_id: int, db: Session = Depends(get_db)):
     """手动触发市场分析"""
@@ -120,11 +131,11 @@ def trigger_market_analyze(strategy_id: int, db: Session = Depends(get_db)):
 
 @router.post("/trigger-adjust", response_model=APIResponse)
 def trigger_strategy_adjust(strategy_id: int, db: Session = Depends(get_db)):
-    """手动触发策略调整"""
+    """手动触发策略调整（全管道：风险检查→AI分析→ETF验证→配置变更→交易执行）"""
     from app.services.auto_strategy_executor import AutoStrategyExecutor
     
     svc = AutoStrategyExecutor()
-    result = svc.execute_auto_strategy(strategy_id, date.today(), db)
+    result = svc.execute_full_pipeline(strategy_id, date.today(), db)
     
     return APIResponse(message="策略调整完成", data=result)
 
@@ -142,11 +153,9 @@ def trigger_review(strategy_id: int, review_type: str = "weekly", db: Session = 
 
 @router.post("/trigger-daily-pipeline", response_model=APIResponse)
 def trigger_daily_pipeline(strategy_id: int, db: Session = Depends(get_db)):
-    """一键触发每日自驱动管道"""
+    """一键触发每日自驱动管道（串行：净值→舆情→AI全管道执行）"""
     from app.services.net_value_service import get_net_value_service
-    from app.services.portfolio_service import get_portfolio_service
     from app.services.sentiment_service import SentimentService
-    from app.services.auto_analysis_service import AutoAnalysisService
     from app.services.auto_strategy_executor import AutoStrategyExecutor
     
     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
@@ -156,7 +165,7 @@ def trigger_daily_pipeline(strategy_id: int, db: Session = Depends(get_db)):
     results = {}
     today = date.today()
     
-    # 步骤1: 更新净值行情 (行情模块)
+    # 前置步骤1: 更新净值行情 (系统级)
     try:
         nv_svc = get_net_value_service()
         nv_result = nv_svc.batch_update_net_values(db, limit=6)
@@ -165,16 +174,7 @@ def trigger_daily_pipeline(strategy_id: int, db: Session = Depends(get_db)):
         logger.error(f"每日管道-净值更新失败: {e}", exc_info=True)
         results["net_value_update"] = {"status": "failed", "error": str(e)}
         
-    # 步骤2: 组合再平衡交易 (交易执行)
-    try:
-        port_svc = get_portfolio_service()
-        port_svc.run_strategy_for_date(strategy, today, db)
-        results["portfolio_rebalance"] = {"status": "success"}
-    except Exception as e:
-        logger.error(f"每日管道-再平衡失败: {e}", exc_info=True)
-        results["portfolio_rebalance"] = {"status": "failed", "error": str(e)}
-        
-    # 步骤3: 采集舆情与观点情绪 (舆情模块)
+    # 前置步骤2: 采集舆情 (系统级)
     try:
         sent_svc = SentimentService()
         sent_result = sent_svc.collect_daily_sentiment(today, db)
@@ -183,23 +183,14 @@ def trigger_daily_pipeline(strategy_id: int, db: Session = Depends(get_db)):
         logger.error(f"每日管道-舆情采集失败: {e}", exc_info=True)
         results["sentiment_collection"] = {"status": "failed", "error": str(e)}
         
-    # 步骤4: AI舆情与市场环境分析 (AI市场分析)
-    try:
-        analysis_svc = AutoAnalysisService()
-        analysis_result = analysis_svc.analyze_market(strategy_id, today, db)
-        results["ai_market_analysis"] = {"status": "success", "detail": analysis_result}
-    except Exception as e:
-        logger.error(f"每日管道-AI市场分析失败: {e}", exc_info=True)
-        results["ai_market_analysis"] = {"status": "failed", "error": str(e)}
-        
-    # 步骤5: 策略AI驱动权重分配调整 (策略调整)
+    # 核心步骤: AI全管道（风险检查→AI分析→ETF验证→配置变更→交易执行）
     try:
         executor_svc = AutoStrategyExecutor()
-        adjust_result = executor_svc.execute_auto_strategy(strategy_id, today, db)
-        results["strategy_adjustment"] = {"status": "success", "detail": adjust_result}
+        pipeline_result = executor_svc.execute_full_pipeline(strategy_id, today, db)
+        results["ai_pipeline"] = {"status": "success", "detail": pipeline_result}
     except Exception as e:
-        logger.error(f"每日管道-策略调整失败: {e}", exc_info=True)
-        results["strategy_adjustment"] = {"status": "failed", "error": str(e)}
+        logger.error(f"每日管道-AI全管道失败: {e}", exc_info=True)
+        results["ai_pipeline"] = {"status": "failed", "error": str(e)}
         
     return APIResponse(message="一键每日管道运行完成", data=results)
 

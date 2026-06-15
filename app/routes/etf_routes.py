@@ -27,7 +27,7 @@ def get_etf_list(db: Session = Depends(get_db)):
 
 @router.post("/sync-list", response_model=APIResponse)
 def sync_etf_list(db: Session = Depends(get_db)):
-    """从AKShare同步全市场ETF列表"""
+    """从efinance同步全市场ETF列表"""
     svc = get_data_service()
     count = svc.sync_etf_list(db)
     return APIResponse(message=f"同步完成，新增/更新 {count} 条", data={"count": count})
@@ -77,7 +77,7 @@ def get_etf_history(
 def fetch_etf_data(
     etf_code: str, start_date: str = Query("20200101"), db: Session = Depends(get_db)
 ):
-    """从AKShare拉取指定ETF历史行情并存储"""
+    """从efinance拉取指定ETF历史行情并存储"""
     svc = get_data_service()
     df = svc.fetch_etf_daily(etf_code, start_date=start_date)
     if df.empty:

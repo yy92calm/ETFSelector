@@ -33,6 +33,7 @@ class SmartExperienceMatcher:
         experiences = db.query(Experience).filter(
             Experience.strategy_id == strategy_id,
             Experience.is_active == True,
+            Experience.expires_date >= date.today(),
         ).all()
         
         matched = []
@@ -208,6 +209,7 @@ class SmartExperienceMatcher:
         experiences = db.query(Experience).filter(
             Experience.strategy_id == strategy_id,
             Experience.is_active == True,
+            Experience.expires_date >= date.today(),
         ).all()
         
         weights = {}

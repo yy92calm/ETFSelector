@@ -58,6 +58,13 @@ npm-debug.log
 # Sisyphus sessions
 .sisyphus/
 
+# Claude / opencode
+.claude/
+memory_logs/
+
+# Backup files
+*.bak
+
 # Database
 *.db
 *.sqlite

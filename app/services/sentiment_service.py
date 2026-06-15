@@ -8,7 +8,7 @@ from typing import List, Dict
 from openai import OpenAI
 from sqlalchemy.orm import Session
 
-import akshare as ak
+import requests
 
 from app.config import get_settings
 from app.models.sentiment import SentimentData
@@ -19,7 +19,7 @@ settings = get_settings()
 
 
 class SentimentService:
-    """舆情数据采集服务 - 使用AKShare获取财经新闻"""
+    """舆情数据采集服务 - 直接HTTP采集财经新闻"""
     
     SENTIMENT_ANALYSIS_PROMPT = """分析以下财经新闻的情感倾向：
 
@@ -42,6 +42,18 @@ class SentimentService:
 - sentiment_label: positive/negative/neutral
 - related_etfs: 相关的ETF代码列表，必须来自可用ETF列表
 - key_factors: 影响因素关键词列表"""
+
+    POSITIVE_KEYWORDS = [
+        "大涨", "利好", "反弹", "突破", "增长", "上涨", "牛市", "看涨", "盈利",
+        "涨停", "回暖", "复苏", "走强", "新高", "放量", "超预期", "增持", "回购",
+        "分红", "降息", "放水", "刺激", "加仓", "做多", "爆发", "拉升", "领涨",
+    ]
+
+    NEGATIVE_KEYWORDS = [
+        "大跌", "利空", "暴跌", "破位", "下跌", "熊市", "看跌", "亏损", "跌停",
+        "回调", "疲软", "走弱", "新低", "缩量", "减持", "加息", "收紧", "清仓",
+        "做空", "违约", "崩盘", "危机", "退市", "抛售", "st", "风险", "利空",
+    ]
 
     def __init__(self):
         self.llm_client = None
@@ -75,16 +87,36 @@ class SentimentService:
                 db.add(sentiment_data)
                 db.flush()
                 
-                if self.llm_client:
-                    analysis = self._analyze_sentiment_with_llm(news_item, db)
-                    if analysis:
-                        sentiment_data.sentiment_score = analysis.get("sentiment_score")
-                        sentiment_data.sentiment_label = analysis.get("sentiment_label")
+                analysis = self._analyze_sentiment(news_item, db)
+                if analysis:
+                    sentiment_data.sentiment_score = analysis.get("sentiment_score")
+                    sentiment_data.sentiment_label = analysis.get("sentiment_label")
+                    if analysis.get("related_etfs"):
                         sentiment_data.related_etfs = analysis.get("related_etfs")
+                    if analysis.get("key_factors"):
                         sentiment_data.key_factors = analysis.get("key_factors")
             
             db.commit()
             logger.info(f"舆情采集完成: {result['news_count']}条")
+
+            # 回填：对当天已有的未评分舆情进行关键词评分（兼容历史数据）
+            unscored = db.query(SentimentData).filter(
+                SentimentData.data_date == collect_date,
+                SentimentData.sentiment_score.is_(None),
+            ).all()
+            if unscored:
+                logger.info(f"回填 {len(unscored)} 条未评分舆情")
+                for item in unscored:
+                    analysis = self._analyze_sentiment_by_keywords({
+                        "title": item.title or "",
+                        "content": item.content or "",
+                    })
+                    if analysis:
+                        item.sentiment_score = analysis.get("sentiment_score")
+                        item.sentiment_label = analysis.get("sentiment_label")
+                        if analysis.get("key_factors"):
+                            item.key_factors = analysis.get("key_factors")
+                db.commit()
             
         except Exception as e:
             logger.error(f"舆情采集失败: {e}")
@@ -94,122 +126,139 @@ class SentimentService:
         return result
     
     def _fetch_financial_news(self) -> List[Dict]:
-        """获取财经快讯（多数据源）"""
+        """获取财经快讯（直接HTTP, 不依赖akshare）"""
         news_list = []
         
-        # 1. 东方财富全球快讯
+        # 1. 东方财富全球快讯 (稳定)
         try:
-            df = ak.stock_info_global_em()
-            for idx, row in df.head(15).iterrows():
+            resp = requests.get(
+                "https://np-weblist.eastmoney.com/comm/web/getFastNewsList",
+                params={"client": "web", "biz": "web_724", "fastColumn": "102",
+                        "sortEnd": "", "pageSize": "15", "req_trace": "1"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15,
+            )
+            data = resp.json()
+            for item in data.get("data", {}).get("fastNewsList", []):
                 news_list.append({
                     "source": "eastmoney",
-                    "title": row.get("标题", ""),
-                    "content": row.get("摘要", "") or row.get("内容", ""),
-                    "publish_time": self._parse_time(row.get("发布时间")),
+                    "title": item.get("title", ""),
+                    "content": item.get("summary", ""),
+                    "publish_time": self._parse_time(item.get("showTime")),
                 })
         except Exception as e:
             logger.warning(f"东方财富快讯获取失败: {e}")
         
-        # 2. 财联社资讯
+        # 2. 同花顺资讯
         try:
-            df = ak.stock_info_global_cls()
-            for idx, row in df.head(15).iterrows():
-                news_list.append({
-                    "source": "cls",
-                    "title": row.get("标题", ""),
-                    "content": row.get("内容", ""),
-                    "publish_time": self._parse_datetime(row.get("发布日期"), row.get("发布时间")),
-                })
-        except Exception as e:
-            logger.warning(f"财联社资讯获取失败: {e}")
-        
-        # 3. 同花顺资讯
-        try:
-            df = ak.stock_info_global_ths()
-            for idx, row in df.head(15).iterrows():
+            resp = requests.get(
+                "https://news.10jqka.com.cn/tapp/news/push/stock",
+                params={"page": "1", "tag": "", "pagesize": "15"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15,
+            )
+            data = resp.json()
+            for item in data.get("data", {}).get("list", []):
                 news_list.append({
                     "source": "ths",
-                    "title": row.get("标题", ""),
-                    "content": row.get("内容", ""),
-                    "publish_time": self._parse_time(row.get("发布时间")),
+                    "title": item.get("title", ""),
+                    "content": item.get("digest", ""),
+                    "publish_time": None,
                 })
         except Exception as e:
             logger.warning(f"同花顺资讯获取失败: {e}")
         
-        # 4. 新浪资讯
+        # 3. 东方财富热门股（市场热点）
         try:
-            df = ak.stock_info_global_sina()
-            for idx, row in df.head(10).iterrows():
-                news_list.append({
-                    "source": "sina",
-                    "title": "",
-                    "content": row.get("内容", ""),
-                    "publish_time": self._parse_time(row.get("时间")),
-                })
-        except Exception as e:
-            logger.warning(f"新浪资讯获取失败: {e}")
-        
-        # 5. 金十数据
-        try:
-            df = ak.js_news(indicator="最新资讯")
-            for idx, row in df.head(10).iterrows():
-                news_list.append({
-                    "source": "jin10",
-                    "title": "",
-                    "content": row.get("content", ""),
-                    "publish_time": self._parse_time(row.get("datetime")),
-                })
-        except Exception as e:
-            logger.warning(f"金十数据快讯获取失败: {e}")
-        
-        # 6. 东方财富热门股（市场热点）
-        try:
-            df = ak.stock_hot_rank_em()
-            hot_stocks = df.head(10).to_string()
-            if hot_stocks:
+            resp = requests.post(
+                "https://emappdata.eastmoney.com/stockrank/getAllCurrentList",
+                json={"appId": "appId01", "globalId": "news_bot",
+                       "marketType": "", "pageNo": 1, "pageSize": 10},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15,
+            )
+            data = resp.json()
+            items = data.get("data", [])[:10]
+            if items:
+                lines = [f"{i.get('secuabbr','')}({i.get('securityCode','')})" for i in items]
                 news_list.append({
                     "source": "eastmoney_hot",
                     "title": "今日热门股排行榜",
-                    "content": f"市场热门股票: {hot_stocks}",
+                    "content": "市场热门股票: " + ", ".join(lines),
                     "publish_time": datetime.now(),
                 })
         except Exception as e:
             logger.warning(f"热门股排行获取失败: {e}")
         
-        # 7. 东方财富热门关键词
+        # 4. 东方财富热门关键词
         try:
-            df = ak.stock_hot_keyword_em()
-            keywords = df.groupby('概念名称')['热度'].sum().sort_values(ascending=False).head(10)
-            keyword_str = keywords.to_string()
-            if keyword_str:
+            resp = requests.post(
+                "https://emappdata.eastmoney.com/stockrank/getHotStockRankList",
+                json={"appId": "appId01", "globalId": "news_bot",
+                       "srcSecurityCode": "SZ000665"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=15,
+            )
+            data = resp.json()
+            items = data.get("data", [])[:10]
+            if items:
+                lines = [f"{i.get('conceptName','')}(热度{i.get('hitCount','')})" for i in items]
                 news_list.append({
                     "source": "eastmoney_keyword",
                     "title": "今日热门概念关键词",
-                    "content": f"市场热门概念: {keyword_str}",
+                    "content": "市场热门概念: " + ", ".join(lines),
                     "publish_time": datetime.now(),
                 })
         except Exception as e:
             logger.warning(f"热门关键词获取失败: {e}")
         
-        logger.info(f"采集舆情数据: {len(news_list)}条 (来源: eastmoney/cls/ths/sina/jin10/热点)")
+        logger.info(f"采集舆情数据: {len(news_list)}条")
         return news_list
     
-    def _parse_datetime(self, date_str, time_str) -> datetime:
-        """解析日期+时间字符串"""
-        if not date_str:
-            return None
-        try:
-            date_part = str(date_str)
-            time_part = str(time_str) if time_str else "00:00:00"
-            return datetime.strptime(f"{date_part} {time_part}", "%Y-%m-%d %H:%M:%S")
-        except:
-            return None
-    
+    def _analyze_sentiment(self, news_item: Dict, db: Session) -> Dict:
+        """分析舆情情感（LLM优先，失败时回退到关键词匹配）"""
+        if self.llm_client:
+            analysis = self._analyze_sentiment_with_llm(news_item, db)
+            if analysis and analysis.get("sentiment_score") is not None:
+                return analysis
+
+        return self._analyze_sentiment_by_keywords(news_item)
+
+    def _analyze_sentiment_by_keywords(self, news_item: Dict) -> Dict:
+        """关键词匹配情感分析（无需LLM）"""
+        text = f"{news_item.get('title', '')} {news_item.get('content', '')}"
+        text_lower = text.lower()
+
+        positive_count = sum(1 for kw in self.POSITIVE_KEYWORDS if kw in text)
+        negative_count = sum(1 for kw in self.NEGATIVE_KEYWORDS if kw in text)
+
+        total = positive_count + negative_count
+        if total == 0:
+            return {
+                "sentiment_score": 0.0,
+                "sentiment_label": "neutral",
+                "key_factors": [],
+            }
+
+        score = round((positive_count - negative_count) / (total + 2) * 2, 2)
+        score = max(-1.0, min(1.0, score))
+
+        label = "positive" if score > 0.1 else "negative" if score < -0.1 else "neutral"
+
+        factors = []
+        if positive_count > 0:
+            factors.extend([kw for kw in self.POSITIVE_KEYWORDS if kw in text_lower][:3])
+        if negative_count > 0:
+            factors.extend([kw for kw in self.NEGATIVE_KEYWORDS if kw in text_lower][:3])
+
+        return {
+            "sentiment_score": score,
+            "sentiment_label": label,
+            "key_factors": factors,
+        }
+
     def _analyze_sentiment_with_llm(self, news_item: Dict, db: Session) -> Dict:
         """使用LLM分析舆情情感"""
-        if not self.llm_client:
-            return {}
-        
         available_etfs = self._get_available_etfs(db)
         
         try:
@@ -276,6 +325,33 @@ class SentimentService:
         lines = [f"{etf.etf_code}: {etf.etf_name}" for etf in etfs]
         return "\n".join(lines)
     
+    def reanalyze_all(self, target_date: date = None, db: Session = None) -> int:
+        """批量重算已有null-score的舆情（关键词回退，不依赖LLM/AKShare）"""
+        query = db.query(SentimentData).filter(SentimentData.sentiment_score.is_(None))
+        if target_date:
+            query = query.filter(SentimentData.data_date == target_date)
+
+        items = query.all()
+        if not items:
+            return 0
+
+        count = 0
+        for item in items:
+            analysis = self._analyze_sentiment_by_keywords({
+                "title": item.title or "",
+                "content": item.content or "",
+            })
+            if analysis and analysis.get("sentiment_score") is not None:
+                item.sentiment_score = analysis.get("sentiment_score")
+                item.sentiment_label = analysis.get("sentiment_label")
+                if analysis.get("key_factors"):
+                    item.key_factors = analysis.get("key_factors")
+                count += 1
+
+        db.commit()
+        logger.info(f"重新分析舆情评分: {count}/{len(items)} 条已更新")
+        return count
+
     def _parse_json_response(self, content: str) -> Dict:
         """解析JSON响应"""
         try:

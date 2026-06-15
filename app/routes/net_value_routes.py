@@ -17,7 +17,7 @@ def get_net_value_overview(
     limit: int = Query(100, ge=1, le=500),
     db: Session = Depends(get_db)
 ):
-    """获取ETF净值概览（基于证监会官方净值数据）"""
+    """获取ETF净值概览（基于efinance数据）"""
     svc = get_net_value_service()
     data = svc.get_net_value_overview(db, limit=limit)
     
@@ -26,7 +26,7 @@ def get_net_value_overview(
         data={
             "etfs": data,
             "count": len(data),
-            "note": "数据基于证监会官方净值披露（无成交量成交额）"
+            "note": "数据来源于efinance（无成交量成交额）"
         }
     )
 
@@ -36,7 +36,7 @@ def update_single_etf_net_value(
     etf_code: str,
     db: Session = Depends(get_db)
 ):
-    """更新单只ETF净值数据（从证监会获取）"""
+    """更新单只ETF净值数据（从efinance获取）"""
     svc = get_net_value_service()
     result = svc.fetch_and_save_net_value(etf_code, db)
     
@@ -58,18 +58,16 @@ def batch_update_net_values(
     db: Session = Depends(get_db)
 ):
     """
-    批量拉取所有ETF净值数据（从证监会）
+    批量拉取所有ETF净值数据（从efinance）
     
     参数说明：
     - days_limit: 限制获取的天数
-      * None（不传）：获取完整历史净值（自动分页）
+      * None（不传）：获取完整历史净值
       * 1：只获取最近一个工作日的净值（用于日常更新）✅ 推荐
       * 7：获取最近7天的净值
     
     注意：
-    - 更新数据库中所有ETF（广发、易方达、华夏）
-    - 证监会频率限制：1秒1次（已放开）
-    - days_limit=1时，只获取第一页数据，速度更快
+    - 更新数据库中所有ETF
     - 建议日常更新使用 days_limit=1
     """
     svc = get_net_value_service()
