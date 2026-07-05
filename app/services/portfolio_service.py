@@ -13,7 +13,7 @@ from app.models.etf import ETFQuotation
 from app.models.strategy import Strategy
 from app.models.portfolio import PortfolioSnapshot, TradeRecord, Holding
 from app.services.strategy_service import get_strategy_service
-from app.strategies.base import PortfolioContext
+from app.strategies.base import PortfolioContext, compute_adjustment
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +72,20 @@ class PortfolioService:
         if not current_prices:
             return
 
+        # 查询截至 trade_date 的历史交易日（用于判断月末/季末时间触发）
+        history_dates = [
+            r[0] for r in db.query(ETFQuotation.trade_date)
+            .filter(
+                ETFQuotation.etf_code == etf_codes[0],
+                ETFQuotation.trade_date <= trade_date,
+            )
+            .distinct()
+            .order_by(ETFQuotation.trade_date.desc())
+            .limit(120)
+            .all()
+        ]
+        history_dates.reverse()  # 升序，trade_date 为最后一个
+
         # 计算当前市值和总资产
         market_value = 0
         for code, qty in holdings.items():
@@ -88,6 +102,7 @@ class PortfolioService:
             current_prices=current_prices,
             allocation_config=strategy.allocation_config,
             rebalance_threshold=strategy.rebalance_threshold,
+            history_dates=history_dates,
         )
 
         # 获取策略实例并检查是否需要再平衡
@@ -104,49 +119,26 @@ class PortfolioService:
                     amount = adj['amount']
                     price = current_prices.get(etf_code, 0)
 
-                    if price <= 0:
+                    result = compute_adjustment(
+                        action, amount, price,
+                        holdings.get(etf_code, 0), cash
+                    )
+                    if not result:
                         continue
 
-                    if action == "buy" and cash >= amount:
-                        quantity = int(amount / price / 100) * 100
-                        if quantity > 0:
-                            actual_amount = quantity * price
-                            holdings[etf_code] = holdings.get(etf_code, 0) + quantity
-                            cash -= actual_amount
+                    holdings[etf_code] = result["new_qty"]
+                    cash += result["cash_delta"]
 
-                            db.add(TradeRecord(
-                                strategy_id=strategy.id,
-                                trade_date=trade_date,
-                                etf_code=etf_code,
-                                direction="buy",
-                                price=price,
-                                quantity=quantity,
-                                amount=round(actual_amount, 2),
-                                reason=signal.reason,
-                            ))
-
-                    elif action == "sell" and holdings.get(etf_code, 0) > 0:
-                        target_sell_amount = amount
-                        current_qty = holdings[etf_code]
-                        sell_qty = min(int(target_sell_amount / price / 100) * 100, current_qty)
-
-                        if sell_qty > 0:
-                            actual_amount = sell_qty * price
-                            holdings[etf_code] -= sell_qty
-                            if holdings[etf_code] <= 0:
-                                holdings[etf_code] = 0
-                            cash += actual_amount
-
-                            db.add(TradeRecord(
-                                strategy_id=strategy.id,
-                                trade_date=trade_date,
-                                etf_code=etf_code,
-                                direction="sell",
-                                price=price,
-                                quantity=sell_qty,
-                                amount=round(actual_amount, 2),
-                                reason=signal.reason,
-                            ))
+                    db.add(TradeRecord(
+                        strategy_id=strategy.id,
+                        trade_date=trade_date,
+                        etf_code=etf_code,
+                        direction=result["direction"],
+                        price=price,
+                        quantity=result["quantity"],
+                        amount=round(result["actual_amount"], 2),
+                        reason=signal.reason,
+                    ))
 
         # 重新计算市值
         market_value = 0

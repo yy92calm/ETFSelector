@@ -6,7 +6,7 @@ ETF配置组合策略基类
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict
-from datetime import date
+from datetime import date, timedelta
 from enum import Enum
 
 import pandas as pd
@@ -38,6 +38,51 @@ class PortfolioContext:
     allocation_config: Dict[str, float] = field(default_factory=dict)  # 目标配置比例
     rebalance_threshold: float = 0.05
     history_dates: List[date] = field(default_factory=list)  # 历史交易日列表
+
+
+def compute_adjustment(
+    action: str,
+    amount: float,
+    price: float,
+    current_qty: int,
+    cash: float,
+) -> Optional[Dict]:
+    """计算单笔再平衡调整的买卖结果（100股整数倍取整）
+
+    回测与实盘共用，确保两边行为一致。
+
+    Returns:
+        {"quantity", "actual_amount", "cash_delta", "new_qty", "direction"} 或 None
+    """
+    if price <= 0:
+        return None
+
+    if action == "buy" and cash >= amount:
+        quantity = int(amount / price / 100) * 100
+        if quantity > 0:
+            actual_amount = quantity * price
+            return {
+                "quantity": quantity,
+                "actual_amount": actual_amount,
+                "cash_delta": -actual_amount,
+                "new_qty": current_qty + quantity,
+                "direction": "buy",
+            }
+    elif action == "sell" and current_qty > 0:
+        sell_qty = min(int(amount / price / 100) * 100, current_qty)
+        if sell_qty > 0:
+            actual_amount = sell_qty * price
+            new_qty = current_qty - sell_qty
+            if new_qty <= 0:
+                new_qty = 0
+            return {
+                "quantity": sell_qty,
+                "actual_amount": actual_amount,
+                "cash_delta": actual_amount,
+                "new_qty": new_qty,
+                "direction": "sell",
+            }
+    return None
 
 
 class AllocationStrategy(ABC):
@@ -120,48 +165,77 @@ class AllocationStrategy(ABC):
     
     def should_trigger_time_rebalance(self, ctx: PortfolioContext) -> bool:
         """
-        判断是否触发时间再平衡（季度末/月末）
-        改进：只在月末最后一个交易日触发，避免重复触发
+        判断是否触发时间再平衡（季度末/月末/周末/年末）
+
+        回测模式：history_dates 包含 current_date 之后的交易日，用 next_date 判断换月。
+        实盘模式：current_date 是 history_dates 最后一天（当日执行），用日历判断期末。
         """
         current_date = ctx.current_date
         history_dates = ctx.history_dates
-        
+
         if self.rebalance_freq == "none":
             return False
-        
+
         if not history_dates:
             return False
-        
+
         if current_date not in history_dates:
             return False
-        
+
         current_idx = history_dates.index(current_date)
-        
+
         if self.rebalance_freq == "daily":
             return current_idx > 0
-        
+
+        # 实盘模式：current_date 是已知最后交易日，用日历判断是否期末
         if current_idx == len(history_dates) - 1:
-            return False
-        
+            return self._is_period_end_by_calendar(current_date)
+
         next_date = history_dates[current_idx + 1]
-        
+
         if self.rebalance_freq == "quarterly":
             quarter_end_months = [3, 6, 9, 12]
             is_quarter_end = current_date.month in quarter_end_months and next_date.month != current_date.month
             return is_quarter_end
-        
+
         elif self.rebalance_freq == "monthly":
             is_month_end = next_date.month != current_date.month
             return is_month_end
-        
+
         elif self.rebalance_freq == "weekly":
             is_week_end = next_date.weekday() == 0 and current_date.weekday() != 0
             return is_week_end
-        
+
         elif self.rebalance_freq == "yearly":
             is_year_end = next_date.year != current_date.year
             return is_year_end
-        
+
+        return False
+
+    def _is_period_end_by_calendar(self, current_date: date) -> bool:
+        """
+        日历判断 current_date 是否为频率期末的最后一个工作日（实盘模式）
+
+        通过"下一个工作日是否跨期"判断，无需未来行情数据。
+        """
+        next_workday = current_date + timedelta(days=1)
+        while next_workday.weekday() >= 5:
+            next_workday += timedelta(days=1)
+
+        if self.rebalance_freq == "quarterly":
+            if current_date.month not in [3, 6, 9, 12]:
+                return False
+            return next_workday.month != current_date.month
+
+        elif self.rebalance_freq == "monthly":
+            return next_workday.month != current_date.month
+
+        elif self.rebalance_freq == "weekly":
+            return current_date.weekday() == 4
+
+        elif self.rebalance_freq == "yearly":
+            return next_workday.year != current_date.year
+
         return False
     
     def get_info(self) -> dict:

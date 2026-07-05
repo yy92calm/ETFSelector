@@ -30,6 +30,7 @@ def init_db():
     from app.models import (  # noqa: F401
         etf, strategy, portfolio,
         auto_strategy_log, sentiment, experience,
+        system_config,
     )
     Base.metadata.create_all(bind=engine)
 
@@ -51,6 +52,8 @@ def init_db():
                 ("last_analysis_result", "JSON"),
                 ("enable_memory", "BOOLEAN DEFAULT 1"),
                 ("experience_limit", "INTEGER DEFAULT 50"),
+                ("paused_reason", "VARCHAR(200)"),
+                ("paused_date", "DATE"),
             ]
 
             for col_name, col_type in migrations:

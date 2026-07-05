@@ -42,11 +42,6 @@ Thumbs.db
 .env.local
 .env.*.local
 
-# Database (允许提交示例数据库)
-# *.db
-# *.sqlite
-# *.sqlite3
-
 # Logs
 *.log
 logs/
@@ -69,3 +64,5 @@ memory_logs/
 *.db
 *.sqlite
 *.sqlite3
+# 保留示例数据库（README 已声明提交示例库）
+!etf_selector.db

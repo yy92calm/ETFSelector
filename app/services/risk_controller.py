@@ -9,6 +9,7 @@ from sqlalchemy import func
 from app.models.strategy import Strategy
 from app.models.portfolio import PortfolioSnapshot
 from app.models.auto_strategy_log import AutoStrategyLog
+from app.models.etf import ETFBasic
 
 logger = logging.getLogger(__name__)
 
@@ -112,11 +113,17 @@ class RiskController:
         
         if drawdown > abs(config["critical_level"]):
             allocation = strategy.allocation_config or {}
+            reduce_ratio = config["reduce_ratio_at_critical"]
             reduced_allocation = {}
-            
+
             for code, ratio in allocation.items():
-                reduced_allocation[code] = ratio * config["reduce_ratio_at_critical"]
-            
+                reduced_allocation[code] = ratio * reduce_ratio
+
+            # 归一化到 1.0，保持 ETF 结构合法（总和必须为1）
+            total = sum(reduced_allocation.values())
+            if total > 0:
+                reduced_allocation = {c: round(r / total, 4) for c, r in reduced_allocation.items()}
+
             return {
                 "status": "critical",
                 "drawdown_pct": round(drawdown * 100, 2),
@@ -124,7 +131,8 @@ class RiskController:
                 "current_value": round(current_value, 2),
                 "action": "reduce_position",
                 "suggested_allocation": reduced_allocation,
-                "message": f"回撤达到临界水平{drawdown:.2%}，建议降低仓位至{config['reduce_ratio_at_critical']:.0%}",
+                "cash_ratio": round(1 - reduce_ratio, 2),
+                "message": f"回撤达到临界水平{drawdown:.2%}，建议权益仓位降至{reduce_ratio:.0%}，剩余转现金防御",
             }
         
         elif drawdown > abs(config["action_level"]):
@@ -183,43 +191,56 @@ class RiskController:
         }
     
     def run_stress_test(self, strategy_id: int, db: Session) -> Dict:
-        """运行压力测试"""
+        """运行压力测试（按 allocation_config 加权，区分资产类别敏感度）"""
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy:
             return {"status": "error", "message": "策略不存在"}
-        
+
         allocation = strategy.allocation_config or {}
-        
+
+        # 查询 ETF 名称用于资产类别分类
+        etf_names = {
+            e.etf_code: e.etf_name for e in
+            db.query(ETFBasic).filter(ETFBasic.etf_code.in_(allocation.keys())).all()
+        } if allocation else {}
+
         scenarios = [
             {"name": "市场暴跌", "shock": -0.20, "description": "模拟市场整体下跌20%"},
             {"name": "金融危机", "shock": -0.30, "description": "模拟极端金融危机场景"},
             {"name": "流动性危机", "shock": -0.15, "description": "模拟流动性枯竭"},
             {"name": "政策冲击", "shock": -0.10, "description": "模拟政策重大变化"},
         ]
-        
+
         initial_capital = strategy.initial_capital or 100000
-        
+
         results = []
         for scenario in scenarios:
-            shock_pct = scenario["shock"]
-            
-            estimated_loss = initial_capital * shock_pct
+            base_shock = scenario["shock"]
+
+            # 按配置比例加权，不同资产类别敏感度不同
+            weighted_shock = 0.0
+            for code, ratio in allocation.items():
+                name = etf_names.get(code, "")
+                asset_multiplier = self._classify_etf_shock_multiplier(name)
+                weighted_shock += base_shock * asset_multiplier * ratio
+
+            estimated_loss = initial_capital * weighted_shock
             estimated_final_value = initial_capital + estimated_loss
-            
-            severity = "critical" if abs(shock_pct) > 0.25 else "severe" if abs(shock_pct) > 0.15 else "moderate"
-            
+
+            severity = "critical" if abs(weighted_shock) > 0.25 else "severe" if abs(weighted_shock) > 0.15 else "moderate"
+
             results.append({
                 "scenario": scenario["name"],
                 "description": scenario["description"],
-                "shock_pct": shock_pct,
+                "shock_pct": round(weighted_shock, 4),
                 "estimated_loss": round(estimated_loss, 2),
                 "estimated_final_value": round(estimated_final_value, 2),
                 "severity": severity,
-                "recovery_time_estimate": self._estimate_recovery_time(abs(shock_pct)),
+                "recovery_time_estimate": self._estimate_recovery_time(abs(weighted_shock)),
             })
-        
+
         worst_case = min(results, key=lambda x: x["estimated_final_value"])
-        
+
         return {
             "status": "completed",
             "scenarios": results,
@@ -227,6 +248,17 @@ class RiskController:
             "risk_assessment": self._generate_risk_assessment(worst_case),
             "recommendations": self._generate_risk_recommendations(results),
         }
+
+    def _classify_etf_shock_multiplier(self, etf_name: str) -> float:
+        """根据 ETF 名称推断资产类别敏感度倍数（相对股票全仓的波动比例）"""
+        name = etf_name or ""
+        if any(k in name for k in ["债", "国债", "信用", "利率", "短融"]):
+            return 0.3
+        if any(k in name for k in ["黄金", "金", "贵金属"]):
+            return 0.8
+        if any(k in name for k in ["货币", "现金"]):
+            return 0.0
+        return 1.0
     
     def _estimate_recovery_time(self, loss_pct: float) -> str:
         """估算恢复时间"""

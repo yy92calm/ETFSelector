@@ -17,6 +17,7 @@
         <a href="#" data-tab="strategy">策略管理</a>
         <a href="#" data-tab="backtest">策略回测</a>
         <a href="#" data-tab="auto-strategy">AI驱动策略</a>
+        <a href="#" data-tab="config">系统配置</a>
     </div>
 </nav>
 
@@ -444,6 +445,40 @@
                     </div>
                 </div>
             </div>
+        </div>
+    </div>
+
+    <!-- ====== 系统配置 ====== -->
+    <div id="tab-config" class="tab-content">
+        <div class="card" style="max-width:720px;">
+            <div class="card-title">LLM 配置</div>
+            <p style="font-size:13px;color:var(--text-secondary);margin-bottom:20px;">
+                配置 AI 策略生成所用的大语言模型参数。兼容 OpenAI 协议（通义千问 / Kimi / MiniMax / OpenAI 等）。<br>
+                配置保存后立即生效，无需重启服务。
+            </p>
+
+            <div class="form-row" style="grid-template-columns:1fr;gap:16px;">
+                <div class="form-group">
+                    <label>API Base URL</label>
+                    <input type="text" id="cfg-llm-base-url" placeholder="https://coding.dashscope.aliyuncs.com/v1">
+                </div>
+                <div class="form-group">
+                    <label>API Key</label>
+                    <input type="password" id="cfg-llm-api-key" placeholder="留空则保留原值">
+                    <div id="cfg-llm-key-status" style="font-size:12px;color:var(--text-secondary);margin-top:4px;"></div>
+                </div>
+                <div class="form-group">
+                    <label>模型名称</label>
+                    <input type="text" id="cfg-llm-model" placeholder="qwen3.6-plus">
+                </div>
+            </div>
+
+            <div class="toolbar" style="gap:12px;margin-top:20px;">
+                <button class="btn btn-primary" onclick="saveLlmConfig()" id="cfg-save-btn">保存配置</button>
+                <button class="btn btn-outline" onclick="testLlmConnection()" id="cfg-test-btn">测试连接</button>
+            </div>
+
+            <div id="cfg-test-result" style="margin-top:16px;"></div>
         </div>
     </div>
 

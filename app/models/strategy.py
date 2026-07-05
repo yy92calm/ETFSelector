@@ -47,6 +47,10 @@ class Strategy(Base):
     enable_memory = Column(Boolean, default=True, comment="是否启用记忆机制")
     experience_limit = Column(Integer, default=50, comment="最大经验条数")
 
+    # 风控暂停记录
+    paused_reason = Column(String(200), nullable=True, comment="策略暂停原因")
+    paused_date = Column(Date, nullable=True, comment="策略暂停日期")
+
     def __repr__(self):
         return f"<Strategy {self.id}: {self.name}>"
     

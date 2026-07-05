@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from app.models.etf import ETFQuotation
 from app.models.strategy import Strategy
 from app.strategies.portfolio_rebalance import PortfolioRebalanceStrategy
-from app.strategies.base import PortfolioContext
+from app.strategies.base import PortfolioContext, compute_adjustment
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +72,10 @@ class BacktestEngine:
         holdings: Dict[str, int] = {}      # etf_code -> quantity
         daily_data = []
         rebalance_records = []
-        
+        last_prices: Dict[str, float] = {}  # 前值填充用
+
         for td in trade_dates:
-            # 获取当日价格
+            # 获取当日价格（缺数据的 ETF 用前值填充，保证资产估值连续）
             current_prices = {}
             for code in etf_codes:
                 if code in all_data:
@@ -82,7 +83,10 @@ class BacktestEngine:
                     day_price = price_df[price_df['trade_date'] == td]
                     if not day_price.empty:
                         current_prices[code] = day_price.iloc[0]['close']
-            
+                        last_prices[code] = day_price.iloc[0]['close']
+                    elif code in last_prices:
+                        current_prices[code] = last_prices[code]
+
             if not current_prices:
                 continue
             
@@ -123,46 +127,24 @@ class BacktestEngine:
                         action = adj['action']
                         amount = adj['amount']
                         price = current_prices.get(etf_code, 0)
-                        
-                        if price <= 0:
+
+                        result = compute_adjustment(
+                            action, amount, price,
+                            holdings.get(etf_code, 0), cash
+                        )
+                        if not result:
                             continue
-                        
-                        if action == "buy" and cash >= amount:
-                            # 买入（按100股整数倍）
-                            quantity = int(amount / price / 100) * 100
-                            if quantity > 0:
-                                actual_amount = quantity * price
-                                holdings[etf_code] = holdings.get(etf_code, 0) + quantity
-                                cash -= actual_amount
-                                
-                                rebalance_record["adjustments"].append({
-                                    "etf_code": etf_code,
-                                    "action": "买入",
-                                    "quantity": quantity,
-                                    "price": price,
-                                    "amount": round(actual_amount, 2)
-                                })
-                        
-                        elif action == "sell" and holdings.get(etf_code, 0) > 0:
-                            # 卖出（计算需要卖出的数量）
-                            target_sell_amount = amount
-                            current_qty = holdings[etf_code]
-                            sell_qty = min(int(target_sell_amount / price / 100) * 100, current_qty)
-                            
-                            if sell_qty > 0:
-                                actual_amount = sell_qty * price
-                                holdings[etf_code] -= sell_qty
-                                if holdings[etf_code] <= 0:
-                                    holdings[etf_code] = 0
-                                cash += actual_amount
-                                
-                                rebalance_record["adjustments"].append({
-                                    "etf_code": etf_code,
-                                    "action": "卖出",
-                                    "quantity": sell_qty,
-                                    "price": price,
-                                    "amount": round(actual_amount, 2)
-                                })
+
+                        holdings[etf_code] = result["new_qty"]
+                        cash += result["cash_delta"]
+
+                        rebalance_record["adjustments"].append({
+                            "etf_code": etf_code,
+                            "action": "买入" if result["direction"] == "buy" else "卖出",
+                            "quantity": result["quantity"],
+                            "price": price,
+                            "amount": round(result["actual_amount"], 2)
+                        })
                     
                     if rebalance_record["adjustments"]:
                         rebalance_records.append(rebalance_record)
@@ -196,46 +178,27 @@ class BacktestEngine:
         sharpe = self._calc_sharpe([d["total_asset"] for d in daily_data])
         
         # 计算交易次数和胜率
-        trade_count = 0
+        # 胜率定义：每次再平衡（initial/time_based）后持有到下次再平衡（或期末）的收益为正的比例
+        sig_records = [
+            r for r in rebalance_records
+            if r.get("trigger_type") in ["initial", "time_based"]
+        ]
+        trade_count = len(sig_records)
         win_count = 0
-        
-        # 遍历rebalance_records，统计交易
-        # 只统计initial和time_based类型（初始买入 + 定期再平衡触发）
-        # threshold类型不再单独触发（改为由定期检查处理）
-        for record in rebalance_records:
-            trigger_type = record.get("trigger_type", "")
-            
-            # 统计初始买入和定期再平衡触发的交易
-            if trigger_type in ["initial", "time_based"]:
-                trade_count += len(record.get("adjustments", []))
-        
-        # 计算每笔交易的盈亏（需要前后对比）
-        # 简化版本：计算rebalance后资产是否增长
-        # 只统计initial和time_based类型的交易
-        prev_asset = initial_capital
-        for i, record in enumerate(rebalance_records):
-            trigger_type = record.get("trigger_type", "")
-            
-            # 只统计初始买入和定期再平衡的交易
-            if trigger_type not in ["initial", "time_based"]:
-                continue
-            
-            # 找到交易当天的资产
-            record_date = record["date"]
-            record_asset = None
-            
-            for d in daily_data:
-                if d["date"] == record_date:
-                    record_asset = d["total_asset"]
-                    break
-            
-            if record_asset and prev_asset:
-                # 如果交易后资产增长，算作盈利
-                if record_asset > prev_asset:
-                    win_count += 1
-                prev_asset = record_asset
-        
-        # 胜率（简化版本：盈利次数/总交易次数）
+
+        # 建立日期->资产索引，避免重复遍历
+        asset_by_date = {d["date"]: d["total_asset"] for d in daily_data}
+        final_date = daily_data[-1]["date"] if daily_data else None
+
+        for i, record in enumerate(sig_records):
+            start_asset = asset_by_date.get(record["date"])
+            next_date = sig_records[i + 1]["date"] if i + 1 < len(sig_records) else final_date
+            end_asset = asset_by_date.get(next_date) if next_date else None
+
+            if start_asset and end_asset and start_asset > 0 and end_asset > start_asset:
+                win_count += 1
+
+        # 胜率（再平衡周期间盈利比例）
         win_rate = (win_count / trade_count * 100) if trade_count > 0 else None
         
         # 计算区间收益（按月度分段）
@@ -297,22 +260,18 @@ class BacktestEngine:
         
         return all_data
     
-    def _get_trade_dates(self, all_data: Dict[str, pd.DataFrame], start_date: date, 
+    def _get_trade_dates(self, all_data: Dict[str, pd.DataFrame], start_date: date,
                          end_date: date) -> List[date]:
-        """获取交易日列表（取交集）"""
-        trade_dates = None
-        
+        """获取交易日列表（取并集，缺数据的 ETF 在回测时用前值填充）"""
+        trade_dates = set()
+
         for code, df in all_data.items():
             dates = set(df[df['trade_date'] >= start_date]['trade_date'].tolist())
-            
-            if trade_dates is None:
-                trade_dates = dates
-            else:
-                trade_dates = trade_dates.intersection(dates)
-        
+            trade_dates.update(dates)
+
         if trade_dates:
             return sorted(list(trade_dates))
-        
+
         return []
     
     def _calc_max_drawdown(self, assets: List[float]) -> float:

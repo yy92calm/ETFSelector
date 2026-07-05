@@ -24,6 +24,12 @@ class ExperienceManager:
     }
     
     def evaluate_experience_usages(self, strategy_id: int, db: Session):
+        """评估待验证的经验应用记录，计算收益和结果
+
+        注意：此处计算的 return_pct 反映的是经验应用后组合的整体表现，
+        属于"关联性"而非严格的"因果性"——组合收益受市场环境与所有决策共同影响。
+        effectiveness_score 应作为辅助参考，不宜单独作为经验去留的决定性依据。
+        """
         """评估待验证的经验应用记录，计算收益和结果"""
         pending_records = db.query(ExperienceUsageRecord).filter(
             ExperienceUsageRecord.strategy_id == strategy_id,

@@ -1,6 +1,7 @@
 """FastAPI 应用初始化"""
 
 import logging
+from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,7 +10,7 @@ from fastapi.responses import FileResponse
 
 from app.config import get_settings
 from app.db.database import init_db
-from app.routes import etf_routes, strategy_routes, backtest_routes, net_value_routes, auto_strategy_routes, portfolio_routes
+from app.routes import etf_routes, strategy_routes, backtest_routes, net_value_routes, auto_strategy_routes, portfolio_routes, config_routes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,10 +19,45 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info("应用启动 ...")
+    init_db()
+    logger.info("数据库初始化成功")
+
+    # 从数据库加载运行时 LLM 配置到 settings 单例
+    from app.db.database import SessionLocal
+    from app.services.config_service import sync_llm_config_from_db
+    _db = SessionLocal()
+    try:
+        sync_llm_config_from_db(_db)
+    finally:
+        _db.close()
+
+    from app.tasks.scheduler import get_scheduler
+    scheduler = get_scheduler()
+    if not scheduler.running:
+        scheduler.start()
+        logger.info("定时任务已启动")
+
+    yield
+
+    from app.tasks.scheduler import get_scheduler
+    try:
+        scheduler = get_scheduler()
+        if scheduler.running:
+            scheduler.shutdown(wait=False)
+    except Exception:
+        pass
+    logger.info("应用已关闭")
+
+
 app = FastAPI(
     title=settings.app_name,
     description="ETF量化选择系统 — 行情获取 · 策略回测 · 模拟实盘 · AI自动策略",
     version="0.3.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -42,31 +78,7 @@ app.include_router(backtest_routes.router)
 app.include_router(net_value_routes.router)
 app.include_router(auto_strategy_routes.router)
 app.include_router(portfolio_routes.router)
-
-
-@app.on_event("startup")
-def startup():
-    logger.info("应用启动 ...")
-    init_db()
-    logger.info("数据库初始化成功")
-
-    from app.tasks.scheduler import get_scheduler
-    scheduler = get_scheduler()
-    if not scheduler.running:
-        scheduler.start()
-        logger.info(f"定时任务已启动")
-
-
-@app.on_event("shutdown")
-def shutdown():
-    from app.tasks.scheduler import get_scheduler
-    try:
-        scheduler = get_scheduler()
-        if scheduler.running:
-            scheduler.shutdown(wait=False)
-    except Exception:
-        pass
-    logger.info("应用已关闭")
+app.include_router(config_routes.router)
 
 
 @app.get("/")

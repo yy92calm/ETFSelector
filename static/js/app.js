@@ -66,6 +66,7 @@ document.querySelectorAll('.nav-links a').forEach(a => {
         if (tab === 'strategy') loadStrategies();
         if (tab === 'backtest') loadBacktestPage();
         if (tab === 'auto-strategy') loadAutoStrategyPage();
+        if (tab === 'config') loadConfigPage();
     });
 });
 
@@ -3526,5 +3527,86 @@ async function checkCircuitBreaker() {
         }
     } catch (e) {
         toast('检查失败: ' + e.message, 'error');
+    }
+}
+
+// ---- 系统配置 ----
+async function loadConfigPage() {
+    try {
+        const data = await api('/api/config/llm');
+        const cfg = data.data || {};
+        document.getElementById('cfg-llm-base-url').value = cfg.llm_api_base_url || '';
+        document.getElementById('cfg-llm-api-key').value = '';
+        document.getElementById('cfg-llm-model').value = cfg.llm_model || '';
+
+        const statusEl = document.getElementById('cfg-llm-key-status');
+        if (cfg.llm_api_key_configured) {
+            statusEl.innerHTML = `<span class="text-success">✓ 已配置（${cfg.llm_api_key_masked}），留空保存则保留原值</span>`;
+        } else {
+            statusEl.innerHTML = `<span class="text-danger">✗ 未配置</span>`;
+        }
+        document.getElementById('cfg-test-result').innerHTML = '';
+    } catch (e) {
+        toast('加载配置失败: ' + e.message, 'error');
+    }
+}
+
+async function saveLlmConfig() {
+    const baseUrl = document.getElementById('cfg-llm-base-url').value.trim();
+    const apiKey = document.getElementById('cfg-llm-api-key').value.trim();
+    const model = document.getElementById('cfg-llm-model').value.trim();
+
+    const btn = document.getElementById('cfg-save-btn');
+    btn.disabled = true;
+    btn.textContent = '保存中...';
+    try {
+        const data = await api('/api/config/llm', {
+            method: 'PUT',
+            body: JSON.stringify({
+                llm_api_base_url: baseUrl,
+                llm_api_key: apiKey,
+                llm_model: model,
+            }),
+        });
+        toast('✓ LLM配置已保存', 'success');
+        loadConfigPage();
+    } catch (e) {
+        toast('保存失败: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '保存配置';
+    }
+}
+
+async function testLlmConnection() {
+    const btn = document.getElementById('cfg-test-btn');
+    const resultEl = document.getElementById('cfg-test-result');
+    btn.disabled = true;
+    btn.textContent = '测试中...';
+    resultEl.innerHTML = '<div style="color:var(--text-secondary);">正在连接...</div>';
+    try {
+        const data = await api('/api/config/llm/test', { method: 'POST' });
+        if (data.code === 200) {
+            resultEl.innerHTML = `<div class="card" style="background:var(--success-50,#ecfdf5);border-color:var(--success-500,#10b981);padding:12px 16px;">
+                <strong style="color:var(--success-600,#059669);">✓ 连接成功</strong><br>
+                <span style="font-size:13px;">模型: ${data.data.model} | 响应: ${data.data.reply}</span>
+            </div>`;
+            toast('✓ LLM 连接成功', 'success');
+        } else {
+            resultEl.innerHTML = `<div class="card" style="background:#fef2f2;border-color:var(--danger-500,#ef4444);padding:12px 16px;">
+                <strong style="color:var(--danger-600,#dc2626);">✗ 连接失败</strong><br>
+                <span style="font-size:13px;">${data.message}</span>
+            </div>`;
+            toast('连接失败: ' + data.message, 'error');
+        }
+    } catch (e) {
+        resultEl.innerHTML = `<div class="card" style="background:#fef2f2;border-color:var(--danger-500,#ef4444);padding:12px 16px;">
+            <strong style="color:var(--danger-600,#dc2626);">✗ 连接失败</strong><br>
+            <span style="font-size:13px;">${e.message}</span>
+        </div>`;
+        toast('连接失败: ' + e.message, 'error');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = '测试连接';
     }
 }

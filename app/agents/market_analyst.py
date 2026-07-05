@@ -164,14 +164,25 @@ class MarketAnalystAgent(BaseAgent):
         return summary
 
     def _get_relevant_experiences(self, strategy_id: int, target_date: date, db: Session) -> List[Experience]:
-        return db.query(Experience).filter(
-            Experience.strategy_id == strategy_id,
-            Experience.is_active == True,
-            Experience.expires_date >= target_date,
-        ).order_by(
-            Experience.effectiveness_score.desc(),
-            Experience.application_count.desc()
-        ).limit(8).all()
+        from app.services.smart_experience_matcher import SmartExperienceMatcher
+
+        matcher = SmartExperienceMatcher()
+        current_scenario = matcher.get_current_market_scenario(target_date, db)
+        matched = matcher.match_experiences_by_scenario(strategy_id, current_scenario, db)
+        experiences = [m["experience"] for m in matched]
+
+        # 场景无匹配时退回按有效性排序，避免经验完全缺失
+        if not experiences:
+            experiences = db.query(Experience).filter(
+                Experience.strategy_id == strategy_id,
+                Experience.is_active == True,
+                Experience.expires_date >= target_date,
+            ).order_by(
+                Experience.effectiveness_score.desc(),
+                Experience.application_count.desc()
+            ).limit(8).all()
+
+        return experiences
 
     def _format_experiences(self, experiences: List[Experience]) -> str:
         if not experiences:
