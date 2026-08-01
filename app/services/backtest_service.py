@@ -168,14 +168,32 @@ class BacktestEngine:
             })
         
         # 统计指标
-        final_asset = daily_data[-1]["total_asset"] if daily_data else initial_capital
+        assets_list = [d["total_asset"] for d in daily_data]
+        final_asset = assets_list[-1] if assets_list else initial_capital
         total_return_pct = (final_asset - initial_capital) / initial_capital * 100
         
-        # 最大回撤
-        max_drawdown = self._calc_max_drawdown([d["total_asset"] for d in daily_data])
+        # 最大回撤 + 回撤曲线
+        max_drawdown, drawdown_curve = self._calc_max_drawdown(assets_list)
         
         # Sharpe比率
-        sharpe = self._calc_sharpe([d["total_asset"] for d in daily_data])
+        sharpe = self._calc_sharpe(assets_list)
+        
+        # 年化收益率
+        trading_days = len(assets_list)
+        years = trading_days / 252 if trading_days > 0 else 0
+        annualized_return = ((final_asset / initial_capital) ** (1 / years) - 1) * 100 if years > 0 and initial_capital > 0 else 0
+        
+        # 年化波动率
+        ann_volatility = self._calc_annualized_volatility(assets_list)
+        
+        # Sortino比率
+        sortino = self._calc_sortino(assets_list)
+        
+        # Calmar比率
+        calmar = annualized_return / max_drawdown if max_drawdown > 0 else None
+        
+        # 最大回撤持续天数
+        max_dd_duration = self._calc_max_drawdown_duration(assets_list)
         
         # 计算交易次数和胜率
         # 胜率定义：每次再平衡（initial/time_based）后持有到下次再平衡（或期末）的收益为正的比例
@@ -217,14 +235,20 @@ class BacktestEngine:
             "initial_capital": initial_capital,
             "final_asset": round(final_asset, 2),
             "total_return_pct": round(total_return_pct, 4),
+            "annualized_return_pct": round(annualized_return, 4),
             "max_drawdown_pct": round(max_drawdown, 4),
+            "max_drawdown_duration": max_dd_duration,
             "sharpe_ratio": round(sharpe, 4) if sharpe else None,
+            "sortino_ratio": round(sortino, 4) if sortino else None,
+            "calmar_ratio": round(calmar, 4) if calmar else None,
+            "annualized_volatility": round(ann_volatility, 4) if ann_volatility else None,
             "rebalance_count": len(rebalance_records),
             "trade_count": trade_count,
             "win_count": win_count,
             "win_rate": round(win_rate, 2) if win_rate else None,
             "period_returns": period_returns,
             "time_period_returns": time_period_returns,
+            "drawdown_curve": drawdown_curve,
             "daily_data": daily_data,
             "rebalance_records": rebalance_records,
         }
@@ -274,22 +298,28 @@ class BacktestEngine:
 
         return []
     
-    def _calc_max_drawdown(self, assets: List[float]) -> float:
-        """计算最大回撤"""
+    def _calc_max_drawdown(self, assets: List[float]) -> tuple:
+        """计算最大回撤及回撤曲线
+        
+        Returns:
+            (max_drawdown_pct, drawdown_curve: [{date_idx, dd_pct}])
+        """
         if not assets:
-            return 0
+            return 0, []
         
         peak = assets[0]
         max_dd = 0
+        drawdown_curve = []
         
-        for v in assets:
+        for i, v in enumerate(assets):
             if v > peak:
                 peak = v
-            dd = (peak - v) / peak * 100
+            dd = (peak - v) / peak * 100 if peak > 0 else 0
             if dd > max_dd:
                 max_dd = dd
+            drawdown_curve.append({"idx": i, "dd_pct": round(dd, 4)})
         
-        return max_dd
+        return max_dd, drawdown_curve
     
     def _calc_sharpe(self, assets: List[float], risk_free_rate: float = 0.02) -> Optional[float]:
         """计算夏普比率"""
@@ -315,6 +345,67 @@ class BacktestEngine:
         sharpe = (mean_r - daily_rf) / std_r * np.sqrt(252)
         
         return float(sharpe)
+    
+    def _calc_annualized_volatility(self, assets: List[float]) -> Optional[float]:
+        """计算年化波动率"""
+        if len(assets) < 2:
+            return None
+        returns = []
+        for i in range(1, len(assets)):
+            if assets[i - 1] > 0:
+                returns.append((assets[i] - assets[i - 1]) / assets[i - 1])
+        if not returns:
+            return None
+        arr = np.array(returns)
+        return float(np.std(arr) * np.sqrt(252) * 100)
+    
+    def _calc_sortino(self, assets: List[float], risk_free_rate: float = 0.02) -> Optional[float]:
+        """计算Sortino比率（仅考虑下行波动）"""
+        if len(assets) < 2:
+            return None
+        returns = []
+        for i in range(1, len(assets)):
+            if assets[i - 1] > 0:
+                returns.append((assets[i] - assets[i - 1]) / assets[i - 1])
+        if not returns:
+            return None
+        arr = np.array(returns)
+        daily_rf = risk_free_rate / 252
+        excess = arr - daily_rf
+        downside = excess[excess < 0]
+        if len(downside) == 0:
+            return None
+        downside_std = np.sqrt(np.mean(downside ** 2))
+        if downside_std == 0:
+            return None
+        return float(np.mean(excess) / downside_std * np.sqrt(252))
+    
+    def _calc_max_drawdown_duration(self, assets: List[float]) -> int:
+        """计算最大回撤持续天数（从高点到恢复或期末）"""
+        if not assets:
+            return 0
+        peak = assets[0]
+        peak_idx = 0
+        max_dd_dur = 0
+        current_dd_start = None
+        for i, v in enumerate(assets):
+            if v >= peak:
+                if current_dd_start is not None:
+                    dur = i - current_dd_start
+                    if dur > max_dd_dur:
+                        max_dd_dur = dur
+                    current_dd_start = None
+                peak = v
+                peak_idx = i
+            else:
+                if current_dd_start is None:
+                    current_dd_start = peak_idx
+        # 期末仍未恢复
+        if current_dd_start is not None:
+            dur = len(assets) - 1 - current_dd_start
+            if dur > max_dd_dur:
+                max_dd_dur = dur
+        return max_dd_dur
     
     def _calc_period_returns(self, daily_data: List[dict], start_date: date, 
                               end_date: date) -> List[dict]:

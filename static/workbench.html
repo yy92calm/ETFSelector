@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ETF智能工作台</title>
+    <link rel="stylesheet" href="/static/css/workbench.css?v=14">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
+</head>
+<body>
+
+<!-- 顶部导航 -->
+<header class="wb-header">
+    <span class="logo">ETF 智能工作台</span>
+    <div class="status-dots">
+        <span class="status-dot" id="dot-system" title="系统状态"></span>
+        <span class="status-dot" id="dot-ai" title="AI状态"></span>
+    </div>
+    <div class="header-right">
+        <span class="ai-badge">AI 驱动</span>
+        <span id="header-time"></span>
+        <button class="sidebar-toggle" onclick="Chat.toggle()" title="切换AI侧边栏">💬</button>
+    </div>
+</header>
+
+<!-- 主体 -->
+<div class="wb-body">
+    <!-- 主区域：仪表盘 -->
+    <main class="wb-main">
+        <!-- 视图切换 -->
+        <div class="view-tabs">
+            <button class="view-tab active" data-view="overview">总览</button>
+            <button class="view-tab" data-view="market">行情</button>
+            <button class="view-tab" data-view="strategies">策略</button>
+            <button class="view-tab" data-view="sentiment">舆情</button>
+        </div>
+
+        <!-- 总览视图 -->
+        <div id="view-overview" class="view-panel">
+            <!-- 指标卡片 -->
+            <div class="card-grid" id="stat-cards">
+                <div class="wb-card"><div class="card-label">加载中...</div></div>
+            </div>
+
+            <!-- 市场脉搏：涨跌分布 + 领涨领跌 -->
+            <div class="ov-grid ov-grid-market">
+                <div class="panel">
+                    <div class="panel-header">📊 市场涨跌分布 <span class="panel-sub" id="dist-date"></span></div>
+                    <div class="panel-body">
+                        <div id="market-dist-chart" style="height:250px;"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">🔥 今日领涨领跌</div>
+                    <div class="panel-body movers-body" id="movers-content">
+                        <div class="empty-hint">加载中...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 量化分析：趋势分布 + 动量排名 + 波动率 -->
+            <div class="ov-grid ov-grid-quant">
+                <div class="panel">
+                    <div class="panel-header">📈 趋势分布 <span class="panel-sub" id="quant-date"></span></div>
+                    <div class="panel-body">
+                        <div id="trend-dist-chart" style="height:220px;"></div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">⚡ 5日动量排名</div>
+                    <div class="panel-body movers-body" id="momentum-content">
+                        <div class="empty-hint">加载中...</div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">📉 波动率 & RSI</div>
+                    <div class="panel-body" id="volatility-content">
+                        <div class="empty-hint">加载中...</div>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- 行情视图 -->
+        <div id="view-market" class="view-panel" style="display:none">
+            <div class="mkt-toolbar">
+                <input type="text" class="mkt-search" id="mkt-search" placeholder="搜索代码或名称..." autocomplete="off">
+                <div class="mkt-sort-group" id="mkt-sort-group">
+                    <button class="mkt-sort active" data-sort="composite_score">综合得分</button>
+                    <button class="mkt-sort" data-sort="momentum_5d">5日动量</button>
+                    <button class="mkt-sort" data-sort="momentum_20d">20日动量</button>
+                    <button class="mkt-sort" data-sort="volatility_20d">波动率</button>
+                    <button class="mkt-sort" data-sort="change_pct">今日涨跌</button>
+                </div>
+                <span class="mkt-date" id="mkt-date"></span>
+            </div>
+            <div class="panel mkt-panel">
+                <div class="panel-body" id="market-content">
+                    <div class="empty-hint">加载中...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 策略视图 -->
+        <div id="view-strategies" class="view-panel" style="display:none">
+            <div class="strat-layout">
+                <div class="strat-main">
+                    <div class="panel">
+                        <div class="panel-header">📋 策略列表 <span class="panel-sub" id="strategy-count-sub"></span></div>
+                        <div class="panel-body" id="strategies-content">
+                            <div class="empty-hint">点击加载...</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="strat-rail">
+                    <div class="panel">
+                        <div class="panel-header">🤖 AI 决策时间线</div>
+                        <div class="panel-body rail-scroll" id="ai-timeline">
+                            <div class="empty-hint">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 舆情视图 -->
+        <div id="view-sentiment" class="view-panel" style="display:none">
+            <div class="senti-layout">
+                <div class="senti-rail">
+                    <div class="panel">
+                        <div class="panel-header">🌡️ 情绪总览 <span class="panel-sub" id="senti-view-date"></span></div>
+                        <div class="panel-body" id="senti-view-summary">
+                            <div class="empty-hint">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="senti-main">
+                    <div class="panel senti-main-panel">
+                        <div class="panel-header">📰 舆情列表 <span class="panel-sub" id="senti-view-count"></span></div>
+                        <div class="panel-body senti-view-list" id="senti-view-list">
+                            <div class="empty-hint">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+    <aside class="wb-sidebar" id="wb-sidebar">
+        <div class="sidebar-resize-handle" id="sidebar-resize"></div>
+        <div class="sidebar-header">
+            <h3>AI 助手</h3>
+            <button class="sidebar-toggle" onclick="Chat.toggle()">✕</button>
+        </div>
+
+        <div class="chat-messages" id="chat-messages"></div>
+
+        <div class="quick-commands">
+            <button class="quick-cmd" data-cmd="分析当前市场环境">分析市场</button>
+            <button class="quick-cmd" data-cmd="检查所有策略的风控状态">检查风控</button>
+            <button class="quick-cmd" data-cmd="列出所有策略及当前配置">查看策略</button>
+            <button class="quick-cmd" data-cmd="获取最新舆情数据">最新舆情</button>
+        </div>
+
+        <div class="chat-input-area">
+            <input type="text" class="chat-input" id="chat-input" placeholder="输入指令或问题..." autocomplete="off">
+            <button class="chat-send" id="chat-send">➤</button>
+        </div>
+    </aside>
+</div>
+
+<!-- 底部状态栏 -->
+<footer class="wb-footer">
+    <div class="footer-item">
+        <span class="status-dot"></span>
+        <span id="footer-status">系统就绪</span>
+    </div>
+    <div class="footer-item" style="margin-left:auto">
+        <span>ETF智能工作台 v0.4</span>
+    </div>
+</footer>
+
+<script src="/static/js/workbench.js?v=14"></script>
+<script src="/static/js/chat.js?v=14"></script>
+<script>
+// 更新时间
+function updateTime() {
+    const el = document.getElementById('header-time');
+    if (el) el.textContent = new Date().toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+}
+updateTime();
+setInterval(updateTime, 30000);
+</script>
+</body>
+</html>

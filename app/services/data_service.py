@@ -4,6 +4,8 @@ ETF数据获取服务
 """
 
 import logging
+import random
+import time
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict
 
@@ -16,6 +18,14 @@ from app.db.database import SessionLocal
 from app.services.data_sources import DataSourceManager
 
 logger = logging.getLogger(__name__)
+
+# 请求限流间隔（秒），随机化防止被数据源封禁
+REQUEST_INTERVAL_MIN = 2.0
+REQUEST_INTERVAL_MAX = 5.0
+
+
+def _random_sleep():
+    time.sleep(random.uniform(REQUEST_INTERVAL_MIN, REQUEST_INTERVAL_MAX))
 
 
 class DataService:
@@ -39,43 +49,24 @@ class DataService:
 
     def sync_etf_list(self, db: Session) -> int:
         """
-        将ETF列表同步到数据库，返回新增/更新数量
-        
-        只同步以下基金公司的ETF：
-        - 广发基金
-        - 易方达基金  
-        - 华夏基金
+        将ETF列表同步到数据库，返回新增/更新数量。
+        同步全市场ETF（不再限制基金公司），确保LLM自主发现的标的也能被覆盖。
         """
         df = self.fetch_etf_list()
         if df.empty:
             logger.warning("未获取到ETF列表数据")
             return 0
-        
-        # 只保留三家基金公司的ETF
-        target_funds = ['广发', '易方达', '华夏']
-        filtered_df = df[df['etf_name'].apply(lambda name: any(fund in str(name) for fund in target_funds))]
-        
-        if filtered_df.empty:
-            logger.warning(f"过滤后无目标基金公司ETF（{target_funds}），请检查数据源")
-            return 0
-        
-        logger.info(f"准备同步 {len(filtered_df)} 只ETF（广发/易方达/华夏）")
-        
+
+        logger.info(f"准备同步 {len(df)} 只ETF")
+
         count = 0
-        for _, row in filtered_df.iterrows():
-            # 支持不同数据源的列名
+        for _, row in df.iterrows():
             code = str(row.get("etf_code", "") or row.get("代码", ""))
             name = str(row.get("etf_name", "") or row.get("名称", ""))
-            
+
             if not code or not name:
                 continue
-            
-            # 验证是否为目标基金公司（防御性编程）
-            is_target = any(fund in name for fund in target_funds)
-            if not is_target:
-                logger.debug(f"跳过非目标基金ETF: {code} {name}")
-                continue
-            
+
             existing = db.query(ETFBasic).filter(ETFBasic.etf_code == code).first()
             if existing:
                 if existing.etf_name != name:
@@ -85,9 +76,9 @@ class DataService:
             else:
                 db.add(ETFBasic(etf_code=code, etf_name=name))
                 count += 1
-        
+
         db.commit()
-        logger.info(f"ETF列表同步完成，新增/更新 {count} 条（共 {len(filtered_df)} 只）")
+        logger.info(f"ETF列表同步完成，新增/更新 {count} 条（共 {len(df)} 只）")
         return count
 
     # ------------------------------------------------------------------ #
@@ -126,7 +117,7 @@ class DataService:
         return code.startswith('5') or code.startswith('15')
 
     def save_daily_quotes(self, etf_code: str, df: pd.DataFrame, db: Session) -> int:
-        """将日K线DataFrame存入数据库，自动去重，返回新增数量"""
+        """将日K线DataFrame存入数据库，自动去重+数据质量校验，返回新增数量"""
         if df.empty:
             return 0
 
@@ -139,6 +130,7 @@ class DataService:
         )
 
         count = 0
+        skipped = 0
         for _, row in df.iterrows():
             # 支持不同数据源的列名
             trade_date_col = row.get("trade_date") or row.get("日期")
@@ -148,23 +140,41 @@ class DataService:
             trade_date = pd.to_datetime(trade_date_col).date()
             if trade_date in existing_dates:
                 continue
-            
+
+            close_price = float(row.get("close") or row.get("收盘", 0))
+            open_price = float(row.get("open") or row.get("开盘", 0))
+            high_price = float(row.get("high") or row.get("最高", 0))
+            low_price = float(row.get("low") or row.get("最低", 0))
+            volume = float(row.get("volume") or row.get("成交量", 0))
+            amount = float(row.get("amount") or row.get("成交额", 0))
+            change_pct = float(row.get("change_pct") or row.get("涨跌幅", 0))
+
+            # 数据质量校验：跳过价格异常数据
+            if close_price <= 0 or open_price <= 0:
+                skipped += 1
+                continue
+            if high_price > 0 and low_price > 0 and high_price < low_price:
+                skipped += 1
+                continue
+
             db.add(
                 ETFQuotation(
                     etf_code=etf_code,
                     trade_date=trade_date,
-                    open_price=float(row.get("open") or row.get("开盘", 0)),
-                    close_price=float(row.get("close") or row.get("收盘", 0)),
-                    high_price=float(row.get("high") or row.get("最高", 0)),
-                    low_price=float(row.get("low") or row.get("最低", 0)),
-                    volume=float(row.get("volume") or row.get("成交量", 0)),
-                    amount=float(row.get("amount") or row.get("成交额", 0)),
-                    change_pct=float(row.get("change_pct") or row.get("涨跌幅", 0)),
+                    open_price=open_price,
+                    close_price=close_price,
+                    high_price=high_price,
+                    low_price=low_price,
+                    volume=volume,
+                    amount=amount,
+                    change_pct=change_pct,
                 )
             )
             count += 1
 
         db.commit()
+        if skipped > 0:
+            logger.warning(f"{etf_code} 跳过 {skipped} 条异常数据")
         logger.info(f"{etf_code} 新增 {count} 条日K线")
         return count
 
@@ -173,20 +183,14 @@ class DataService:
     # ------------------------------------------------------------------ #
     def update_today_quotes(self, db: Session) -> Dict:
         """
-        获取ETF最新交易日行情并存储
-        使用efinance接口
+        获取数据库中所有ETF的最新交易日行情并存储。
+        覆盖 etf_basic 表中全部ETF（含LLM自主纳入的标的）。
         
         返回 {success_count, fail_count, failed_codes, etf_count}
         """
-        # 先同步广发基金ETF列表
-        self.sync_etf_list(db)
-        
-        # 获取数据库中所有广发基金ETF代码（名称包含'广发'）
-        gf_etfs = db.query(ETFBasic).filter(
-            ETFBasic.etf_name.contains('广发')
-        ).all()
-        
-        etf_codes = [etf.etf_code for etf in gf_etfs]
+        # 获取数据库中所有ETF
+        all_etfs = db.query(ETFBasic).all()
+        etf_codes = [etf.etf_code for etf in all_etfs]
         
         logger.info(f"开始更新 {len(etf_codes)} 只ETF的最新行情")
         
@@ -196,7 +200,7 @@ class DataService:
                 "success_count": 0,
                 "fail_count": 0,
                 "failed_codes": [],
-                "gf_etf_count": 0,
+                "etf_count": 0,
                 "message": "数据库中没有ETF"
             }
         
@@ -205,19 +209,18 @@ class DataService:
         target_dates = []
         for i in range(7):
             check_date = today - timedelta(days=i)
-            # 排除周末
-            if check_date.weekday() < 5:  # 0-4 表示周一到周五
+            if check_date.weekday() < 5:
                 target_dates.append(check_date.strftime("%Y%m%d"))
         
         result = {
             "success_count": 0,
             "fail_count": 0,
             "failed_codes": [],
-            "gf_etf_count": len(etf_codes),
+            "etf_count": len(etf_codes),
             "target_dates": target_dates,
         }
         
-        for code in etf_codes:
+        for idx, code in enumerate(etf_codes):
             success = False
             for target_date in target_dates:
                 try:
@@ -229,7 +232,6 @@ class DataService:
                         if added > 0:
                             result["success_count"] += 1
                             success = True
-                            logger.info(f"✓ {code} 更新成功，新增 {added} 条")
                             break
                     else:
                         logger.debug(f"{code} {target_date} 未获取到数据")
@@ -240,7 +242,8 @@ class DataService:
             if not success:
                 result["fail_count"] += 1
                 result["failed_codes"].append(code)
-                logger.warning(f"✗ {code} 更新失败")
+
+            _random_sleep()
         
         logger.info(f"ETF行情更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}")
         return result
@@ -313,55 +316,68 @@ class DataService:
     #  批量更新指定时间范围行情
     # ------------------------------------------------------------------ #
     def update_quotes_by_date_range(
-        self, start_date: str, end_date: str, db: Session
+        self, start_date: str, end_date: str, db: Session,
+        limit: int = 0, offset: int = 0,
     ) -> Dict:
         """
-        批量更新指定日期范围内ETF的行情数据
-        使用efinance接口
+        批量更新指定日期范围内所有ETF的行情数据。
+        覆盖 etf_basic 表中全部ETF。
         
         start_date/end_date: 格式 YYYYMMDD
+        limit: 本次处理数量上限（0=全部）
+        offset: 跳过前N只
         返回: {success_count, fail_count, etf_count, failed_codes}
         """
-        # 获取所有广发基金ETF代码（名称包含'广发'）
-        gf_etfs = db.query(ETFBasic).filter(
-            ETFBasic.etf_name.contains('广发')
-        ).all()
-        
-        etf_codes = [etf.etf_code for etf in gf_etfs]
+        all_etfs = db.query(ETFBasic).order_by(ETFBasic.etf_code).all()
+        etf_codes = [etf.etf_code for etf in all_etfs]
+        total = len(etf_codes)
+
+        if offset > 0:
+            etf_codes = etf_codes[offset:]
+        if limit > 0:
+            etf_codes = etf_codes[:limit]
         
         result = {
             "success_count": 0,
             "fail_count": 0,
-            "gf_etf_count": len(etf_codes),
+            "etf_count": len(etf_codes),
+            "total_in_db": total,
             "date_range": f"{start_date}~{end_date}",
             "failed_codes": [],
         }
         
         if not etf_codes:
-            logger.warning("数据库中没有广发基金ETF")
+            logger.warning("数据库中没有ETF")
             return result
         
-        logger.info(f"开始更新 {len(etf_codes)} 只ETF {start_date}~{end_date} 的行情数据")
+        logger.info(f"开始更新 {len(etf_codes)} 只ETF {start_date}~{end_date} 的行情数据 (offset={offset})")
         
-        for code in etf_codes:
+        consecutive_fails = 0
+        for idx, code in enumerate(etf_codes):
             try:
                 df = self.fetch_etf_daily(code, start_date=start_date, end_date=end_date)
                 if not df.empty:
                     added = self.save_daily_quotes(code, df, db)
+                    result["success_count"] += 1
+                    consecutive_fails = 0
                     if added > 0:
-                        result["success_count"] += 1
                         logger.info(f"✓ {code} 新增 {added} 条行情数据")
-                    else:
-                        result["success_count"] += 1  # 数据已存在也算成功
-                        logger.debug(f"{code} 数据已存在")
                 else:
                     result["fail_count"] += 1
                     result["failed_codes"].append(code)
-                    logger.warning(f"✗ {code} 未获取到数据")
+                    consecutive_fails += 1
             except Exception as e:
                 result["fail_count"] += 1
                 result["failed_codes"].append(code)
+                consecutive_fails += 1
                 logger.error(f"✗ {code} 更新失败: {e}")
+
+            if consecutive_fails >= 10:
+                logger.warning("连续失败10次，暂停60秒后继续")
+                time.sleep(60)
+                consecutive_fails = 0
+
+            _random_sleep()
         
         logger.info(f"ETF批量更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}")
         return result

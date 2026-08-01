@@ -85,10 +85,8 @@ class StrategyService:
         return db.query(Strategy).filter(Strategy.id == strategy_id).first()
 
     def list_strategies(self, db: Session) -> List[Strategy]:
-        """列出所有非自动生成的策略"""
-        return db.query(Strategy).filter(
-            Strategy.strategy_source != 'auto_generated'
-        ).order_by(Strategy.created_at.desc()).all()
+        """列出所有策略"""
+        return db.query(Strategy).order_by(Strategy.created_at.desc()).all()
 
     def update_strategy_status(self, strategy_id: int, status: str, db: Session) -> Optional[Strategy]:
         strategy = self.get_strategy(strategy_id, db)

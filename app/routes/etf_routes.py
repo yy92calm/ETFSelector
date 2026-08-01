@@ -118,11 +118,13 @@ def initialize_sample_data(db: Session = Depends(get_db)):
 def update_quotes_by_range(
     start_date: str = Query(..., description="开始日期 YYYYMMDD"),
     end_date: str = Query(..., description="结束日期 YYYYMMDD"),
+    limit: int = Query(0, description="本次处理数量上限，0=全部"),
+    offset: int = Query(0, description="跳过前N只"),
     db: Session = Depends(get_db)
 ):
-    """批量更新指定日期范围内所有ETF的行情数据"""
+    """批量更新指定日期范围内所有ETF的行情数据（支持分批）"""
     svc = get_data_service()
-    result = svc.update_quotes_by_date_range(start_date, end_date, db)
+    result = svc.update_quotes_by_date_range(start_date, end_date, db, limit=limit, offset=offset)
     return APIResponse(
         message=f"行情更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}",
         data=result

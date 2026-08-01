@@ -25,26 +25,33 @@ def get_available_etfs(db: Session = Depends(get_db)):
 
 @router.get("/list", response_model=APIResponse)
 def get_strategy_list(db: Session = Depends(get_db)):
-    """获取所有策略"""
+    """获取所有策略（含最新资产与收益率）"""
+    from app.models.portfolio import PortfolioSnapshot
+
     svc = get_strategy_service()
     strategies = svc.list_strategies(db)
-    return APIResponse(data={
-        "strategies": [{
+
+    result = []
+    for s in strategies:
+        latest = db.query(PortfolioSnapshot).filter(
+            PortfolioSnapshot.strategy_id == s.id
+        ).order_by(PortfolioSnapshot.trade_date.desc()).first()
+        result.append({
             "id": s.id,
             "name": s.name,
             "description": s.description,
             "strategy_type": s.strategy_type,
-            
-            # 配置组合字段
             "allocation_config": s.allocation_config,
             "rebalance_freq": s.rebalance_freq,
             "rebalance_threshold": s.rebalance_threshold,
-            
             "initial_capital": s.initial_capital,
             "status": s.status,
             "created_at": s.created_at.isoformat() if s.created_at else None,
-        } for s in strategies],
-    })
+            "latest_asset": latest.total_asset if latest else None,
+            "latest_profit_pct": latest.profit_pct if latest else None,
+        })
+
+    return APIResponse(data={"strategies": result})
 
 
 @router.post("/create", response_model=APIResponse)

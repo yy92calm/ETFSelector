@@ -69,7 +69,11 @@ class NetValueService:
         }
 
     def _save_net_value_to_db(self, etf_code: str, df: pd.DataFrame, db: Session) -> int:
-        """保存净值数据到数据库"""
+        """保存净值数据到数据库。
+        
+        重要：仅在该日期无真实行情数据时才写入净值，
+        避免 volume=0 的净值数据覆盖真实K线。
+        """
         existing_dates = set(
             r[0]
             for r in db.query(ETFQuotation.trade_date)
@@ -85,17 +89,16 @@ class NetValueService:
 
             trade_date = pd.to_datetime(trade_date).date()
 
+            # 已有数据的日期一律跳过（无论是真实行情还是旧净值）
             if trade_date in existing_dates:
-                existing = db.query(ETFQuotation).filter(
-                    ETFQuotation.etf_code == etf_code,
-                    ETFQuotation.trade_date == trade_date,
-                ).first()
-                if existing and (existing.volume > 0 or existing.amount > 0):
-                    continue
                 continue
 
             net_value = float(row.get("net_value", 0))
             change_pct = float(row.get("net_value_change_pct", 0) or 0)
+
+            # 数据质量校验：净值必须为正数
+            if net_value <= 0:
+                continue
 
             quote = ETFQuotation(
                 etf_code=etf_code,

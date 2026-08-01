@@ -4,6 +4,7 @@ import logging
 from datetime import date, timedelta
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 
 from app.db.database import get_db
 from app.schemas.schemas import APIResponse
@@ -11,10 +12,16 @@ from app.models.strategy import Strategy
 from app.models.auto_strategy_log import AutoStrategyLog
 from app.models.sentiment import SentimentData
 from app.models.experience import Experience
-from app.models.etf import ETFBasic
+from app.models.etf import ETFBasic, ETFQuotation
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/auto-strategy", tags=["AI全自动策略"])
+
+
+def _latest_trade_date(db: Session) -> date:
+    """获取最近交易日（行情表中有数据的最新日期）"""
+    d = db.query(func.max(ETFQuotation.trade_date)).scalar()
+    return d or date.today()
 
 
 @router.get("/status", response_model=APIResponse)
@@ -52,30 +59,38 @@ def get_execution_logs(strategy_id: int, days: int = 7, db: Session = Depends(ge
 
 
 @router.get("/sentiments", response_model=APIResponse)
-def get_sentiment_data(days: int = 1, db: Session = Depends(get_db)):
-    """获取舆情数据"""
+def get_sentiment_data(days: int = 7, db: Session = Depends(get_db)):
+    """获取舆情数据（基于最近交易日往前推）"""
+    latest = db.query(func.max(SentimentData.data_date)).scalar()
+    if not latest:
+        return APIResponse(data={"sentiments": [], "total": 0, "date": None})
+
+    cutoff = latest - timedelta(days=days)
     sentiments = db.query(SentimentData).filter(
-        SentimentData.data_date >= date.today() - timedelta(days=days)
-    ).order_by(SentimentData.publish_time.desc()).limit(100).all()
-    
+        SentimentData.data_date >= cutoff
+    ).order_by(SentimentData.data_date.desc(), SentimentData.publish_time.desc()).limit(100).all()
+
     return APIResponse(data={
         "sentiments": [s.to_dict() for s in sentiments],
         "total": len(sentiments),
-        "date": date.today().isoformat(),
+        "date": latest.isoformat(),
     })
 
 
 @router.get("/sentiments/summary", response_model=APIResponse)
 def get_sentiment_summary(target_date: date = None, db: Session = Depends(get_db)):
-    """获取舆情汇总"""
+    """获取舆情汇总（默认取最近有数据的交易日）"""
     from app.services.sentiment_service import SentimentService
-    
+
     if not target_date:
-        target_date = date.today()
-    
+        target_date = db.query(func.max(SentimentData.data_date)).scalar()
+    if not target_date:
+        return APIResponse(data={"total": 0, "positive": 0, "negative": 0, "neutral": 0})
+
     svc = SentimentService()
     summary = svc.get_sentiment_summary(target_date, db)
-    
+    summary["date"] = target_date.isoformat()
+
     return APIResponse(data=summary)
 
 
@@ -346,13 +361,13 @@ def get_technical_indicators_batch(db: Session = Depends(get_db)):
 def get_market_sentiment_index(target_date: date = None, db: Session = Depends(get_db)):
     """获取市场情绪指数"""
     from app.services.market_environment_service import MarketEnvironmentService
-    
+
     if not target_date:
-        target_date = date.today()
-    
+        target_date = _latest_trade_date(db)
+
     svc = MarketEnvironmentService()
     index = svc.build_market_sentiment_index(target_date, db)
-    
+
     return APIResponse(data=index)
 
 
@@ -360,13 +375,13 @@ def get_market_sentiment_index(target_date: date = None, db: Session = Depends(g
 def get_market_regime(target_date: date = None, db: Session = Depends(get_db)):
     """识别市场阶段"""
     from app.services.market_environment_service import MarketEnvironmentService
-    
+
     if not target_date:
-        target_date = date.today()
-    
+        target_date = _latest_trade_date(db)
+
     svc = MarketEnvironmentService()
     regime = svc.get_market_regime(target_date, db)
-    
+
     return APIResponse(data=regime)
 
 
@@ -379,13 +394,13 @@ def find_similar_environments(
 ):
     """查找相似历史市场环境"""
     from app.services.market_environment_service import MarketEnvironmentService
-    
+
     if not target_date:
-        target_date = date.today()
-    
+        target_date = _latest_trade_date(db)
+
     svc = MarketEnvironmentService()
     similar = svc.find_similar_market_environments(strategy_id, target_date, db, top_k)
-    
+
     return APIResponse(data=similar)
 
 
@@ -395,7 +410,7 @@ def smart_match_experiences(strategy_id: int, db: Session = Depends(get_db)):
     from app.services.smart_experience_matcher import SmartExperienceMatcher
     
     matcher = SmartExperienceMatcher()
-    current_scenario = matcher.get_current_market_scenario(date.today(), db)
+    current_scenario = matcher.get_current_market_scenario(_latest_trade_date(db), db)
     matched = matcher.match_experiences_by_scenario(strategy_id, current_scenario, db)
     
     return APIResponse(data={

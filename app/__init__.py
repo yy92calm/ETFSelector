@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 
 from app.config import get_settings
 from app.db.database import init_db
-from app.routes import etf_routes, strategy_routes, backtest_routes, net_value_routes, auto_strategy_routes, portfolio_routes, config_routes
+from app.routes import etf_routes, strategy_routes, backtest_routes, net_value_routes, auto_strategy_routes, portfolio_routes, config_routes, chat_routes, workbench_routes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -79,10 +79,16 @@ app.include_router(net_value_routes.router)
 app.include_router(auto_strategy_routes.router)
 app.include_router(portfolio_routes.router)
 app.include_router(config_routes.router)
+app.include_router(chat_routes.router)
+app.include_router(workbench_routes.router)
 
 
 @app.get("/")
 def root():
+    # 优先返回工作台页面
+    workbench = static_dir / "workbench.html"
+    if workbench.exists():
+        return FileResponse(str(workbench))
     index = static_dir / "index.html"
     if index.exists():
         return FileResponse(str(index))

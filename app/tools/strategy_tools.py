@@ -1,0 +1,157 @@
+"""策略操作工具 - 策略CRUD与回测"""
+
+import logging
+from datetime import date, datetime
+from typing import Optional
+
+from sqlalchemy.orm import Session
+
+from app.tools.registry import tool
+
+logger = logging.getLogger(__name__)
+
+
+@tool(name="list_strategies", description="列出所有策略，包含名称、类型、状态、配置比例等信息")
+def list_strategies(db: Session) -> dict:
+    from app.models.strategy import Strategy
+
+    strategies = db.query(Strategy).order_by(Strategy.id.desc()).all()
+    data = [
+        {
+            "id": s.id,
+            "name": s.name,
+            "strategy_type": s.strategy_type,
+            "strategy_source": s.strategy_source,
+            "status": s.status,
+            "auto_strategy_status": s.auto_strategy_status,
+            "allocation_config": s.allocation_config,
+            "rebalance_freq": s.rebalance_freq,
+            "initial_capital": s.initial_capital,
+            "created_at": s.created_at.isoformat() if s.created_at else None,
+        }
+        for s in strategies
+    ]
+    return {"total": len(data), "strategies": data}
+
+
+@tool(name="create_strategy", description="创建新的ETF配置组合策略。allocation_config为ETF代码到比例的映射，比例总和必须为1.0")
+def create_strategy(
+    db: Session,
+    name: str,
+    allocation_config: dict,
+    rebalance_freq: str = "quarterly",
+    rebalance_threshold: float = 0.05,
+    initial_capital: int = 100000,
+    description: str = "",
+) -> dict:
+    from app.services.strategy_service import get_strategy_service
+
+    svc = get_strategy_service()
+    try:
+        strategy = svc.create_custom_strategy(
+            {
+                "name": name,
+                "allocation_config": allocation_config,
+                "rebalance_freq": rebalance_freq,
+                "rebalance_threshold": rebalance_threshold,
+                "initial_capital": initial_capital,
+                "description": description,
+            },
+            db,
+        )
+        return {
+            "success": True,
+            "strategy_id": strategy.id,
+            "name": strategy.name,
+            "allocation_config": strategy.allocation_config,
+            "message": f"策略 '{strategy.name}' 创建成功",
+        }
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
+
+@tool(name="update_allocation", description="修改指定策略的ETF配置比例。new_allocation的比例总和必须为1.0")
+def update_allocation(db: Session, strategy_id: int, new_allocation: dict) -> dict:
+    from app.models.strategy import Strategy
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": f"策略 {strategy_id} 不存在"}
+
+    total = sum(new_allocation.values())
+    if abs(total - 1.0) > 0.01:
+        return {"error": f"配置比例总和应为1.0，当前为 {total:.4f}"}
+
+    old_allocation = strategy.allocation_config
+    strategy.allocation_config = new_allocation
+    db.commit()
+
+    return {
+        "success": True,
+        "strategy_id": strategy_id,
+        "old_allocation": old_allocation,
+        "new_allocation": new_allocation,
+        "message": "配置比例已更新",
+    }
+
+
+@tool(name="run_backtest", description="对指定策略执行历史回测，返回收益率、最大回撤、夏普比率等指标")
+def run_backtest(db: Session, strategy_id: int, start_date: str, end_date: str) -> dict:
+    from app.models.strategy import Strategy
+    from app.services.backtest_service import get_backtest_engine
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": f"策略 {strategy_id} 不存在"}
+
+    try:
+        sd = datetime.strptime(start_date, "%Y-%m-%d").date()
+        ed = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except ValueError:
+        return {"error": "日期格式错误，请使用 YYYY-MM-DD"}
+
+    engine = get_backtest_engine()
+    try:
+        result = engine.run(strategy, sd, ed, float(strategy.initial_capital), db)
+        # 精简返回（去掉逐日数据，避免过长）
+        return {
+            "strategy_id": strategy_id,
+            "strategy_name": result.get("strategy_name"),
+            "period": f"{start_date}~{end_date}",
+            "initial_capital": result["initial_capital"],
+            "final_asset": result["final_asset"],
+            "total_return_pct": result["total_return_pct"],
+            "max_drawdown_pct": result["max_drawdown_pct"],
+            "sharpe_ratio": result.get("sharpe_ratio"),
+            "rebalance_count": result.get("rebalance_count"),
+            "win_rate": result.get("win_rate"),
+            "time_period_returns": result.get("time_period_returns"),
+        }
+    except ValueError as e:
+        return {"error": str(e)}
+
+
+@tool(name="get_strategy_detail", description="获取单个策略的完整详情，包含最近AI分析结果")
+def get_strategy_detail(db: Session, strategy_id: int) -> dict:
+    from app.models.strategy import Strategy
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": f"策略 {strategy_id} 不存在"}
+
+    return {
+        "id": strategy.id,
+        "name": strategy.name,
+        "description": strategy.description,
+        "strategy_type": strategy.strategy_type,
+        "strategy_source": strategy.strategy_source,
+        "status": strategy.status,
+        "auto_strategy_status": strategy.auto_strategy_status,
+        "allocation_config": strategy.allocation_config,
+        "rebalance_freq": strategy.rebalance_freq,
+        "rebalance_threshold": strategy.rebalance_threshold,
+        "initial_capital": strategy.initial_capital,
+        "last_auto_analysis_date": strategy.last_auto_analysis_date.isoformat() if strategy.last_auto_analysis_date else None,
+        "last_analysis_result": strategy.last_analysis_result,
+        "enable_memory": strategy.enable_memory,
+    }

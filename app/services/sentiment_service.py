@@ -64,7 +64,7 @@ class SentimentService:
             )
     
     def collect_daily_sentiment(self, collect_date: date, db: Session) -> Dict:
-        """采集指定日期的舆情数据"""
+        """采集指定日期的舆情数据（含去重）"""
         result = {
             "news_count": 0,
             "sentiment_index": None,
@@ -74,18 +74,33 @@ class SentimentService:
         try:
             news_list = self._fetch_financial_news()
             result["news_count"] = len(news_list)
+
+            # 去重：查询当天已有标题，避免重复入库
+            existing_titles = set(
+                r[0] for r in db.query(SentimentData.title)
+                .filter(SentimentData.data_date == collect_date)
+                .all()
+                if r[0]
+            )
             
+            added_count = 0
             for news_item in news_list:
+                title = news_item.get("title", "").strip()
+                if not title or title in existing_titles:
+                    continue
+                existing_titles.add(title)
+
                 sentiment_data = SentimentData(
                     data_date=collect_date,
                     source=news_item.get("source", "eastmoney"),
                     data_type="news",
-                    title=news_item.get("title"),
+                    title=title,
                     content=news_item.get("content"),
                     publish_time=news_item.get("publish_time"),
                 )
                 db.add(sentiment_data)
                 db.flush()
+                added_count += 1
                 
                 analysis = self._analyze_sentiment(news_item, db)
                 if analysis:
@@ -97,7 +112,7 @@ class SentimentService:
                         sentiment_data.key_factors = analysis.get("key_factors")
             
             db.commit()
-            logger.info(f"舆情采集完成: {result['news_count']}条")
+            logger.info(f"舆情采集完成: 获取{result['news_count']}条, 新增{added_count}条(去重后)")
 
             # 回填：对当天已有的未评分舆情进行关键词评分（兼容历史数据）
             unscored = db.query(SentimentData).filter(
@@ -180,7 +195,14 @@ class SentimentService:
             data = resp.json()
             items = data.get("data", [])[:10]
             if items:
-                lines = [f"{i.get('secuabbr','')}({i.get('securityCode','')})" for i in items]
+                # API字段: sc="SH688825", rk=排名, rc=排名变化
+                lines = []
+                for i in items:
+                    code = i.get('sc', '')
+                    rank = i.get('rk', '')
+                    rc = i.get('rc', 0)
+                    trend = '↑' if rc > 0 else ('↓' if rc < 0 else '→')
+                    lines.append(f"{code}(第{rank}名{trend})")
                 news_list.append({
                     "source": "eastmoney_hot",
                     "title": "今日热门股排行榜",
