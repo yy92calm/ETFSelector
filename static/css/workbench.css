@@ -1532,3 +1532,100 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     .ov-grid-quant { grid-template-columns: 1fr; }
     .movers-body { grid-template-columns: 1fr 1fr; }
 }
+
+/* ===== 任务页 ===== */
+.tasks-layout {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    align-items: start;
+}
+@media (max-width: 1100px) { .tasks-layout { grid-template-columns: 1fr; } }
+
+.task-stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 12px;
+}
+.task-stat-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px;
+    transition: border-color 0.15s ease, transform 0.15s ease;
+}
+.task-stat-card:hover { border-color: var(--accent-dim); transform: translateY(-2px); }
+.task-stat-name {
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 10px;
+    color: var(--text-primary);
+}
+.task-stat-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 4px 0;
+    font-size: 12px;
+}
+.task-stat-label { color: var(--text-secondary); }
+.task-stat-val { font-weight: 600; font-variant-numeric: tabular-nums; }
+
+.tasks-list { max-height: 600px; overflow-y: auto; }
+.task-log-item {
+    padding: 12px 10px;
+    border-bottom: 1px solid var(--border);
+    transition: background 0.12s ease;
+}
+.task-log-item:last-child { border-bottom: none; }
+.task-log-item:hover { background: var(--bg-hover); }
+.task-log-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.task-log-icon {
+    font-size: 12px;
+    font-weight: 700;
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--bg-primary);
+    flex-shrink: 0;
+}
+.task-log-name {
+    font-size: 13px;
+    font-weight: 600;
+    flex: 1;
+}
+.task-log-duration {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+}
+.task-log-time {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.task-log-summary {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: var(--bg-primary);
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    word-break: break-all;
+}
+.task-log-error {
+    margin-top: 6px;
+    padding: 6px 8px;
+    background: rgba(220, 38, 38, 0.08);
+    border-left: 3px solid var(--danger);
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--danger);
+}

@@ -44,6 +44,7 @@ const Workbench = {
         if (view === 'market') { this.initMarketToolbar(); this.loadMarket(); }
         if (view === 'strategies') { this.loadStrategies(); this.loadStrategiesExtras(); }
         if (view === 'sentiment') this.loadSentimentView();
+        if (view === 'tasks') this.loadTasksView();
     },
 
     async loadOverview() {
@@ -676,6 +677,98 @@ const Workbench = {
         } catch (e) {
             if (sumEl) sumEl.innerHTML = '<div class="empty-hint" style="color:var(--danger)">加载失败</div>';
             if (listEl) listEl.innerHTML = '';
+        }
+    },
+
+    async loadTasksView() {
+        const statsEl = document.getElementById('tasks-stats');
+        const historyEl = document.getElementById('tasks-history');
+        if (!statsEl || !historyEl) return;
+
+        statsEl.innerHTML = '<div class="empty-hint">加载中...</div>';
+        historyEl.innerHTML = '<div class="empty-hint">加载中...</div>';
+
+        try {
+            const [statsResp, historyResp] = await Promise.all([
+                fetch('/api/tasks/stats?days=7').then(r => r.json()).catch(() => ({code: 500})),
+                fetch('/api/tasks/history?days=7&limit=50').then(r => r.json()).catch(() => ({code: 500})),
+            ]);
+
+            const statsData = statsResp.code === 200 ? statsResp.data : null;
+            const historyData = historyResp.code === 200 ? historyResp.data : null;
+
+            // 渲染统计
+            if (statsData && statsData.stats) {
+                const subEl = document.getElementById('tasks-stats-sub');
+                if (subEl) subEl.textContent = `近${statsData.days}天 · ${statsData.total_executions}次执行`;
+
+                const taskNames = {
+                    'daily_pipeline': '每日管道',
+                    'weekly_review': '每周复盘',
+                    'auto_fetch_quotes': '行情补全'
+                };
+
+                statsEl.innerHTML = `<div class="task-stats-grid">
+                    ${Object.entries(statsData.stats).map(([name, s]) => `
+                        <div class="task-stat-card">
+                            <div class="task-stat-name">${taskNames[name] || name}</div>
+                            <div class="task-stat-row">
+                                <span class="task-stat-label">总计</span>
+                                <span class="task-stat-val">${s.total}</span>
+                            </div>
+                            <div class="task-stat-row">
+                                <span class="task-stat-label">成功</span>
+                                <span class="task-stat-val text-up">${s.success}</span>
+                            </div>
+                            <div class="task-stat-row">
+                                <span class="task-stat-label">失败</span>
+                                <span class="task-stat-val text-down">${s.failed}</span>
+                            </div>
+                            <div class="task-stat-row">
+                                <span class="task-stat-label">平均耗时</span>
+                                <span class="task-stat-val">${s.avg_duration}s</span>
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>`;
+            } else {
+                statsEl.innerHTML = '<div class="empty-hint">暂无统计数据</div>';
+            }
+
+            // 渲染历史
+            if (historyData && historyData.logs && historyData.logs.length > 0) {
+                const subEl = document.getElementById('tasks-history-sub');
+                if (subEl) subEl.textContent = `${historyData.total}条记录`;
+
+                const taskNames = {
+                    'daily_pipeline': '每日管道',
+                    'weekly_review': '每周复盘',
+                    'auto_fetch_quotes': '行情补全'
+                };
+
+                historyEl.innerHTML = historyData.logs.map(log => {
+                    const statusColor = log.status === 'success' ? 'var(--success)' : log.status === 'failed' ? 'var(--danger)' : 'var(--warning)';
+                    const statusIcon = log.status === 'success' ? '✓' : log.status === 'failed' ? '✕' : '…';
+                    const time = log.started_at ? new Date(log.started_at).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+                    const duration = log.duration_seconds ? `${log.duration_seconds.toFixed(1)}s` : '-';
+
+                    return `<div class="task-log-item">
+                        <div class="task-log-head">
+                            <span class="task-log-icon" style="color:${statusColor}">${statusIcon}</span>
+                            <span class="task-log-name">${taskNames[log.task_name] || log.task_name}</span>
+                            <span class="task-log-duration">${duration}</span>
+                            <span class="task-log-time">${time}</span>
+                        </div>
+                        ${log.result_summary ? `<div class="task-log-summary">${this.esc(JSON.stringify(log.result_summary))}</div>` : ''}
+                        ${log.error_message ? `<div class="task-log-error">${this.esc(log.error_message)}</div>` : ''}
+                    </div>`;
+                }).join('');
+            } else {
+                historyEl.innerHTML = '<div class="empty-hint">暂无执行记录</div>';
+            }
+        } catch (e) {
+            statsEl.innerHTML = '<div class="empty-hint" style="color:var(--danger)">加载失败</div>';
+            historyEl.innerHTML = '';
         }
     },
 

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ETF智能工作台</title>
-    <link rel="stylesheet" href="/static/css/workbench.css?v=14">
+    <link rel="stylesheet" href="/static/css/workbench.css?v=15">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
 </head>
 <body>
@@ -33,6 +33,7 @@
             <button class="view-tab" data-view="market">行情</button>
             <button class="view-tab" data-view="strategies">策略</button>
             <button class="view-tab" data-view="sentiment">舆情</button>
+            <button class="view-tab" data-view="tasks">任务</button>
         </div>
 
         <!-- 总览视图 -->
@@ -145,6 +146,24 @@
                 </div>
             </div>
         </div>
+
+        <!-- 任务视图 -->
+        <div id="view-tasks" class="view-panel" style="display:none">
+            <div class="tasks-layout">
+                <div class="panel">
+                    <div class="panel-header">📊 任务统计 <span class="panel-sub" id="tasks-stats-sub"></span></div>
+                    <div class="panel-body" id="tasks-stats">
+                        <div class="empty-hint">加载中...</div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">📋 执行历史 <span class="panel-sub" id="tasks-history-sub"></span></div>
+                    <div class="panel-body tasks-list" id="tasks-history">
+                        <div class="empty-hint">加载中...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
     </main>
     <aside class="wb-sidebar" id="wb-sidebar">
         <div class="sidebar-resize-handle" id="sidebar-resize"></div>
@@ -180,8 +199,8 @@
     </div>
 </footer>
 
-<script src="/static/js/workbench.js?v=14"></script>
-<script src="/static/js/chat.js?v=14"></script>
+<script src="/static/js/workbench.js?v=15"></script>
+<script src="/static/js/chat.js?v=15"></script>
 <script>
 // 更新时间
 function updateTime() {

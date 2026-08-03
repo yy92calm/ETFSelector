@@ -70,6 +70,120 @@ def create_strategy(
         return {"success": False, "error": str(e)}
 
 
+@tool(name="delete_strategy", description="删除指定策略及其所有关联数据（持仓、交易记录、快照、经验）。不可恢复，谨慎操作。")
+def delete_strategy(db: Session, strategy_id: int) -> dict:
+    from app.models.strategy import Strategy
+    from app.models.portfolio import PortfolioSnapshot, TradeRecord, Holding
+    from app.models.auto_strategy_log import AutoStrategyLog
+    from app.models.experience import Experience
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": f"策略 {strategy_id} 不存在"}
+
+    name = strategy.name
+    db.query(PortfolioSnapshot).filter(PortfolioSnapshot.strategy_id == strategy_id).delete()
+    db.query(TradeRecord).filter(TradeRecord.strategy_id == strategy_id).delete()
+    db.query(Holding).filter(Holding.strategy_id == strategy_id).delete()
+    db.query(AutoStrategyLog).filter(AutoStrategyLog.strategy_id == strategy_id).delete()
+    db.query(Experience).filter(Experience.strategy_id == strategy_id).delete()
+    db.delete(strategy)
+    db.commit()
+
+    return {
+        "success": True,
+        "strategy_id": strategy_id,
+        "name": name,
+        "message": f"策略 '{name}'(ID={strategy_id}) 已删除",
+    }
+
+
+@tool(name="add_etf_to_strategy", description="向指定策略添加一个ETF。新ETF会获得指定权重，其余ETF权重等比缩减以保持总和为1.0。持仓上限5只。")
+def add_etf_to_strategy(db: Session, strategy_id: int, etf_code: str, weight: float = 0.2) -> dict:
+    from app.models.strategy import Strategy
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": f"策略 {strategy_id} 不存在"}
+
+    alloc = dict(strategy.allocation_config or {})
+    if etf_code in alloc:
+        return {"error": f"ETF {etf_code} 已在策略中，当前权重 {alloc[etf_code]}"}
+
+    if len(alloc) >= 5:
+        return {"error": f"策略持仓已达上限5只，需先移除其他ETF"}
+
+    if weight <= 0 or weight >= 1:
+        return {"error": f"权重必须在0到1之间，当前 {weight}"}
+
+    remaining_weight = 1.0 - weight
+    old_total = sum(alloc.values())
+    if old_total > 0:
+        alloc = {k: round(v * remaining_weight / old_total, 4) for k, v in alloc.items()}
+    alloc[etf_code] = round(weight, 4)
+
+    total = sum(alloc.values())
+    if abs(total - 1.0) > 0.01:
+        diff = 1.0 - total
+        first_key = next(iter(alloc))
+        alloc[first_key] = round(alloc[first_key] + diff, 4)
+
+    old_alloc = dict(strategy.allocation_config or {})
+    strategy.allocation_config = alloc
+    db.commit()
+
+    return {
+        "success": True,
+        "strategy_id": strategy_id,
+        "etf_code": etf_code,
+        "weight": alloc[etf_code],
+        "old_allocation": old_alloc,
+        "new_allocation": alloc,
+        "holdings_count": len(alloc),
+        "message": f"已添加 {etf_code}（权重 {alloc[etf_code]*100:.1f}%），当前持仓 {len(alloc)} 只",
+    }
+
+
+@tool(name="remove_etf_from_strategy", description="从指定策略移除一个ETF。其权重按比例分配给剩余ETF。至少保留1只。")
+def remove_etf_from_strategy(db: Session, strategy_id: int, etf_code: str) -> dict:
+    from app.models.strategy import Strategy
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": f"策略 {strategy_id} 不存在"}
+
+    alloc = dict(strategy.allocation_config or {})
+    if etf_code not in alloc:
+        return {"error": f"ETF {etf_code} 不在策略中"}
+
+    if len(alloc) <= 1:
+        return {"error": "策略至少需要保留1只ETF"}
+
+    removed_weight = alloc.pop(etf_code)
+    remaining_total = sum(alloc.values())
+    if remaining_total > 0:
+        alloc = {k: round(v / remaining_total, 4) for k, v in alloc.items()}
+        total = sum(alloc.values())
+        if abs(total - 1.0) > 0.01:
+            diff = 1.0 - total
+            first_key = next(iter(alloc))
+            alloc[first_key] = round(alloc[first_key] + diff, 4)
+
+    old_alloc = dict(strategy.allocation_config or {})
+    strategy.allocation_config = alloc
+    db.commit()
+
+    return {
+        "success": True,
+        "strategy_id": strategy_id,
+        "removed_etf": etf_code,
+        "removed_weight": removed_weight,
+        "new_allocation": alloc,
+        "holdings_count": len(alloc),
+        "message": f"已移除 {etf_code}（原权重 {removed_weight*100:.1f}%），当前持仓 {len(alloc)} 只",
+    }
+
+
 @tool(name="update_allocation", description="修改指定策略的ETF配置比例。new_allocation的比例总和必须为1.0")
 def update_allocation(db: Session, strategy_id: int, new_allocation: dict) -> dict:
     from app.models.strategy import Strategy
@@ -113,7 +227,6 @@ def run_backtest(db: Session, strategy_id: int, start_date: str, end_date: str) 
     engine = get_backtest_engine()
     try:
         result = engine.run(strategy, sd, ed, float(strategy.initial_capital), db)
-        # 精简返回（去掉逐日数据，避免过长）
         return {
             "strategy_id": strategy_id,
             "strategy_name": result.get("strategy_name"),

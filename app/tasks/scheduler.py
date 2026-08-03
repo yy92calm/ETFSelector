@@ -12,6 +12,7 @@ from datetime import date
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from app.config import get_settings
+from app.tasks.task_logger import log_task_execution
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -48,6 +49,7 @@ AUTONOMOUS_INSTRUCTION = """你是ETF量化工作台的自主决策大脑，请�
 """
 
 
+@log_task_execution("daily_pipeline")
 def _job_daily_pipeline():
     """
     每日自驱动串行管道（LLM驱动 + fallback）
@@ -285,6 +287,7 @@ def _step_auto_pipeline_fallback(db):
         logger.error(f"[fallback] AI自驱动管道异常: {e}")
 
 
+@log_task_execution("weekly_review")
 def _job_weekly_review():
     """每周复盘 - 每周日21:00"""
     from app.db.database import SessionLocal
@@ -309,6 +312,7 @@ def _job_weekly_review():
         db.close()
 
 
+@log_task_execution("auto_fetch_quotes")
 def _job_auto_fetch_quotes():
     """
     LLM自动行情补全 - 工作日18:30（盘后数据就绪）

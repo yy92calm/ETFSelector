@@ -34,6 +34,7 @@ def init_db():
     )
     from app.models import chat  # noqa: F401
     from app.models.etf import ETFDailyIndicator  # noqa: F401
+    from app.models.task_log import TaskExecutionLog  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 添加新字段（兼容旧数据库）
