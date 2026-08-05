@@ -202,10 +202,18 @@ def _step_rotation_review():
     from app.db.database import SessionLocal
     from app.services.rotation_service import get_rotation_service
     from app.models.strategy import Strategy
+    from app.models.etf import ETFDailyIndicator
+    from sqlalchemy import func
 
     logger.info("===== [阶段3] 轮动复盘 =====")
     db = SessionLocal()
     try:
+        # 使用指标表中最新的交易日（即行情数据实际到达的日期），而非date.today()
+        latest_indicator_date = db.query(func.max(ETFDailyIndicator.trade_date)).scalar()
+        if not latest_indicator_date:
+            logger.info("无量化指标数据，跳过轮动")
+            return
+
         strategies = db.query(Strategy).filter(
             Strategy.strategy_source == "auto_generated",
             Strategy.auto_strategy_status == "running",
@@ -215,9 +223,10 @@ def _step_rotation_review():
             logger.info("无活跃自动策略，跳过轮动")
             return
 
+        logger.info(f"轮动基准日: {latest_indicator_date}")
         svc = get_rotation_service()
         for strategy in strategies:
-            plan = svc.evaluate_rotation(strategy.id, date.today(), db)
+            plan = svc.evaluate_rotation(strategy.id, latest_indicator_date, db)
             action = plan.get("action")
 
             if action == "rotate":
