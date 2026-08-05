@@ -850,6 +850,8 @@ const Workbench = {
     _mktSort: 'composite_score',
     _mktDesc: true,
     _mktQuery: '',
+    _mktPage: 1,
+    _mktPageSize: 50,
 
     async loadMarket() {
         const el = document.getElementById('market-content');
@@ -860,38 +862,53 @@ const Workbench = {
             const params = new URLSearchParams({
                 sort_by: this._mktSort,
                 desc: this._mktDesc,
-                limit: 80,
                 q: this._mktQuery,
+                page: this._mktPage,
+                page_size: this._mktPageSize,
             });
             const resp = await fetch(`/api/workbench/market-indicators?${params}`);
             const data = await resp.json();
             if (data.code !== 200) { el.innerHTML = '<div>加载失败</div>'; return; }
 
             const rows = data.data.rows || [];
+            const total = data.data.total || 0;
             const dateEl = document.getElementById('mkt-date');
             if (dateEl) dateEl.textContent = data.data.date || '';
 
-            if (rows.length === 0) { el.innerHTML = '<div class="empty-hint">无匹配数据</div>'; return; }
+            this.renderMarketTable(el, rows);
+            this.renderMarketPagination(total);
 
-            const maxScore = Math.max(...rows.map(r => r.composite_score), 1);
+            if (rows.length === 0) { el.innerHTML = '<div class="empty-hint">无匹配数据</div>'; }
+        } catch (e) {
+            el.innerHTML = '<div style="color:var(--danger)">请求失败</div>';
+        }
+    },
 
-            el.innerHTML = `
-                <table class="mkt-table">
-                    <thead><tr>
-                        <th>#</th>
-                        <th>ETF</th>
-                        <th class="num">最新价</th>
-                        <th class="num">今日</th>
-                        <th class="num">5日动量</th>
-                        <th class="num">20日动量</th>
-                        <th class="num">趋势</th>
-                        <th class="num">波动率</th>
-                        <th class="num">量比</th>
-                        <th class="score-col">综合得分</th>
-                    </tr></thead>
-                    <tbody>${rows.map((r, i) => `
-                        <tr class="mkt-row ${i < 3 ? 'mkt-top' : ''}" onclick="Workbench.toggleEtfDetail('${r.etf_code}', this)">
-                            <td class="mkt-rank">${r.rank || i + 1}</td>
+    renderMarketTable(el, rows) {
+        if (rows.length === 0) return;
+        const maxScore = Math.max(...rows.map(r => r.composite_score), 1);
+
+        const sortArrow = (key) => this._mktSort === key
+            ? `<span class="sort-arrow">${this._mktDesc ? '▼' : '▲'}</span>` : '';
+        const thSortable = (key, label) => `<th class="num sortable" data-sort="${key}" onclick="Workbench.sortMarket('${key}')">${label}${sortArrow(key)}</th>`;
+
+        el.innerHTML = `
+            <table class="mkt-table">
+                <thead><tr>
+                    <th>#</th>
+                    <th class="sortable" data-sort="etf_name" onclick="Workbench.sortMarket('etf_name')">ETF${sortArrow('etf_name')}</th>
+                    ${thSortable('close_price', '最新价')}
+                    ${thSortable('change_pct', '今日')}
+                    ${thSortable('momentum_5d', '5日动量')}
+                    ${thSortable('momentum_20d', '20日动量')}
+                    ${thSortable('trend_strength', '趋势')}
+                    ${thSortable('volatility_20d', '波动率')}
+                    ${thSortable('vol_ratio', '量比')}
+                    ${thSortable('composite_score', '综合得分')}
+                </tr></thead>
+                <tbody>${rows.map((r, i) => `
+                    <tr class="mkt-row ${i < 3 ? 'mkt-top' : ''}" onclick="Workbench.toggleEtfDetail('${r.etf_code}', this)">
+                        <td class="mkt-rank">${r.rank || ((this._mktPage - 1) * this._mktPageSize + i + 1)}</td>
                             <td class="mkt-etf">
                                 <span class="mkt-name">${this.esc(r.etf_name || '-')}</span>
                                 <span class="mkt-code">${r.etf_code}</span>
@@ -933,9 +950,69 @@ const Workbench = {
                     `).join('')}</tbody>
                 </table>
             `;
-        } catch (e) {
-            el.innerHTML = '<div style="color:var(--danger)">请求失败</div>';
+    },
+
+    renderMarketPagination(total) {
+        const pag = document.getElementById('mkt-pagination');
+        if (!pag) return;
+        if (total <= this._mktPageSize) {
+            pag.innerHTML = '';
+            return;
         }
+        const totalPages = Math.max(1, Math.ceil(total / this._mktPageSize));
+        const cur = Math.min(this._mktPage, totalPages);
+        const btn = (label, target, cls, disabled) => `<button class="pg-btn ${cls}" ${disabled ? 'disabled' : ''} onclick="Workbench.goMarketPage(${target})">${label}</button>`;
+        const pageBtns = [];
+        const start = Math.max(1, cur - 2);
+        const end = Math.min(totalPages, start + 4);
+        for (let p = start; p <= end; p++) {
+            pageBtns.push(`<button class="pg-btn ${p === cur ? 'active' : ''}" onclick="Workbench.goMarketPage(${p})">${p}</button>`);
+        }
+        pag.innerHTML = `
+            <span class="pg-info">共 ${total} 条 · 第 ${cur}/${totalPages} 页</span>
+            <div class="pg-btns">
+                ${btn('‹', cur - 1, '', cur <= 1)}
+                ${pageBtns.join('')}
+                ${btn('›', cur + 1, '', cur >= totalPages)}
+            </div>
+            <select class="pg-size" onchange="Workbench.setMarketPageSize(this.value)">
+                <option value="20" ${this._mktPageSize === 20 ? 'selected' : ''}>20/页</option>
+                <option value="50" ${this._mktPageSize === 50 ? 'selected' : ''}>50/页</option>
+                <option value="100" ${this._mktPageSize === 100 ? 'selected' : ''}>100/页</option>
+            </select>
+        `;
+    },
+
+    goMarketPage(p) {
+        this._mktPage = Math.max(1, p);
+        this.loadMarket();
+    },
+
+    setMarketPageSize(size) {
+        this._mktPageSize = parseInt(size, 10);
+        this._mktPage = 1;
+        this.loadMarket();
+    },
+
+    sortMarket(key) {
+        if (this._mktSort === key) {
+            this._mktDesc = !this._mktDesc;
+        } else {
+            this._mktSort = key;
+            this._mktDesc = key === 'etf_name' ? false : true;
+        }
+        this._mktPage = 1;
+        this.syncMktSortUI(key);
+        this.loadMarket();
+    },
+
+    syncMktSortUI(key) {
+        document.querySelectorAll('.mkt-sort').forEach(b => {
+            const isActive = b.dataset.sort === this._mktSort;
+            b.classList.toggle('active', isActive);
+            b.textContent = b.textContent.replace(/ [↑↓]$/, '');
+            if (isActive) b.textContent += this._mktDesc ? ' ↓' : ' ↑';
+        });
     },
 
     trendDots(strength) {
@@ -968,6 +1045,7 @@ const Workbench = {
                 clearTimeout(timer);
                 timer = setTimeout(() => {
                     this._mktQuery = searchEl.value.trim();
+                    this._mktPage = 1;
                     this.loadMarket();
                 }, 400);
             });
@@ -984,9 +1062,8 @@ const Workbench = {
                     this._mktSort = sort;
                     this._mktDesc = true;
                 }
-                document.querySelectorAll('.mkt-sort').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                btn.textContent = btn.textContent.replace(/ [↑↓]$/, '') + (this._mktDesc ? ' ↓' : ' ↑');
+                this._mktPage = 1;
+                this.syncMktSortUI(sort);
                 this.loadMarket();
             });
         });

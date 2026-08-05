@@ -1285,6 +1285,78 @@ body {
     z-index: 1;
 }
 .mkt-table th.num, .mkt-table td.num { text-align: right; }
+
+/* 可排序表头 */
+.mkt-table th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s, background 0.15s;
+}
+.mkt-table th.sortable:hover {
+    color: var(--accent);
+    background: var(--bg-hover);
+}
+.mkt-table th.sortable .sort-arrow {
+    margin-left: 4px;
+    font-size: 9px;
+    color: var(--accent);
+}
+
+/* 分页控件 */
+.mkt-pagination {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+}
+.pg-info {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.pg-btns {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.pg-btn {
+    min-width: 28px;
+    height: 28px;
+    padding: 0 6px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.pg-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+.pg-btn.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+}
+.pg-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+.pg-size {
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-primary);
+    font-size: 12px;
+    cursor: pointer;
+    outline: none;
+}
+.pg-size:hover { border-color: var(--accent); }
 .mkt-table td {
     padding: 8px 10px;
     border-bottom: 1px solid var(--border);

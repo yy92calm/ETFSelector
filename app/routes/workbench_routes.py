@@ -228,17 +228,30 @@ def get_market_indicators(
     desc: bool = True,
     limit: int = 50,
     q: str = "",
+    page: int = 1,
+    page_size: int = 50,
     db: Session = Depends(get_db),
 ):
-    """行情+量化指标联合查询（行情页用）"""
+    """行情+量化指标联合查询（行情页用），支持分页与跨表排序"""
     from app.models.etf import ETFBasic, ETFQuotation, ETFDailyIndicator
     from app.utils.trading_calendar import get_display_date
-    from sqlalchemy import func
 
     # 使用交易日历获取显示日期（交易时段显示T-1，闭市后显示T日）
     display_date = get_display_date()
     if not display_date:
-        return APIResponse(data={"rows": [], "date": None})
+        return APIResponse(data={"rows": [], "date": None, "total": 0, "page": page, "page_size": page_size})
+
+    _SORT_COLS = {
+        "composite_score": ETFDailyIndicator.composite_score,
+        "momentum_5d": ETFDailyIndicator.momentum_5d,
+        "momentum_20d": ETFDailyIndicator.momentum_20d,
+        "volatility_20d": ETFDailyIndicator.volatility_20d,
+        "vol_ratio": ETFDailyIndicator.vol_ratio,
+        "trend_strength": ETFDailyIndicator.trend_strength,
+        "close_price": ETFQuotation.close_price,
+        "change_pct": ETFQuotation.change_pct,
+        "etf_name": ETFBasic.etf_name,
+    }
 
     query = (
         db.query(ETFDailyIndicator, ETFQuotation, ETFBasic)
@@ -253,11 +266,15 @@ def get_market_indicators(
             (ETFDailyIndicator.etf_code.contains(q)) | (ETFBasic.etf_name.contains(q))
         )
 
-    sort_col = getattr(ETFDailyIndicator, sort_by, ETFDailyIndicator.composite_score)
+    total = query.count()
+
+    sort_col = _SORT_COLS.get(sort_by, ETFDailyIndicator.composite_score)
     query = query.order_by(sort_col.desc() if desc else sort_col.asc())
 
     rows = []
-    for ind, quote, basic in query.limit(limit).all():
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 200)
+    for ind, quote, basic in query.offset((page - 1) * page_size).limit(page_size).all():
         rows.append({
             "etf_code": ind.etf_code,
             "etf_name": basic.etf_name if basic else "",
@@ -276,4 +293,10 @@ def get_market_indicators(
             "ma20": ind.ma20,
         })
 
-    return APIResponse(data={"rows": rows, "date": display_date.isoformat()})
+    return APIResponse(data={
+        "rows": rows,
+        "date": display_date.isoformat(),
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+    })
