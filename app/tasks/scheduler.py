@@ -58,22 +58,63 @@ def _job_daily_pipeline():
     阶段2: 舆情采集 + 政策评估 + 资金流向（数据采集层）
     阶段3: 全市场量化扫描 + 轮动复盘（纯量化）
     阶段4: LLM自主决策（感知→推理→行动），失败时降级为原有管道
+
+    支持断点续跑：每阶段完成后写入检查点，中断后从失败阶段续跑。
     """
+    from app.db.database import SessionLocal
+    from app.services.pipeline_checkpoint_service import get_pipeline_checkpoint_service
+    from datetime import date
+
+    _cp_svc = get_pipeline_checkpoint_service()
+    _run_date = date.today()
+    _stages = ["net_value", "rebalance", "sentiment", "policy_flow",
+               "market_scan", "rotation_review", "autonomous"]
+
+    db = SessionLocal()
+    try:
+        done = _cp_svc.get_done_stages("daily_pipeline", _run_date, db)
+    finally:
+        db.close()
+
+    def _run_stage(stage: str, fn):
+        """执行阶段，成功标记检查点；失败记录并跳过（不中断整个管道）"""
+        if stage in done:
+            logger.info(f"[Checkpoint] 阶段 {stage} 已完成，跳过")
+            return
+        db_local = SessionLocal()
+        try:
+            fn()
+            _cp_svc.mark_stage_done("daily_pipeline", _run_date, stage, db_local)
+        except Exception as e:
+            logger.error(f"[Checkpoint] 阶段 {stage} 失败: {e}")
+            try:
+                _cp_svc.mark_failed("daily_pipeline", _run_date, stage, str(e), db_local)
+            finally:
+                db_local.close()
+            return
+        finally:
+            db_local.close()
+
     # ============================== 阶段1 ==============================
-    _step_update_net_values()
-    _step_run_strategies()
+    _run_stage("net_value", _step_update_net_values)
+    _run_stage("rebalance", _step_run_strategies)
 
     # ============================== 阶段2 ==============================
-    _step_collect_sentiments()
-    _step_policy_impact()
-    _step_capital_flow()
+    _run_stage("sentiment", _step_collect_sentiments)
+    _run_stage("policy_flow", lambda: (_step_policy_impact(), _step_capital_flow()))
 
     # ============================== 阶段3 ==============================
-    _step_market_scan()
-    _step_rotation_review()
+    _run_stage("market_scan", _step_market_scan)
+    _run_stage("rotation_review", _step_rotation_review)
 
     # ============================== 阶段4 ==============================
-    _step_autonomous_decision()
+    _run_stage("autonomous", _step_autonomous_decision)
+
+    db_local = SessionLocal()
+    try:
+        _cp_svc.mark_completed("daily_pipeline", _run_date, db_local)
+    finally:
+        db_local.close()
 
 
 def _step_update_net_values():
@@ -181,9 +222,10 @@ def _step_capital_flow():
 
 
 def _step_market_scan():
-    """STEP 6: 全市场量化指标扫描（纯计算）"""
+    """STEP 6: 全市场量化指标扫描（纯计算）+ 因子表现回填"""
     from app.db.database import SessionLocal
     from app.services.market_scanner_service import get_market_scanner_service
+    from app.services.factor_performance_service import get_factor_performance_service
 
     logger.info("===== [阶段3] 全市场量化扫描 =====")
     db = SessionLocal()
@@ -191,6 +233,20 @@ def _step_market_scan():
         svc = get_market_scanner_service()
         result = svc.scan_all(date.today(), db)
         logger.info(f"量化扫描完成: {result}")
+        # 回填因子未来收益，供后续IC计算
+        try:
+            fp_svc = get_factor_performance_service()
+            # 首次上线：从已有指标重建因子记录
+            from app.models.factor_performance import FactorPerformance
+            has_factor = db.query(FactorPerformance).first()
+            if not has_factor:
+                rebuilt = fp_svc.backfill_from_indicators(db)
+                logger.info(f"因子记录首次重建: {rebuilt}条")
+            filled = fp_svc.backfill_forward_returns(db)
+            if filled:
+                logger.info(f"因子收益回填完成: {filled}条")
+        except Exception as e:
+            logger.error(f"因子收益回填异常: {e}")
     except Exception as e:
         logger.error(f"量化扫描异常: {e}")
     finally:

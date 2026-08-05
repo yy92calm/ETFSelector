@@ -998,6 +998,55 @@ body {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
+.strat-hold-date {
+    font-size: 12px;
+    color: var(--accent);
+    background: rgba(2, 132, 199, 0.08);
+    padding: 2px 8px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+.bt-actual {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 18px;
+}
+.bt-actual-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 10px;
+}
+.bt-actual-body {
+    display: block;
+}
+.bt-actual-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+    gap: 8px;
+    margin-bottom: 12px;
+}
+.bt-actual-chart {
+    width: 100%;
+    margin-top: 4px;
+}
+.bt-actual-stat {
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.bt-actual-stat label {
+    display: block;
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 2px;
+}
+.bt-actual-stat span {
+    color: var(--text-primary);
+    font-weight: 600;
+}
 .bt-inline {
     border-top: 1px solid var(--border);
     padding: 20px 18px;

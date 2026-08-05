@@ -36,6 +36,15 @@ class RotationService:
             if c["etf_code"] not in current_holdings
         ][:MAX_HOLDINGS * 2]
 
+        # 失败模式规避：剔除重复失败的候选标的
+        from app.services.failure_mode_service import get_failure_mode_service
+        banned = get_failure_mode_service().get_banned_codes(db)
+        if banned:
+            excluded = [c for c in enter_candidates if c["etf_code"] in banned]
+            if excluded:
+                logger.info(f"[Rotation] 规避重复失败候选: {[c['etf_code'] for c in excluded]}")
+            enter_candidates = [c for c in enter_candidates if c["etf_code"] not in banned]
+
         if not holding_scores:
             return {"action": "skip", "reason": "持仓ETF无指标数据"}
 

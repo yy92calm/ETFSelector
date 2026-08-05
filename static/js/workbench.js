@@ -1013,10 +1013,16 @@ const Workbench = {
                             <span class="strat-block-name">${this.esc(s.name)}</span>
                             ${statusBadge}
                             <span class="strat-block-type">${s.strategy_type || '-'}</span>
+                            ${s.holding_start_date ? `<span class="strat-hold-date" title="持仓起始日，用于跟踪实际收益">建仓 ${s.holding_start_date}</span>` : ''}
                         </div>
                         <div class="strat-block-alloc">${alloc}</div>
                     </div>
                     <div class="bt-inline" id="bt-panel-${s.id}" style="display:block">
+                        ${s.holding_start_date ? `
+                        <div class="bt-actual" id="bt-actual-${s.id}">
+                            <div class="bt-actual-title">实际持仓收益（自 ${s.holding_start_date} 建仓）</div>
+                            <div class="bt-actual-body" id="bt-actual-body-${s.id}">加载中...</div>
+                        </div>` : ''}
                         <div class="bt-form">
                             <div class="bt-field"><label>开始日期</label><input type="date" id="bt-start-${s.id}"></div>
                             <div class="bt-field"><label>结束日期</label><input type="date" id="bt-end-${s.id}"></div>
@@ -1074,6 +1080,10 @@ const Workbench = {
             const s = (this._strategies || []).find(x => x.id === id);
             this._btStrategy = s;
 
+            if (s && s.holding_start_date) {
+                this.loadActualReturn(id, s.holding_start_date);
+            }
+
             const end = new Date();
             const start = new Date(); start.setFullYear(start.getFullYear() - 1);
             const startEl = document.getElementById(`bt-start-${id}`);
@@ -1085,8 +1095,86 @@ const Workbench = {
         }
     },
 
-    async runBacktest(id) {
-        const s = (this._strategies || []).find(x => x.id === id) || this._btStrategy;
+    async loadActualReturn(id, startDate) {
+        const bodyEl = document.getElementById(`bt-actual-body-${id}`);
+        if (!bodyEl) return;
+        try {
+            const histResp = await fetch(`/api/portfolio/${id}/history`).then(r => r.json());
+            const snapshots = (histResp.code === 200 ? histResp.data.snapshots : []).filter(
+                s => s.trade_date >= startDate
+            );
+            if (snapshots.length === 0) {
+                bodyEl.innerHTML = '<span class="text-secondary">暂无该日期之后的快照数据</span>';
+                return;
+            }
+            const first = snapshots[0].total_asset;
+            const last = snapshots[snapshots.length - 1].total_asset;
+            const days = snapshots.length;
+            const totalPct = first > 0 ? (last / first - 1) * 100 : 0;
+
+            let peak = first;
+            let maxDrawdown = 0;
+            snapshots.forEach(s => {
+                if (s.total_asset > peak) peak = s.total_asset;
+                const dd = peak > 0 ? (s.total_asset / peak - 1) * 100 : 0;
+                if (dd < maxDrawdown) maxDrawdown = dd;
+            });
+
+            const firstDate = snapshots[0].trade_date;
+            const lastDate = snapshots[snapshots.length - 1].trade_date;
+            bodyEl.innerHTML = `
+                <div class="bt-actual-stats">
+                    <div class="bt-actual-stat"><label>区间</label><span>${firstDate} → ${lastDate}</span></div>
+                    <div class="bt-actual-stat"><label>交易日</label><span>${days} 天</span></div>
+                    <div class="bt-actual-stat"><label>期末资产</label><span>¥${last.toLocaleString()}</span></div>
+                    <div class="bt-actual-stat"><label>累计收益</label><span class="${totalPct >= 0 ? 'text-up' : 'text-down'}">${totalPct >= 0 ? '+' : ''}${totalPct.toFixed(2)}%</span></div>
+                    <div class="bt-actual-stat"><label>最大回撤</label><span class="text-down">${maxDrawdown.toFixed(2)}%</span></div>
+                </div>
+                <div class="bt-actual-chart" id="bt-actual-chart-${id}" style="height:240px"></div>
+            `;
+            this.renderActualChart(id, snapshots);
+        } catch (e) {
+            bodyEl.innerHTML = '<span style="color:var(--danger)">加载失败</span>';
+        }
+    },
+
+    renderActualChart(id, snapshots) {
+        const dom = document.getElementById(`bt-actual-chart-${id}`);
+        if (!dom || typeof echarts === 'undefined') return;
+        const dates = snapshots.map(s => s.trade_date);
+        const pcts = snapshots.map(s => Number(s.profit_pct));
+        const assets = snapshots.map(s => s.total_asset);
+        if (this._btActualChart) this._btActualChart.dispose();
+        this._btActualChart = echarts.init(dom);
+        this._btActualChart.setOption({
+            tooltip: {
+                trigger: 'axis', backgroundColor: '#ffffff', borderColor: '#dfe6ee',
+                textStyle: { color: '#1c2b3a', fontSize: 12 },
+                formatter: p => `${p[0].axisValue}<br/>资产: ¥${Number(assets[p[0].dataIndex]).toLocaleString()}<br/>收益: ${Number(pcts[p[0].dataIndex]).toFixed(2)}%`,
+            },
+            grid: { left: 48, right: 48, top: 24, bottom: 28 },
+            xAxis: { type: 'category', data: dates, boundaryGap: false, axisLabel: { color: '#5c6f82', fontSize: 11 }, axisLine: { lineStyle: { color: '#d5dee8' } } },
+            yAxis: { type: 'value', name: '累计收益%', axisLabel: { color: '#5c6f82', fontSize: 11, formatter: v => v + '%' }, splitLine: { lineStyle: { color: '#e8eef4' } } },
+            series: [{
+                type: 'line', data: pcts, smooth: true, symbol: 'none',
+                lineStyle: { color: '#0284c7', width: 2 },
+                areaStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: 'rgba(2,132,199,0.18)' },
+                        { offset: 1, color: 'rgba(2,132,199,0)' },
+                    ]),
+                },
+                markPoint: {
+                    data: [
+                        { type: 'max', name: '最高', itemStyle: { color: '#16a34a' } },
+                        { type: 'min', name: '最低', itemStyle: { color: '#dc2626' } },
+                    ],
+                },
+            }],
+        });
+    },
+
+    async runBacktest(id) {        const s = (this._strategies || []).find(x => x.id === id) || this._btStrategy;
         if (!s) return;
         const btn = document.getElementById(`bt-run-${id}`);
         if (btn) { btn.disabled = true; btn.textContent = '回测中...'; }

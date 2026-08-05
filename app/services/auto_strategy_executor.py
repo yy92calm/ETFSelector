@@ -288,6 +288,18 @@ class AutoStrategyExecutor:
                 "stage": {"stage": "validate_etf", "status": "failed", "no_quotes_codes": no_quotes},
             }
 
+        # 失败模式规避：AI建议配置若包含重复失败代码则降级处理
+        from app.services.failure_mode_service import get_failure_mode_service
+        banned = get_failure_mode_service().get_banned_codes(db)
+        banned_in_suggestion = [c for c in codes if c in banned]
+        if banned_in_suggestion:
+            logger.warning(f"[Executor] 建议配置包含失败规避代码: {banned_in_suggestion}，将标记警告")
+            return {
+                "passed": True,
+                "banned_codes_warning": banned_in_suggestion,
+                "stage": {"stage": "validate_etf", "status": "passed", "banned_codes_warning": banned_in_suggestion},
+            }
+
         return {"passed": True, "stage": {"stage": "validate_etf", "status": "passed"}}
 
     def _execute_trades(self, strategy: Strategy, execution_date: date, db: Session) -> Dict:

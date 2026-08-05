@@ -10,7 +10,7 @@ from fastapi.responses import FileResponse
 
 from app.config import get_settings
 from app.db.database import init_db
-from app.routes import etf_routes, strategy_routes, backtest_routes, net_value_routes, auto_strategy_routes, portfolio_routes, config_routes, chat_routes, workbench_routes, task_routes
+from app.routes import etf_routes, strategy_routes, backtest_routes, net_value_routes, auto_strategy_routes, portfolio_routes, config_routes, chat_routes, workbench_routes, task_routes, factor_routes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,6 +82,7 @@ app.include_router(config_routes.router)
 app.include_router(chat_routes.router)
 app.include_router(workbench_routes.router)
 app.include_router(task_routes.router)
+app.include_router(factor_routes.router)
 
 
 @app.get("/")

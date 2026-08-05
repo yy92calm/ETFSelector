@@ -416,10 +416,25 @@ class ReviewService:
             generated_date=date.today(),
             expires_date=date.today() + timedelta(days=90),
         )
-        
+
         db.add(exp)
         db.commit()
-        
+
+        # 同步写入失败模式库（幂等累计）
+        try:
+            from app.services.failure_mode_service import get_failure_mode_service
+            get_failure_mode_service().record_failure(
+                strategy_id=strategy_id,
+                signature=f"异常{anomaly['type']}:{anomaly.get('message', '')[:40]}",
+                title=exp.title,
+                description=exp.description,
+                scenario_tags=[anomaly["type"]],
+                key_insight=exp.key_insight,
+                db=db,
+            )
+        except Exception as e:
+            logger.error(f"记录失败模式异常: {e}")
+
         return {
             "experience_id": exp.id,
             "title": exp.title,

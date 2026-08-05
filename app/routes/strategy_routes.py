@@ -25,7 +25,7 @@ def get_available_etfs(db: Session = Depends(get_db)):
 
 @router.get("/list", response_model=APIResponse)
 def get_strategy_list(db: Session = Depends(get_db)):
-    """获取所有策略（含最新资产与收益率）"""
+    """获取所有策略（含最新资产、持仓起始日、实际收益率）"""
     from app.models.portfolio import PortfolioSnapshot
 
     svc = get_strategy_service()
@@ -36,6 +36,13 @@ def get_strategy_list(db: Session = Depends(get_db)):
         latest = db.query(PortfolioSnapshot).filter(
             PortfolioSnapshot.strategy_id == s.id
         ).order_by(PortfolioSnapshot.trade_date.desc()).first()
+
+        # 实际持仓天数
+        holding_days = None
+        if s.holding_start_date:
+            from datetime import date as dt_date
+            holding_days = (dt_date.today() - s.holding_start_date).days
+
         result.append({
             "id": s.id,
             "name": s.name,
@@ -47,6 +54,8 @@ def get_strategy_list(db: Session = Depends(get_db)):
             "initial_capital": s.initial_capital,
             "status": s.status,
             "created_at": s.created_at.isoformat() if s.created_at else None,
+            "holding_start_date": s.holding_start_date.isoformat() if s.holding_start_date else None,
+            "holding_days": holding_days,
             "latest_asset": latest.total_asset if latest else None,
             "latest_profit_pct": latest.profit_pct if latest else None,
         })
@@ -144,6 +153,7 @@ def get_strategy_detail(strategy_id: int, db: Session = Depends(get_db)):
         "initial_capital": s.initial_capital,
         "status": s.status,
         "created_at": s.created_at.isoformat() if s.created_at else None,
+        "holding_start_date": s.holding_start_date.isoformat() if s.holding_start_date else None,
     })
 
 

@@ -6,6 +6,8 @@ from app.models.portfolio import PortfolioSnapshot, TradeRecord, Holding
 from app.models.sentiment import SentimentData
 from app.models.auto_strategy_log import AutoStrategyLog
 from app.models.experience import Experience, ExperienceUsageRecord
+from app.models.pipeline_checkpoint import PipelineCheckpoint
+from app.models.factor_performance import FactorPerformance
 
 __all__ = [
     "ETFBasic",
@@ -18,4 +20,6 @@ __all__ = [
     "AutoStrategyLog",
     "Experience",
     "ExperienceUsageRecord",
+    "PipelineCheckpoint",
+    "FactorPerformance",
 ]

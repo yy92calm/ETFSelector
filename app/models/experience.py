@@ -46,7 +46,12 @@ class Experience(Base):
     review_status = Column(String(20), default="pending", comment="审核状态: pending/approved/rejected")
     reviewed_by = Column(String(50), nullable=True, comment="审核人")
     reviewed_at = Column(DateTime, nullable=True, comment="审核时间")
-    
+
+    # 失败模式库字段（FSA式规避）
+    failure_signature = Column(String(200), nullable=True, comment="失败模式签名，如 买入510300后5日亏损")
+    occurrence_count = Column(Integer, default=1, comment="失败模式出现次数")
+    last_triggered_date = Column(Date, nullable=True, comment="最近触发日期")
+
     created_at = Column(DateTime, default=datetime.utcnow, comment="创建时间")
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, comment="更新时间")
     

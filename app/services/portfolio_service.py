@@ -49,6 +49,10 @@ class PortfolioService:
             cash = prev_snapshot.cash
         else:
             cash = float(strategy.initial_capital)
+            # 首次建仓，记录持仓起始日期
+            if not strategy.holding_start_date:
+                strategy.holding_start_date = trade_date
+                db.add(strategy)
 
         # 获取当前持仓
         holdings_records = db.query(Holding).filter(

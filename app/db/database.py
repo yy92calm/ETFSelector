@@ -35,6 +35,8 @@ def init_db():
     from app.models import chat  # noqa: F401
     from app.models.etf import ETFDailyIndicator  # noqa: F401
     from app.models.task_log import TaskExecutionLog  # noqa: F401
+    from app.models.pipeline_checkpoint import PipelineCheckpoint  # noqa: F401
+    from app.models.factor_performance import FactorPerformance  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 添加新字段（兼容旧数据库）
@@ -57,6 +59,10 @@ def init_db():
                 ("experience_limit", "INTEGER DEFAULT 50"),
                 ("paused_reason", "VARCHAR(200)"),
                 ("paused_date", "DATE"),
+                ("holding_start_date", "DATE"),
+                ("failure_signature", "VARCHAR(200)"),
+                ("occurrence_count", "INTEGER DEFAULT 1"),
+                ("last_triggered_date", "DATE"),
             ]
 
             for col_name, col_type in migrations:
@@ -67,3 +73,24 @@ def init_db():
 
     except Exception as e:
         print(f"数据库迁移警告: {e}")
+
+    # 兼容旧数据库：experience 表新增字段
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("PRAGMA table_info(experience)"))
+            columns = [row[1] for row in result.fetchall()]
+
+            exp_migrations = [
+                ("failure_signature", "VARCHAR(200)"),
+                ("occurrence_count", "INTEGER DEFAULT 1"),
+                ("last_triggered_date", "DATE"),
+            ]
+
+            for col_name, col_type in exp_migrations:
+                if col_name not in columns:
+                    conn.execute(text(f"ALTER TABLE experience ADD COLUMN {col_name} {col_type}"))
+                    conn.commit()
+                    print(f"✓ 已添加 experience.{col_name} 字段")
+
+    except Exception as e:
+        print(f"experience 表迁移警告: {e}")

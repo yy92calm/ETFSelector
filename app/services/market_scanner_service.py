@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.models.etf import ETFBasic, ETFQuotation, ETFDailyIndicator
+from app.models.factor_performance import FactorPerformance
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,15 @@ class MarketScannerService:
                 composite_score=r["composite_score"],
                 rank_in_market=r["rank_in_market"],
             ))
+
+            # 记录因子表现（供IC计算和自适应权重）
+            for factor_name, score in (r.get("factor_scores") or {}).items():
+                db.add(FactorPerformance(
+                    etf_code=r["etf_code"],
+                    trade_date=scan_date,
+                    factor_name=factor_name,
+                    factor_value=score,
+                ))
 
         db.commit()
         logger.info(f"[Scanner] 完成: {len(results)}只ETF指标已存库")
@@ -164,12 +174,31 @@ class MarketScannerService:
         volatility_score = self._volatility_score(volatility_20d)
         flow_score = self._flow_score(obv_slope, amount_avg_5d)
 
+        # 各因子得分（供IC跟踪和动态权重使用）
+        factor_scores = {
+            "momentum": self._normalize_momentum(momentum_score),
+            "trend": trend_strength / 3.0 * 100,
+            "volume": vol_score,
+            "volatility": volatility_score,
+            "capital_flow": flow_score,
+        }
+
+        # 动态权重：优先使用IC自适应权重，无数据时退回固定权重
+        weights = WEIGHTS
+        try:
+            from app.services.factor_performance_service import get_factor_performance_service
+            adaptive = get_factor_performance_service().get_adaptive_weights(db)
+            if adaptive:
+                weights = adaptive
+        except Exception:
+            pass
+
         composite = (
-            WEIGHTS["momentum"] * self._normalize_momentum(momentum_score)
-            + WEIGHTS["trend"] * (trend_strength / 3.0 * 100)
-            + WEIGHTS["volume"] * vol_score
-            + WEIGHTS["volatility"] * volatility_score
-            + WEIGHTS["capital_flow"] * flow_score
+            weights["momentum"] * factor_scores["momentum"]
+            + weights["trend"] * factor_scores["trend"]
+            + weights["volume"] * factor_scores["volume"]
+            + weights["volatility"] * factor_scores["volatility"]
+            + weights["capital_flow"] * factor_scores["capital_flow"]
         )
 
         return {
@@ -187,6 +216,7 @@ class MarketScannerService:
             "amount_avg_5d": round(amount_avg_5d, 0),
             "composite_score": round(composite, 2),
             "rank_in_market": 0,
+            "factor_scores": factor_scores,
         }
 
     def _obv_slope(self, prices: List[float], volumes: List[float]) -> float:
