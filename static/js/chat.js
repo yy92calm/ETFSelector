@@ -84,13 +84,14 @@ const Chat = {
             if (data.code === 200 && data.data && data.data.messages) {
                 data.data.messages.forEach(m => {
                     if (m.role === 'user') {
-                        this.addMessage('user', m.content);
+                        this.addMessage('user', m.content, m.created_at);
                     } else if (m.role === 'assistant') {
-                        if (m.tool_calls && m.tool_calls.length > 0) {
+                        const isToolRound = m.tool_calls && m.tool_calls.length > 0;
+                        if (isToolRound) {
                             const names = m.tool_calls.map(tc => tc.function && tc.function.name).filter(Boolean).join(', ');
-                            if (names) this.addToolInfo(names);
+                            if (names) this.addToolInfo(names, m.created_at);
                         }
-                        this.addMessage('assistant', m.content);
+                        if (m.content) this.addMessage('assistant', m.content, m.created_at);
                     }
                 });
             } else {
@@ -105,9 +106,8 @@ const Chat = {
     },
 
     formatTime(isoStr) {
-        if (!isoStr) return '';
-        const d = new Date(isoStr);
-        if (isNaN(d.getTime())) return '';
+        const d = parseServerTime(isoStr);
+        if (!d) return '';
         return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
     },
 
@@ -165,15 +165,22 @@ const Chat = {
         }, 500);
     },
 
-    addToolInfo(toolNames) {
+    addToolInfo(toolNames, createdAt) {
         const div = document.createElement('div');
         div.className = 'msg tool-info';
         div.innerHTML = `<span class="tool-icon">⚙</span> ${this.escapeHtml(toolNames)}`;
+        if (createdAt) {
+            const time = document.createElement('div');
+            time.className = 'msg-time';
+            const d = parseServerTime(createdAt);
+            time.textContent = d ? d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+            div.appendChild(time);
+        }
         this.messagesEl.appendChild(div);
         this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     },
 
-    addMessage(role, content) {
+    addMessage(role, content, createdAt) {
         const div = document.createElement('div');
         div.className = `msg ${role}`;
 
@@ -185,7 +192,12 @@ const Chat = {
 
         const time = document.createElement('div');
         time.className = 'msg-time';
-        time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        if (createdAt) {
+            const d = parseServerTime(createdAt);
+            time.textContent = d ? d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
+        } else {
+            time.textContent = new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        }
         div.appendChild(time);
 
         this.messagesEl.appendChild(div);

@@ -1,6 +1,19 @@
 /**
  * 工作台仪表盘逻辑
  */
+
+/**
+ * 解析后端返回的时间字符串（后端存储为 UTC，无时区后缀）
+ * 将无时区后缀的时间按 UTC 解析并转换为本地时间，返回 Date 对象
+ */
+function parseServerTime(str) {
+    if (!str) return null;
+    let s = String(str).trim();
+    if (!/[zZ]|[+-]\d{2}:\d{2}$/.test(s)) s += 'Z';
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d;
+}
+
 const Workbench = {
     currentView: 'overview',
     _etfNameMap: {},
@@ -749,7 +762,7 @@ const Workbench = {
                 historyEl.innerHTML = historyData.logs.map(log => {
                     const statusColor = log.status === 'success' ? 'var(--success)' : log.status === 'failed' ? 'var(--danger)' : 'var(--warning)';
                     const statusIcon = log.status === 'success' ? '✓' : log.status === 'failed' ? '✕' : '…';
-                    const time = log.started_at ? new Date(log.started_at).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
+                    const time = parseServerTime(log.started_at) ? parseServerTime(log.started_at).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
                     const duration = log.duration_seconds ? `${log.duration_seconds.toFixed(1)}s` : '-';
 
                     return `<div class="task-log-item">
