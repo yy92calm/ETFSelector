@@ -414,14 +414,10 @@ class DataService:
         """
         获取全市场行情概览（包含所有ETF，无论是否有行情数据）
         
-        Args:
-            db: 数据库会话
-            limit: 返回数量限制
-            date: 指定日期 YYYY-MM-DD，不指定则返回最新交易日
-        
-        Returns:
-            List[dict]: ETF行情列表
+        交易时段内（9:30-15:00）自动显示T-1数据，闭市后显示T日。
         """
+        from app.utils.trading_calendar import is_during_trading_hours, get_previous_trading_day
+
         # 确定查询日期
         if date:
             # 解析指定日期
@@ -430,8 +426,11 @@ class DataService:
             except ValueError:
                 logger.warning(f"日期格式错误: {date}, 使用最新交易日")
                 target_date = db.query(func.max(ETFQuotation.trade_date)).scalar()
+        elif is_during_trading_hours():
+            # 交易时段内显示T-1
+            target_date = get_previous_trading_day(datetime.now().date())
         else:
-            # 使用最新交易日
+            # 闭市后使用最新交易日
             target_date = db.query(func.max(ETFQuotation.trade_date)).scalar()
         
         # 获取所有ETF基础信息

@@ -454,7 +454,7 @@ def get_scheduler() -> BackgroundScheduler:
     if _scheduler is None:
         _scheduler = BackgroundScheduler()
 
-        # ========== 工作日串行管道 ==========
+        # ========== 工作日串行管道（20:00） ==========
         # 一个 job 内部顺序执行所有步骤，不存在并行竞态问题
         _scheduler.add_job(
             _job_daily_pipeline,
@@ -481,5 +481,15 @@ def get_scheduler() -> BackgroundScheduler:
             replace_existing=True,
             misfire_grace_time=3600,
         )
+
+        # ========== 交易时段舆情采集（每2小时一次：10:00, 12:00, 14:00） ==========
+        for hour in [10, 12, 14]:
+            _scheduler.add_job(
+                _step_collect_sentiments,
+                trigger=CronTrigger(day_of_week='mon-fri', hour=hour, minute=0),
+                id=f"sentiment_collect_{hour}",
+                replace_existing=True,
+                misfire_grace_time=1800,
+            )
 
     return _scheduler

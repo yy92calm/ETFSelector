@@ -93,13 +93,17 @@ def get_ai_activity(days: int = 7, db: Session = Depends(get_db)):
 def get_quant_summary(db: Session = Depends(get_db)):
     """市场量化分析概况：趋势分布、动量排名、波动率"""
     from app.models.etf import ETFQuotation, ETFBasic
+    from app.utils.trading_calendar import is_during_trading_hours, get_previous_trading_day
     from sqlalchemy import func
 
     try:
         name_map = {e.etf_code: e.etf_name for e in db.query(ETFBasic).all()}
 
-        # 获取最新交易日
-        latest_date = db.query(func.max(ETFQuotation.trade_date)).scalar()
+        # 交易时段显示T-1，闭市后显示最新
+        if is_during_trading_hours():
+            latest_date = get_previous_trading_day(date.today())
+        else:
+            latest_date = db.query(func.max(ETFQuotation.trade_date)).scalar()
         if not latest_date:
             return APIResponse(data={"error": "无行情数据"})
 
@@ -228,10 +232,12 @@ def get_market_indicators(
 ):
     """行情+量化指标联合查询（行情页用）"""
     from app.models.etf import ETFBasic, ETFQuotation, ETFDailyIndicator
+    from app.utils.trading_calendar import get_display_date
     from sqlalchemy import func
 
-    latest_date = db.query(func.max(ETFDailyIndicator.trade_date)).scalar()
-    if not latest_date:
+    # 使用交易日历获取显示日期（交易时段显示T-1，闭市后显示T日）
+    display_date = get_display_date()
+    if not display_date:
         return APIResponse(data={"rows": [], "date": None})
 
     query = (
@@ -239,7 +245,7 @@ def get_market_indicators(
         .join(ETFQuotation, (ETFQuotation.etf_code == ETFDailyIndicator.etf_code)
               & (ETFQuotation.trade_date == ETFDailyIndicator.trade_date), isouter=True)
         .join(ETFBasic, ETFBasic.etf_code == ETFDailyIndicator.etf_code, isouter=True)
-        .filter(ETFDailyIndicator.trade_date == latest_date)
+        .filter(ETFDailyIndicator.trade_date == display_date)
     )
 
     if q:
@@ -270,4 +276,4 @@ def get_market_indicators(
             "ma20": ind.ma20,
         })
 
-    return APIResponse(data={"rows": rows, "date": latest_date.isoformat()})
+    return APIResponse(data={"rows": rows, "date": display_date.isoformat()})
