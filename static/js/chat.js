@@ -27,7 +27,88 @@ const Chat = {
             });
         });
 
+        this.loadSessions();
         this.addMessage('assistant', '你好！我是ETF工作台的AI助手。我可以帮你分析市场、管理策略、检查风控、执行回测。试试下方的快捷指令，或直接输入问题。');
+    },
+
+    async loadSessions() {
+        try {
+            const resp = await fetch('/api/chat/sessions');
+            const data = await resp.json();
+            const list = document.getElementById('session-list');
+            if (!list) return;
+            if (data.code !== 200) { list.innerHTML = '<div class="session-empty">加载失败</div>'; return; }
+            const sessions = data.data.sessions || [];
+            if (sessions.length === 0) {
+                list.innerHTML = '<div class="session-empty">暂无历史会话</div>';
+                return;
+            }
+            list.innerHTML = sessions.map(s => {
+                const active = this.sessionId && s.session_id === this.sessionId ? ' active' : '';
+                return `<div class="session-item${active}" onclick="Chat.selectSession('${s.session_id}')">
+                    <div class="session-item-title">${this.escapeHtml(s.title || '新对话')}</div>
+                    <div class="session-item-time">${this.formatTime(s.updated_at)}</div>
+                </div>`;
+            }).join('');
+        } catch (err) {
+            const list = document.getElementById('session-list');
+            if (list) list.innerHTML = '<div class="session-empty">加载失败</div>';
+        }
+    },
+
+    toggleSessions() {
+        const panel = document.getElementById('session-panel');
+        if (!panel) return;
+        panel.hidden = !panel.hidden;
+        if (!panel.hidden) this.loadSessions();
+    },
+
+    newSession() {
+        this.sessionId = null;
+        const panel = document.getElementById('session-panel');
+        if (panel) panel.hidden = true;
+        this.messagesEl.innerHTML = '';
+        this.addMessage('assistant', '你好！我是ETF工作台的AI助手。我可以帮你分析市场、管理策略、检查风控、执行回测。试试下方的快捷指令，或直接输入问题。');
+        this.loadSessions();
+    },
+
+    async selectSession(sessionId) {
+        this.sessionId = sessionId;
+        const panel = document.getElementById('session-panel');
+        if (panel) panel.hidden = true;
+        this.messagesEl.innerHTML = '';
+        this.setLoading(true);
+        try {
+            const resp = await fetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}`);
+            const data = await resp.json();
+            if (data.code === 200 && data.data && data.data.messages) {
+                data.data.messages.forEach(m => {
+                    if (m.role === 'user') {
+                        this.addMessage('user', m.content);
+                    } else if (m.role === 'assistant') {
+                        if (m.tool_calls && m.tool_calls.length > 0) {
+                            const names = m.tool_calls.map(tc => tc.function && tc.function.name).filter(Boolean).join(', ');
+                            if (names) this.addToolInfo(names);
+                        }
+                        this.addMessage('assistant', m.content);
+                    }
+                });
+            } else {
+                this.addMessage('assistant', `加载历史失败: ${data.message || '未知错误'}`);
+            }
+        } catch (err) {
+            this.addMessage('assistant', `加载历史失败: ${err.message}`);
+        } finally {
+            this.setLoading(false);
+            this.loadSessions();
+        }
+    },
+
+    formatTime(isoStr) {
+        if (!isoStr) return '';
+        const d = new Date(isoStr);
+        if (isNaN(d.getTime())) return '';
+        return d.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
     },
 
     async send() {

@@ -169,7 +169,18 @@
         <div class="sidebar-resize-handle" id="sidebar-resize"></div>
         <div class="sidebar-header">
             <h3>AI 助手</h3>
-            <button class="sidebar-toggle" onclick="Chat.toggle()">✕</button>
+            <div class="sidebar-actions">
+                <button class="sidebar-toggle" id="chat-sessions-toggle" title="历史会话" onclick="Chat.toggleSessions()">🕘</button>
+                <button class="sidebar-toggle" onclick="Chat.toggle()">✕</button>
+            </div>
+        </div>
+
+        <div class="session-panel" id="session-panel" hidden>
+            <div class="session-panel-header">
+                <span>历史会话</span>
+                <button class="session-new-btn" onclick="Chat.newSession()">＋ 新会话</button>
+            </div>
+            <div class="session-list" id="session-list"></div>
         </div>
 
         <div class="chat-messages" id="chat-messages"></div>
