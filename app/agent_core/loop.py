@@ -52,6 +52,9 @@ SYSTEM_PROMPT = """你是ETF量化工作台的AI决策大脑，拥有完整的�
 
 当前系统状态：
 {context}
+
+可用技能：
+{skills}
 """
 
 
@@ -68,6 +71,17 @@ class AgentLoop:
         self.registry = get_tool_registry()
         self.context_builder = ContextBuilder()
         self.memory = ChatMemory()
+
+    def _build_skills_summary(self) -> str:
+        """构建可用技能摘要（仅 name+description，全文按需 load_skill）"""
+        from app.agent_core.skill_manager import get_skill_manager
+
+        skills = get_skill_manager().list_skills()
+        if not skills:
+            return "- 无（如需外部数据接入，可提示用户配置 MCP server 和技能）"
+        return "\n".join(
+            f"- {s['name']}: {s['description']}" for s in skills
+        )
 
     def run(self, user_message: str, session_id: Optional[str], db: Session) -> AgentResponse:
         """对话式执行：处理用户消息，可能触发多轮工具调用
@@ -91,7 +105,8 @@ class AgentLoop:
 
         # 构建消息列表
         context = self.context_builder.build_system_context(db)
-        system_msg = SYSTEM_PROMPT.format(context=context)
+        skills_summary = self._build_skills_summary()
+        system_msg = SYSTEM_PROMPT.format(context=context, skills=skills_summary)
 
         messages = [{"role": "system", "content": system_msg}]
 

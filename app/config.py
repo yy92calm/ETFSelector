@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     scheduler_hour: int = 20
     scheduler_minute: int = 0
 
+    # MCP servers 配置（JSON字符串，示例见 .env.example）
+    mcp_servers: str = ""
+
     model_config = {"env_file": ".env", "case_sensitive": False}
 
 

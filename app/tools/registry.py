@@ -165,5 +165,38 @@ def get_tool_registry() -> ToolRegistry:
         from app.tools import analysis_tools  # noqa: F401
 
         _registry = ToolRegistry()
+
+        # 注册 load_skill 工具（skill 文档动态加载）
+        _register_load_skill()
+
+        # 注册 MCP 桥接工具（未配置 MCP server 时自动跳过）
+        from app.agent_core.mcp_bridge import get_mcp_bridge
+        get_mcp_bridge().register_all(_TOOL_REGISTRY)
+
         logger.info(f"Tool Registry 初始化完成，共 {len(_TOOL_REGISTRY)} 个工具")
     return _registry
+
+
+def _register_load_skill():
+    """注册 load_skill 工具 - 加载 skill 文档全文供 LLM 使用"""
+    from app.agent_core.skill_manager import get_skill_manager
+
+    def load_skill(db: Optional[Session] = None, name: str = "") -> dict:
+        """加载指定技能文档全文"""
+        sm = get_skill_manager()
+        body = sm.load_skill(name)
+        if body is None:
+            available = ", ".join(sm.get_skill_names()) or "无"
+            return {"error": f"未知技能: {name}，可用技能: {available}"}
+        return {"skill": name, "content": body}
+
+    _TOOL_REGISTRY["load_skill"] = ToolDef(
+        name="load_skill",
+        description="加载指定技能（skill）文档全文，获取调用外部工具（如 MCP 工具）的使用指引。技能名称见系统提示「可用技能」列表。",
+        func=load_skill,
+        parameters={
+            "type": "object",
+            "properties": {"name": {"type": "string", "description": "技能名称"}},
+            "required": ["name"],
+        },
+    )
