@@ -67,7 +67,7 @@ def _job_daily_pipeline():
 
     _cp_svc = get_pipeline_checkpoint_service()
     _run_date = date.today()
-    _stages = ["net_value", "rebalance", "sentiment", "policy_flow",
+    _stages = ["net_value", "quotes", "rebalance", "sentiment", "policy_flow",
                "market_scan", "rotation_review", "autonomous"]
 
     db = SessionLocal()
@@ -97,6 +97,7 @@ def _job_daily_pipeline():
 
     # ============================== 阶段1 ==============================
     _run_stage("net_value", _step_update_net_values)
+    _run_stage("quotes", _step_update_quotes)
     _run_stage("rebalance", _step_run_strategies)
 
     # ============================== 阶段2 ==============================
@@ -132,6 +133,23 @@ def _step_update_net_values():
             logger.info(f"还有 {result['total'] - 6} 只ETF待更新，将在下一个周期继续")
     except Exception as e:
         logger.error(f"净值更新异常: {e}")
+    finally:
+        db.close()
+
+
+def _step_update_quotes():
+    """STEP 1.5: 更新当日行情数据（日K线）"""
+    from app.db.database import SessionLocal
+    from app.services.data_service import get_data_service
+
+    logger.info("===== [阶段1] 更新当日行情数据 =====")
+    db = SessionLocal()
+    try:
+        svc = get_data_service()
+        result = svc.update_today_quotes(db)
+        logger.info(f"行情更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}")
+    except Exception as e:
+        logger.error(f"行情更新异常: {e}")
     finally:
         db.close()
 
