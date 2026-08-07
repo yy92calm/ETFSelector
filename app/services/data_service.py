@@ -20,8 +20,9 @@ from app.services.data_sources import DataSourceManager
 logger = logging.getLogger(__name__)
 
 # 请求限流间隔（秒），随机化防止被数据源封禁
-REQUEST_INTERVAL_MIN = 2.0
-REQUEST_INTERVAL_MAX = 5.0
+# Ashare 使用新浪/腾讯接口，相对稳定，间隔可以稍短
+REQUEST_INTERVAL_MIN = 1.5
+REQUEST_INTERVAL_MAX = 3.0
 
 
 def _random_sleep():
@@ -32,7 +33,16 @@ class DataService:
     """ETF数据获取与存储服务"""
     
     def __init__(self):
-        self.data_source = DataSourceManager()
+        # 默认使用降级模式（API调用场景）
+        self.data_source = DataSourceManager(ashare_only=False)
+        # 定时任务专用数据源（仅Ashare，不降级）
+        self._scheduled_task_source: Optional[DataSourceManager] = None
+
+    def _get_scheduled_source(self) -> DataSourceManager:
+        """获取定时任务专用数据源（单例）"""
+        if self._scheduled_task_source is None:
+            self._scheduled_task_source = DataSourceManager(ashare_only=True)
+        return self._scheduled_task_source
 
     # ------------------------------------------------------------------ #
     #  ETF 列表（广发、易方达、华夏）
@@ -184,15 +194,18 @@ class DataService:
     def update_today_quotes(self, db: Session) -> Dict:
         """
         获取数据库中所有ETF的最新交易日行情并存储。
-        覆盖 etf_basic 表中全部ETF（含LLM自主纳入的标的）。
+        定时任务专用：仅使用Ashare数据源，不降级到efinance。
         
         返回 {success_count, fail_count, failed_codes, etf_count}
         """
+        # 使用定时任务专用数据源
+        source = self._get_scheduled_source()
+        
         # 获取数据库中所有ETF
         all_etfs = db.query(ETFBasic).all()
         etf_codes = [etf.etf_code for etf in all_etfs]
         
-        logger.info(f"开始更新 {len(etf_codes)} 只ETF的最新行情")
+        logger.info(f"开始更新 {len(etf_codes)} 只ETF的最新行情 (Ashare模式)")
         
         if not etf_codes:
             logger.warning("数据库中没有ETF")
@@ -224,7 +237,7 @@ class DataService:
             success = False
             for target_date in target_dates:
                 try:
-                    df = self.fetch_etf_daily(
+                    df = source.fetch_etf_daily(
                         code, start_date=target_date, end_date=target_date
                     )
                     if not df.empty:
@@ -242,6 +255,10 @@ class DataService:
             if not success:
                 result["fail_count"] += 1
                 result["failed_codes"].append(code)
+
+            # 每处理10只ETF输出一次进度
+            if (idx + 1) % 10 == 0:
+                logger.info(f"进度: {idx + 1}/{len(etf_codes)} (成功: {result['success_count']})")
 
             _random_sleep()
         

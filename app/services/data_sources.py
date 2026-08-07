@@ -152,10 +152,18 @@ class EFinanceDataSource:
 class DataSourceManager:
     """数据源管理器：Ashare(新浪+腾讯) → efinance(东方财富) 自动降级"""
 
-    def __init__(self):
+    def __init__(self, ashare_only: bool = False):
+        """
+        Args:
+            ashare_only: True=仅使用Ashare（定时任务场景），False=允许降级到efinance
+        """
         self.primary = AshareDataSource()
         self.fallback = EFinanceDataSource()
-        logger.info("✓ 数据源已加载: Ashare(主) + efinance(备)")
+        self.ashare_only = ashare_only
+        if ashare_only:
+            logger.info("✓ 数据源已加载: Ashare (定时任务模式，不降级)")
+        else:
+            logger.info("✓ 数据源已加载: Ashare(主) + efinance(备)")
 
     def fetch_etf_list(self) -> pd.DataFrame:
         return self.fallback.fetch_etf_list()
@@ -169,6 +177,11 @@ class DataSourceManager:
         df = self.primary.fetch_etf_daily(etf_code, start_date, end_date)
         if not df.empty:
             return df
+
+        # ashare_only 模式下不降级
+        if self.ashare_only:
+            logger.warning(f"[DataSource] Ashare失败，定时任务模式不降级: {etf_code}")
+            return pd.DataFrame()
 
         logger.warning(f"[DataSource] Ashare失败，降级到efinance: {etf_code}")
         return self.fallback.fetch_etf_daily(etf_code, start_date, end_date)
