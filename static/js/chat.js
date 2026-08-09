@@ -152,10 +152,10 @@ const Chat = {
         this.addMessage('user', text);
         this.setLoading(true);
 
-        // 优先走流式接口，实时展示工具调用过程
+        // 只走流式接口，实时展示工具调用过程
         const streamed = await this.sendStreaming(text);
         if (!streamed) {
-            await this.sendLegacy(text);
+            this.addMessage('assistant', '流式连接失败，请刷新页面重试');
         }
 
         this.setLoading(false);
@@ -340,33 +340,6 @@ const Chat = {
         if (spinner) spinner.remove();
         const stateEl = div.querySelector('.tool-state');
         if (stateEl) stateEl.textContent = isErr ? '失败' : '完成';
-    },
-
-    async sendLegacy(text) {
-        try {
-            const resp = await fetch('/api/chat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text, session_id: this.sessionId }),
-            });
-            const data = await resp.json();
-
-            if (data.code === 200 && data.data) {
-                this.sessionId = data.data.session_id;
-
-                if (data.data.tool_calls && data.data.tool_calls.length > 0) {
-                    const toolNames = data.data.tool_calls.map(t => t.tool).join(', ');
-                    this.addToolInfo(toolNames);
-                    this.refreshWorkbench(data.data.tool_calls);
-                }
-
-                this.addMessage('assistant', data.data.reply || '(无回复)');
-            } else {
-                this.addMessage('assistant', `错误: ${data.message || '请求失败'}`);
-            }
-        } catch (err) {
-            this.addMessage('assistant', `网络错误: ${err.message}`);
-        }
     },
 
     refreshWorkbench(toolCalls) {
