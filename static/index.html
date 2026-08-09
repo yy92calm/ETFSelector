@@ -17,6 +17,7 @@
         <a href="#" data-tab="strategy">策略管理</a>
         <a href="#" data-tab="backtest">策略回测</a>
         <a href="#" data-tab="auto-strategy">AI驱动策略</a>
+        <a href="#" data-tab="tasks">任务管理</a>
         <a href="#" data-tab="config">系统配置</a>
     </div>
 </nav>
@@ -444,6 +445,26 @@
                         <div>暂无历史经验</div>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ====== 任务管理 ====== -->
+    <div id="tab-tasks" class="tab-content">
+        <div class="card">
+            <div class="card-title">定时任务列表</div>
+            <p style="font-size:13px;color:var(--text-secondary);margin-bottom:16px;">
+                查看所有定时任务的执行状态、历史记录。如有任务卡在"执行中"状态，可手动修正。
+            </p>
+            <div id="tasks-table-container">
+                <div style="text-align:center;padding:40px;color:var(--text-secondary);">加载中...</div>
+            </div>
+        </div>
+
+        <div class="card" style="margin-top:16px;">
+            <div class="card-title">执行历史（最近7天）</div>
+            <div id="task-history-container">
+                <div style="text-align:center;padding:20px;color:var(--text-secondary);">加载中...</div>
             </div>
         </div>
     </div>

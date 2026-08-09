@@ -15,6 +15,116 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/tasks", tags=["定时任务"])
 
 
+# 任务定义（与 scheduler.py 中的 job 对应）
+TASK_DEFINITIONS = {
+    "daily_auto_pipeline": {
+        "name": "每日自驱动管道",
+        "description": "完整管道：净值更新 → 组合再平衡 → 舆情采集 → AI分析+风控+策略调整",
+        "schedule": "工作日 20:00",
+    },
+    "weekly_review": {
+        "name": "每周复盘",
+        "description": "所有活跃策略的周度复盘分析",
+        "schedule": "周日 21:00",
+    },
+    "auto_fetch_quotes": {
+        "name": "LLM自动行情补全",
+        "description": "LLM判断哪些ETF需要补数据，自动执行行情补全",
+        "schedule": "工作日 18:00-19:00 随机",
+    },
+    "sentiment_collect_10": {
+        "name": "舆情采集(10:00)",
+        "description": "交易时段舆情采集",
+        "schedule": "工作日 10:00",
+    },
+    "sentiment_collect_12": {
+        "name": "舆情采集(12:00)",
+        "description": "交易时段舆情采集",
+        "schedule": "工作日 12:00",
+    },
+    "sentiment_collect_14": {
+        "name": "舆情采集(14:00)",
+        "description": "交易时段舆情采集",
+        "schedule": "工作日 14:00",
+    },
+}
+
+
+@router.get("/list", response_model=APIResponse)
+def list_tasks(db: Session = Depends(get_db)):
+    """获取所有定时任务列表（含执行统计）"""
+    # 获取最近30天的执行记录
+    cutoff = datetime.utcnow() - timedelta(days=30)
+    logs = (
+        db.query(TaskExecutionLog)
+        .filter(TaskExecutionLog.started_at >= cutoff)
+        .all()
+    )
+
+    # 按任务名统计
+    stats = {}
+    for log in logs:
+        name = log.task_name
+        if name not in stats:
+            stats[name] = {"total": 0, "success": 0, "failed": 0, "running": 0, "last_run": None}
+        stats[name]["total"] += 1
+        if log.status in stats[name]:
+            stats[name][log.status] += 1
+        if stats[name]["last_run"] is None or (log.started_at and log.started_at.isoformat() > stats[name]["last_run"]):
+            stats[name]["last_run"] = log.started_at.isoformat() if log.started_at else None
+
+    # 组装结果
+    tasks = []
+    for task_id, defn in TASK_DEFINITIONS.items():
+        task_stats = stats.get(task_id, {"total": 0, "success": 0, "failed": 0, "running": 0, "last_run": None})
+        tasks.append({
+            "id": task_id,
+            "name": defn["name"],
+            "description": defn["description"],
+            "schedule": defn["schedule"],
+            "total_executions": task_stats["total"],
+            "success_count": task_stats["success"],
+            "failed_count": task_stats["failed"],
+            "running_count": task_stats["running"],
+            "last_run": task_stats["last_run"],
+        })
+
+    return APIResponse(data={"tasks": tasks})
+
+
+@router.put("/{task_id}/status", response_model=APIResponse)
+def update_task_status(
+    task_id: str,
+    new_status: str = Query(..., description="新状态: success/failed"),
+    db: Session = Depends(get_db)
+):
+    """更新正在执行的任务状态（用于手动修正 running 状态）"""
+    if new_status not in ("success", "failed"):
+        return APIResponse(code=400, message="状态只能是 success 或 failed")
+
+    # 找到该任务最新的 running 记录
+    log = (
+        db.query(TaskExecutionLog)
+        .filter(
+            TaskExecutionLog.task_name == task_id,
+            TaskExecutionLog.status == "running"
+        )
+        .order_by(desc(TaskExecutionLog.started_at))
+        .first()
+    )
+
+    if not log:
+        return APIResponse(code=404, message="未找到该任务的 running 状态记录")
+
+    log.status = new_status
+    log.finished_at = datetime.utcnow()
+    if log.started_at:
+        log.duration_seconds = (log.finished_at - log.started_at).total_seconds()
+    db.commit()
+
+    return APIResponse(message=f"任务状态已更新为 {new_status}")
+
+
 @router.get("/history", response_model=APIResponse)
 def get_task_history(
     days: int = Query(7, ge=1, le=30, description="查询最近N天"),

@@ -66,6 +66,7 @@ document.querySelectorAll('.nav-links a').forEach(a => {
         if (tab === 'strategy') loadStrategies();
         if (tab === 'backtest') loadBacktestPage();
         if (tab === 'auto-strategy') loadAutoStrategyPage();
+        if (tab === 'tasks') loadTasksPage();
         if (tab === 'config') loadConfigPage();
     });
 });
@@ -3608,5 +3609,123 @@ async function testLlmConnection() {
     } finally {
         btn.disabled = false;
         btn.textContent = '测试连接';
+    }
+}
+
+// ==================================================================
+//  任务管理
+// ==================================================================
+async function loadTasksPage() {
+    try {
+        const data = await api('/api/tasks/list');
+        if (data.code !== 200) {
+            document.getElementById('tasks-table-container').innerHTML = '<div style="color:var(--danger);">加载失败</div>';
+            return;
+        }
+        const tasks = data.data.tasks || [];
+        if (tasks.length === 0) {
+            document.getElementById('tasks-table-container').innerHTML = '<div style="text-align:center;padding:40px;color:var(--text-secondary);">暂无任务</div>';
+            return;
+        }
+        
+        let html = `<table class="data-table" style="width:100%;">
+            <thead><tr>
+                <th>任务名称</th>
+                <th>描述</th>
+                <th>执行计划</th>
+                <th>执行次数</th>
+                <th>成功/失败</th>
+                <th>上次执行</th>
+                <th>状态</th>
+            </tr></thead><tbody>`;
+        
+        for (const t of tasks) {
+            const statusBadge = t.running_count > 0 
+                ? '<span class="badge badge-warning">执行中</span>'
+                : '<span class="badge badge-secondary">空闲</span>';
+            const lastRun = t.last_run ? new Date(t.last_run).toLocaleString('zh-CN') : '从未执行';
+            const successRate = t.total_executions > 0 
+                ? `${t.success_count}/${t.total_executions}` 
+                : '-';
+            
+            html += `<tr>
+                <td><strong>${t.name}</strong></td>
+                <td style="font-size:12px;color:var(--text-secondary);max-width:200px;">${t.description}</td>
+                <td style="font-size:12px;">${t.schedule}</td>
+                <td>${t.total_executions}</td>
+                <td><span style="color:var(--success-600);">${t.success_count}</span> / <span style="color:var(--danger-600);">${t.failed_count}</span></td>
+                <td style="font-size:12px;">${lastRun}</td>
+                <td>${statusBadge}${t.running_count > 0 ? ` <button class="btn btn-sm" onclick="fixTaskStatus('${t.id}')" style="margin-left:8px;padding:2px 8px;font-size:11px;">修正</button>` : ''}</td>
+            </tr>`;
+        }
+        
+        html += '</tbody></table>';
+        document.getElementById('tasks-table-container').innerHTML = html;
+        
+        // 加载执行历史
+        loadTaskHistory();
+    } catch (e) {
+        document.getElementById('tasks-table-container').innerHTML = '<div style="color:var(--danger);">加载失败: ' + e.message + '</div>';
+    }
+}
+
+async function loadTaskHistory() {
+    try {
+        const data = await api('/api/tasks/history?days=7&limit=20');
+        if (data.code !== 200) {
+            document.getElementById('task-history-container').innerHTML = '<div style="color:var(--text-secondary);">暂无历史记录</div>';
+            return;
+        }
+        const logs = data.data.logs || [];
+        if (logs.length === 0) {
+            document.getElementById('task-history-container').innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-secondary);">暂无执行记录</div>';
+            return;
+        }
+        
+        let html = `<table class="data-table" style="width:100%;font-size:13px;">
+            <thead><tr>
+                <th>任务</th>
+                <th>状态</th>
+                <th>开始时间</th>
+                <th>耗时</th>
+                <th>错误信息</th>
+            </tr></thead><tbody>`;
+        
+        for (const log of logs) {
+            const statusClass = log.status === 'success' ? 'badge-success' : (log.status === 'failed' ? 'badge-danger' : 'badge-warning');
+            const statusText = log.status === 'success' ? '成功' : (log.status === 'failed' ? '失败' : '执行中');
+            const startTime = log.started_at ? new Date(log.started_at).toLocaleString('zh-CN') : '-';
+            const duration = log.duration_seconds ? `${log.duration_seconds.toFixed(1)}s` : '-';
+            const errorMsg = log.error_message ? `<span style="color:var(--danger-600);font-size:11px;" title="${log.error_message}">${log.error_message.substring(0, 30)}...</span>` : '-';
+            
+            html += `<tr>
+                <td>${log.task_name}</td>
+                <td><span class="badge ${statusClass}">${statusText}</span></td>
+                <td>${startTime}</td>
+                <td>${duration}</td>
+                <td>${errorMsg}</td>
+            </tr>`;
+        }
+        
+        html += '</tbody></table>';
+        document.getElementById('task-history-container').innerHTML = html;
+    } catch (e) {
+        document.getElementById('task-history-container').innerHTML = '<div style="color:var(--text-secondary);">加载历史记录失败</div>';
+    }
+}
+
+async function fixTaskStatus(taskId) {
+    if (!confirm('确定将此任务状态从"执行中"修正为"失败"？')) return;
+    
+    try {
+        const data = await api(`/api/tasks/${taskId}/status?new_status=failed`, { method: 'PUT' });
+        if (data.code === 200) {
+            toast('✓ 任务状态已修正', 'success');
+            loadTasksPage();
+        } else {
+            toast('修正失败: ' + data.message, 'error');
+        }
+    } catch (e) {
+        toast('修正失败: ' + e.message, 'error');
     }
 }
