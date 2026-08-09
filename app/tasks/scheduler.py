@@ -117,21 +117,50 @@ def _job_daily_pipeline():
 
     def _run_stage(stage: str, fn):
         """执行阶段，成功标记检查点；失败记录并跳过（不中断整个管道）"""
+        from app.models.task_log import TaskExecutionLog
+        from datetime import datetime
+        
         if stage in done:
             logger.info(f"[Checkpoint] 阶段 {stage} 已完成，跳过")
             return
+        
         db_local = SessionLocal()
+        started_at = datetime.utcnow()
+        
+        # 创建执行日志
+        log_entry = TaskExecutionLog(
+            task_name=f"daily_pipeline.{stage}",
+            status="running",
+            started_at=started_at
+        )
+        db_local.add(log_entry)
+        db_local.commit()
+        
         try:
             fn()
             _cp_svc.mark_stage_done("daily_pipeline", _run_date, stage, db_local)
+            
+            # 更新为成功
+            log_entry.status = "success"
+            log_entry.finished_at = datetime.utcnow()
+            log_entry.duration_seconds = (log_entry.finished_at - started_at).total_seconds()
+            db_local.commit()
         except Exception as e:
             logger.error(f"[Checkpoint] 阶段 {stage} 失败: {e}")
+            
+            # 更新为失败
+            log_entry.status = "failed"
+            log_entry.finished_at = datetime.utcnow()
+            log_entry.duration_seconds = (log_entry.finished_at - started_at).total_seconds()
+            log_entry.error_message = str(e)[:1000]
+            db_local.commit()
+            
             try:
                 _cp_svc.mark_failed("daily_pipeline", _run_date, stage, str(e), db_local)
                 # 写入失败经验
                 _record_failure_experience(db_local, stage, str(e), _run_date)
-            finally:
-                db_local.close()
+            except Exception as log_err:
+                logger.error(f"记录失败经验时出错: {log_err}")
             return
         finally:
             db_local.close()
