@@ -10,21 +10,49 @@ Agent Core Loop - LLM 决策循环
 
 import json
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
-from openai import OpenAI
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.db.database import SessionLocal
 from app.tools.registry import get_tool_registry
 from app.agent_core.context import ContextBuilder
 from app.agent_core.memory import ChatMemory
+from app.agent_core.permissions import Mode, PermissionEngine
+from app.agent_core import compaction, provider
+from app.agent_core.approvals import (
+    APPROVAL_OUTCOME_ALWAYS,
+    APPROVAL_OUTCOME_DENY,
+    get_approval_store,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 MAX_TOOL_ROUNDS = 10  # 防止无限循环
+
+# 会话级中断标志（POST /api/chat/stop 置位，_iter_events 在迭代边界检查）
+_INTERRUPT_FLAGS: Dict[str, bool] = {}
+_INTERRUPT_LOCK = threading.Lock()
+
+
+def request_interrupt(session_id: str) -> None:
+    with _INTERRUPT_LOCK:
+        _INTERRUPT_FLAGS[session_id] = True
+
+
+def check_interrupted(session_id: str) -> bool:
+    with _INTERRUPT_LOCK:
+        return _INTERRUPT_FLAGS.get(session_id, False)
+
+
+def clear_interrupt(session_id: str) -> None:
+    with _INTERRUPT_LOCK:
+        _INTERRUPT_FLAGS.pop(session_id, None)
 
 
 @dataclass
@@ -62,15 +90,11 @@ class AgentLoop:
     """LLM 决策循环 - 支持多轮 tool calling"""
 
     def __init__(self):
-        self.client: Optional[OpenAI] = None
-        if settings.llm_api_key and settings.llm_api_key.strip():
-            self.client = OpenAI(
-                api_key=settings.llm_api_key,
-                base_url=settings.llm_api_base_url,
-            )
         self.registry = get_tool_registry()
         self.context_builder = ContextBuilder()
         self.memory = ChatMemory()
+        self.permissions = PermissionEngine()
+        self.client = provider.build_openai_client(settings.llm_api_base_url, settings.llm_api_key)
 
     def _build_skills_summary(self) -> str:
         """构建可用技能摘要（仅 name+description，全文按需 load_skill）"""
@@ -94,11 +118,68 @@ class AgentLoop:
         Returns:
             AgentResponse 包含最终回复和工具调用记录
         """
-        if not self.client:
-            return AgentResponse(content="LLM未配置，请设置 LLM_API_KEY 环境变量。", error="no_llm")
+        final_content = ""
+        tool_calls_made: List[Dict] = []
+        sid = session_id or ""
 
+        for ev in self._iter_events(user_message, session_id, db):
+            ev_type = ev["type"]
+            if ev_type == "turn_start":
+                sid = ev["data"]["session_id"]
+            elif ev_type == "tool_finished":
+                tool_calls_made.append({
+                    "tool": ev["data"]["tool"],
+                    "arguments": ev["data"].get("arguments", {}),
+                    "result_preview": ev["data"].get("preview", ""),
+                })
+            elif ev_type == "assistant_message":
+                final_content = ev["data"].get("content", "")
+            elif ev_type == "error":
+                return AgentResponse(
+                    content=ev["data"].get("error", "AI服务调用失败"),
+                    error=ev["data"].get("error", "unknown"),
+                    session_id=sid,
+                )
+
+        return AgentResponse(
+            content=final_content,
+            tool_calls_made=tool_calls_made,
+            session_id=sid,
+        )
+
+    def run_streaming(self, user_message: str, session_id: Optional[str], db: Session):
+        """流式执行：逐条产出事件字典，配合 SSE 推送给前端实时渲染。
+
+        事件类型:
+            turn_start          {"session_id"}
+            tool_started        {"seq", "tool", "arguments"}
+            permission_required {"request_id", "seq", "tool", "arguments", "reason"}
+            tool_finished       {"seq", "tool", "status", "preview", "arguments"}
+            assistant_message   {"content"}
+            turn_end            {"session_id", "tool_calls"}
+            interrupted         {"session_id"}
+            error               {"error"}
+        """
+        yield from self._iter_events(user_message, session_id, db)
+
+    def _iter_events(self, user_message: str, session_id: Optional[str], db: Session):
+        """一次完整对话的事件流生成器（run 与 run_streaming 共用）"""
         # 确保会话存在
         session_id = self.memory.get_or_create_session(session_id, db)
+        yield {"type": "turn_start", "data": {"session_id": session_id}}
+        clear_interrupt(session_id)
+
+        # 会话级模型/Provider 解析（模型别名 → base_url/API Key）
+        session_model = self.memory.get_session_model(session_id, db)
+        if session_model:
+            base_url, api_key, model = provider.resolve_llm(session_model)
+            client = provider.build_openai_client(base_url, api_key)
+        else:
+            model = settings.llm_model
+            client = self.client
+        if not client:
+            yield {"type": "error", "data": {"error": "LLM未配置，请设置 LLM_API_KEY 环境变量。"}}
+            return
 
         # 保存用户消息
         self.memory.save_message(session_id, "user", user_message, db=db)
@@ -108,13 +189,29 @@ class AgentLoop:
         skills_summary = self._build_skills_summary()
         system_msg = SYSTEM_PROMPT.format(context=context, skills=skills_summary)
 
-        messages = [{"role": "system", "content": system_msg}]
-
         # 加载历史
         history = self.memory.get_history(session_id, db)
         # 排除刚保存的最后一条（就是当前 user_message）
         if history and history[-1].get("content") == user_message:
             history = history[:-1]
+
+        # 上下文压缩：历史过长则生成摘要，出站视图只保留最近轮
+        if compaction.compaction_due(
+            compaction.estimate_tokens(history),
+            settings.context_window_tokens,
+            settings.compaction_threshold,
+            settings.compaction_min_tokens,
+        ):
+            yield {"type": "compacting", "data": {"session_id": session_id}}
+            summary = compaction.summarize(history, lambda msgs: self._complete_text(msgs, client, model))
+            if summary:
+                self.memory.save_summary(session_id, summary, db)
+                history = self.memory.get_history(session_id, db)
+                if history and history[-1].get("content") == user_message:
+                    history = history[:-1]
+            yield {"type": "compacted", "data": {"session_id": session_id}}
+
+        messages = [{"role": "system", "content": system_msg}]
         messages.extend(history)
 
         # 添加当前用户消息
@@ -126,11 +223,17 @@ class AgentLoop:
         # 多轮工具调用循环
         tool_calls_made = []
         final_content = ""
+        seq = 0
 
-        for round_idx in range(MAX_TOOL_ROUNDS):
+        for _ in range(MAX_TOOL_ROUNDS):
+            # 中断检查：上一轮工具执行中用户点了停止
+            if check_interrupted(session_id):
+                yield {"type": "interrupted", "data": {"session_id": session_id}}
+                return
+
             try:
-                response = self.client.chat.completions.create(
-                    model=settings.llm_model,
+                response = client.chat.completions.create(
+                    model=model,
                     messages=messages,
                     tools=tools if tools else None,
                     temperature=0.3,
@@ -138,7 +241,8 @@ class AgentLoop:
                 )
             except Exception as e:
                 logger.error(f"LLM调用失败: {e}")
-                return AgentResponse(content=f"AI服务调用失败: {str(e)}", error=str(e), session_id=session_id)
+                yield {"type": "error", "data": {"error": str(e)}}
+                return
 
             choice = response.choices[0]
             assistant_msg = choice.message
@@ -164,17 +268,47 @@ class AgentLoop:
                 "tool_calls": tc_list,
             })
 
-            # 逐个执行工具
-            tool_results_for_db = []
+            # 逐个执行工具：先全部发出 tool_started，读操作并行执行，写操作串行审批
+            prepared = []
             for tc in assistant_msg.tool_calls:
+                seq += 1
                 tool_name = tc.function.name
                 try:
                     arguments = json.loads(tc.function.arguments)
                 except json.JSONDecodeError:
                     arguments = {}
-
+                prepared.append({"seq": seq, "tc": tc, "tool": tool_name, "args": arguments})
                 logger.info(f"[AgentLoop] 调用工具: {tool_name}({arguments})")
-                result = self.registry.execute(tool_name, arguments, db)
+                yield {"type": "tool_started", "data": {"seq": seq, "tool": tool_name, "arguments": arguments}}
+
+            # 只读工具并行执行（每任务独立 Session，避免跨线程共享）
+            parallel_ids = {id(it) for it in prepared if self._is_parallel_safe(it["tool"])}
+            parallel_results = {}
+            if parallel_ids:
+                targets = [it for it in prepared if id(it) in parallel_ids]
+
+                def _exec_parallel(it):
+                    tidb = SessionLocal()
+                    try:
+                        return self.registry.execute(it["tool"], it["args"], tidb)
+                    finally:
+                        tidb.close()
+
+                with ThreadPoolExecutor(max_workers=4) as ex:
+                    for it, res in zip(targets, ex.map(_exec_parallel, targets)):
+                        parallel_results[id(it)] = res
+
+            tool_results_for_db = []
+            for it in prepared:
+                seq, tc = it["seq"], it["tc"]
+                tool_name, arguments = it["tool"], it["args"]
+                if check_interrupted(session_id):
+                    # 中断：未执行工具回填 error，避免孤儿 tool_calls
+                    result = {"error": "用户中断，工具未执行"}
+                elif id(it) in parallel_results:
+                    result = parallel_results[id(it)]
+                else:
+                    result = yield from self._exec_tool(tool_name, arguments, db, seq, session_id)
 
                 result_str = json.dumps(result, ensure_ascii=False, default=str)
                 # 截断过长结果
@@ -186,6 +320,18 @@ class AgentLoop:
                     "tool_call_id": tc.id,
                     "content": result_str,
                 })
+
+                status = "error" if (isinstance(result, dict) and result.get("error")) else "success"
+                yield {
+                    "type": "tool_finished",
+                    "data": {
+                        "seq": seq,
+                        "tool": tool_name,
+                        "arguments": arguments,
+                        "status": status,
+                        "preview": result_str[:200],
+                    },
+                }
 
                 tool_calls_made.append({
                     "tool": tool_name,
@@ -210,11 +356,62 @@ class AgentLoop:
             # 自动更新会话标题
             self.memory.update_session_title(session_id, user_message, db)
 
-        return AgentResponse(
-            content=final_content,
-            tool_calls_made=tool_calls_made,
-            session_id=session_id,
+        yield {"type": "assistant_message", "data": {"content": final_content}}
+        yield {"type": "turn_end", "data": {"session_id": session_id, "tool_calls": tool_calls_made}}
+
+    def _is_parallel_safe(self, tool_name: str) -> bool:
+        """只读工具可并行执行（无副作用、无需审批）"""
+        tool_def = self.registry.get_tool(tool_name)
+        risk_level = getattr(tool_def, "risk_level", "read") if tool_def else "read"
+        return risk_level == "read"
+
+    def _exec_tool(self, tool_name: str, arguments: dict, db: Session, seq: int, session_id: str):
+        """执行单个工具：权限判定 + 写操作审批（生成器，yield 权限事件并返回执行结果）"""
+        tool_def = self.registry.get_tool(tool_name)
+        risk_level = getattr(tool_def, "risk_level", "read") if tool_def else "read"
+        decision = self.permissions.evaluate(tool_name, risk_level)
+
+        if decision.allowed:
+            return self.registry.execute(tool_name, arguments, db)
+
+        # 明确拒绝（如只读模式），不弹审批
+        if not decision.needs_user:
+            return {"error": decision.reason}
+
+        # 需要审批的写操作：发权限事件，阻塞等待用户在前端审批
+        req = get_approval_store().create(
+            tool_name, arguments, timeout=getattr(settings, "chat_approval_timeout", 120)
         )
+        yield {
+            "type": "permission_required",
+            "data": {
+                "request_id": req.request_id,
+                "seq": seq,
+                "tool": tool_name,
+                "arguments": arguments,
+                "reason": decision.reason,
+            },
+        }
+        outcome = get_approval_store().wait(req)
+        if outcome == APPROVAL_OUTCOME_DENY:
+            return {"error": "用户拒绝授权，写操作未执行"}
+        if outcome == APPROVAL_OUTCOME_ALWAYS:
+            self.permissions.allow_tool_for_session(tool_name)
+        return self.registry.execute(tool_name, arguments, db)
+
+    def _complete_text(self, msgs: List[dict], client=None, model: str = "") -> str:
+        """短文本补全（用于上下文摘要等）"""
+        if client is None:
+            client = self.client
+        if not model:
+            model = settings.llm_model
+        resp = client.chat.completions.create(
+            model=model,
+            messages=msgs,
+            temperature=0.2,
+            max_tokens=500,
+        )
+        return resp.choices[0].message.content or ""
 
     def run_autonomous(self, trigger: str, instruction: str, db: Session) -> AgentResponse:
         """自主决策模式：无用户交互，LLM根据指令自主行动

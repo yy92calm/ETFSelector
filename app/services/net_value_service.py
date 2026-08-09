@@ -1,10 +1,12 @@
 """
 ETF行情数据服务
-仅使用 efinance 获取数据
+数据源: DataSourceManager（Ashare 主 + efinance 兜底），不再直接依赖 efinance
 """
 
 import logging
-from datetime import datetime
+import random
+import time
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -12,9 +14,13 @@ from sqlalchemy import func
 
 from app.models.etf import ETFBasic, ETFQuotation
 from app.db.database import SessionLocal
-import efinance as ef
+from app.services.data_sources import get_data_source_manager
 
 logger = logging.getLogger(__name__)
+
+# 批量更新请求间隔（秒），随机化防封
+BATCH_SLEEP_MIN = 1.0
+BATCH_SLEEP_MAX = 2.5
 
 
 class NetValueService:
@@ -29,33 +35,29 @@ class NetValueService:
         logger.info(f"从数据库获取 {len(etfs)} 只ETF")
         return etfs
 
-    def _fetch_from_efinance(self, etf_code: str, days_limit: int = None) -> pd.DataFrame:
-        """使用 efinance 获取ETF净值/行情数据"""
+    def _fetch_quotes(self, etf_code: str, days_limit: int = None) -> pd.DataFrame:
+        """使用 DataSourceManager（Ashare 主）获取ETF日K线数据"""
         try:
-            df = ef.fund.get_quote_history(etf_code)
+            manager = get_data_source_manager()
+            if days_limit:
+                start_date = (datetime.now() - timedelta(days=days_limit)).strftime("%Y%m%d")
+            else:
+                start_date = "20200101"
+            df = manager.fetch_etf_daily(etf_code, start_date=start_date)
             if df.empty:
                 return pd.DataFrame()
-            df = df.rename(columns={
-                "日期": "trade_date",
-                "单位净值": "net_value",
-                "涨跌幅": "net_value_change_pct",
-            })
             df["trade_date"] = pd.to_datetime(df["trade_date"])
-            df["net_value_change_pct"] = pd.to_numeric(df["net_value_change_pct"], errors="coerce")
-            if days_limit:
-                cutoff = pd.Timestamp.now().normalize() - pd.Timedelta(days=days_limit)
-                df = df[df["trade_date"] >= cutoff]
             return df
         except Exception as e:
-            logger.warning(f"[efinance] {etf_code} 获取失败: {e}")
+            logger.warning(f"[数据源] {etf_code} 获取失败: {e}")
             return pd.DataFrame()
 
     def fetch_and_save_net_value(self, etf_code: str, db: Session, days_limit: int = None) -> Dict:
-        """获取并保存单只ETF的净值数据"""
-        df = self._fetch_from_efinance(etf_code, days_limit=days_limit)
+        """获取并保存单只ETF的行情数据"""
+        df = self._fetch_quotes(etf_code, days_limit=days_limit)
 
         if df.empty:
-            logger.warning(f"{etf_code} 未获取到净值数据")
+            logger.warning(f"{etf_code} 未获取到行情数据")
             return {'success': False, 'count': 0, 'etf_code': etf_code}
 
         count = self._save_net_value_to_db(etf_code, df, db)
@@ -65,14 +67,14 @@ class NetValueService:
             'count': count,
             'etf_code': etf_code,
             'latest_date': df['trade_date'].max().strftime('%Y-%m-%d') if 'trade_date' in df.columns else None,
-            'latest_net_value': float(df['net_value'].iloc[-1]) if 'net_value' in df.columns else None,
+            'latest_net_value': float(df['close'].iloc[-1]) if 'close' in df.columns else None,
         }
 
     def _save_net_value_to_db(self, etf_code: str, df: pd.DataFrame, db: Session) -> int:
-        """保存净值数据到数据库。
-        
-        重要：仅在该日期无真实行情数据时才写入净值，
-        避免 volume=0 的净值数据覆盖真实K线。
+        """保存行情数据到数据库。
+
+        重要：仅在该日期无真实行情数据时才写入，
+        避免重复数据覆盖真实K线。
         """
         existing_dates = set(
             r[0]
@@ -89,26 +91,31 @@ class NetValueService:
 
             trade_date = pd.to_datetime(trade_date).date()
 
-            # 已有数据的日期一律跳过（无论是真实行情还是旧净值）
+            # 已有数据的日期一律跳过
             if trade_date in existing_dates:
                 continue
 
-            net_value = float(row.get("net_value", 0))
-            change_pct = float(row.get("net_value_change_pct", 0) or 0)
+            close_price = float(row.get("close", 0))
+            open_price = float(row.get("open", close_price))
+            high_price = float(row.get("high", close_price))
+            low_price = float(row.get("low", close_price))
+            volume = float(row.get("volume", 0))
+            amount = float(row.get("amount", 0))
+            change_pct = float(row.get("change_pct", 0) or 0)
 
-            # 数据质量校验：净值必须为正数
-            if net_value <= 0:
+            # 数据质量校验：价格必须为正数
+            if close_price <= 0:
                 continue
 
             quote = ETFQuotation(
                 etf_code=etf_code,
                 trade_date=trade_date,
-                open_price=net_value,
-                close_price=net_value,
-                high_price=net_value,
-                low_price=net_value,
-                volume=0,
-                amount=0,
+                open_price=open_price,
+                close_price=close_price,
+                high_price=high_price,
+                low_price=low_price,
+                volume=volume,
+                amount=amount,
                 change_pct=change_pct,
             )
 
@@ -157,6 +164,9 @@ class NetValueService:
                 logger.error(f"{etf.etf_code} 更新失败: {e}")
                 result['fail_count'] += 1
                 result['failed_etfs'].append(etf.etf_code)
+
+            # 随机间隔防封
+            time.sleep(random.uniform(BATCH_SLEEP_MIN, BATCH_SLEEP_MAX))
 
         logger.info(f"批量更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}, 共 {len(all_etfs)} 只ETF")
 

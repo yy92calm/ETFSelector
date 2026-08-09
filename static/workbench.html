@@ -176,6 +176,10 @@
             </div>
         </div>
 
+        <div class="chat-model-bar">
+            <select id="chat-model-select" onchange="Chat.switchModel(this.value)" title="会话模型（别名前缀→Provider）"></select>
+        </div>
+
         <div class="session-panel" id="session-panel" hidden>
             <div class="session-panel-header">
                 <span>历史会话</span>

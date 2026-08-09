@@ -1,6 +1,7 @@
 """技术指标计算服务"""
 
 import logging
+from datetime import date
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -23,11 +24,20 @@ class TechnicalIndicatorService:
         "bollinger_std": 2,
     }
     
-    def calculate_all_indicators(self, etf_code: str, db: Session, days: int = 60) -> Dict:
-        """计算所有技术指标"""
-        quotations = db.query(ETFQuotation).filter(
-            ETFQuotation.etf_code == etf_code
-        ).order_by(ETFQuotation.trade_date.desc()).limit(days).all()
+    def calculate_all_indicators(self, etf_code: str, db: Session, days: int = 60,
+                                 end_date: Optional[date] = None) -> Dict:
+        """计算所有技术指标
+
+        Args:
+            etf_code: ETF代码
+            db: 数据库会话
+            days: 回看交易日天数
+            end_date: 快照锁定日期（仅取该日及以前的数据），None=取最新
+        """
+        query = db.query(ETFQuotation).filter(ETFQuotation.etf_code == etf_code)
+        if end_date is not None:
+            query = query.filter(ETFQuotation.trade_date <= end_date)
+        quotations = query.order_by(ETFQuotation.trade_date.desc()).limit(days).all()
         
         if len(quotations) < 20:
             return {"error": "数据不足"}
@@ -297,12 +307,13 @@ class TechnicalIndicatorService:
         
         return [None] * (period - 1) + ema
     
-    def batch_calculate_indicators(self, etf_codes: List[str], db: Session) -> Dict[str, Dict]:
+    def batch_calculate_indicators(self, etf_codes: List[str], db: Session,
+                                   end_date: Optional[date] = None) -> Dict[str, Dict]:
         """批量计算ETF指标"""
         results = {}
         for code in etf_codes:
             try:
-                results[code] = self.calculate_all_indicators(code, db)
+                results[code] = self.calculate_all_indicators(code, db, end_date=end_date)
             except Exception as e:
                 logger.error(f"计算{code}指标失败: {e}")
                 results[code] = {"error": str(e)}

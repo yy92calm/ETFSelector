@@ -4,8 +4,11 @@
 const Chat = {
     sessionId: null,
     isLoading: false,
+    streaming: false,
     messagesEl: null,
     inputEl: null,
+    _toolSeq: 0,
+    _toolBubbles: null,
 
     init() {
         this.messagesEl = document.getElementById('chat-messages');
@@ -28,7 +31,37 @@ const Chat = {
         });
 
         this.loadSessions();
+        this.loadModels();
         this.addMessage('assistant', '你好！我是ETF工作台的AI助手。我可以帮你分析市场、管理策略、检查风控、执行回测。试试下方的快捷指令，或直接输入问题。');
+    },
+
+    async loadModels() {
+        const sel = document.getElementById('chat-model-select');
+        if (!sel) return;
+        try {
+            const resp = await fetch('/api/chat/model/options');
+            const data = await resp.json();
+            const models = data.data && data.data.models || [];
+            sel.innerHTML = '<option value="">默认模型</option>' + models.map(m =>
+                `<option value="${this.escapeHtml(m)}">${this.escapeHtml(m)}</option>`
+            ).join('');
+        } catch (err) {
+            sel.innerHTML = '<option value="">默认模型</option>';
+        }
+    },
+
+    async switchModel(model) {
+        if (!this.sessionId) {
+            this.sessionId = null;
+            return;
+        }
+        try {
+            await fetch('/api/chat/model', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: this.sessionId, model }),
+            });
+        } catch (err) { /* 静默失败 */ }
     },
 
     async loadSessions() {
@@ -113,12 +146,203 @@ const Chat = {
 
     async send() {
         const text = this.inputEl.value.trim();
-        if (!text || this.isLoading) return;
+        if (!text || this.isLoading || this.streaming) return;
 
         this.inputEl.value = '';
         this.addMessage('user', text);
         this.setLoading(true);
 
+        // 优先走流式接口，实时展示工具调用过程
+        const streamed = await this.sendStreaming(text);
+        if (!streamed) {
+            await this.sendLegacy(text);
+        }
+
+        this.setLoading(false);
+        this.hideStopButton();
+        this.loadSessions();
+    },
+
+    async sendStreaming(text) {
+        this.streaming = true;
+        this._toolSeq = 0;
+        this._toolBubbles = new Map();
+        try {
+            const resp = await fetch('/api/chat/stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: text, session_id: this.sessionId }),
+            });
+            if (!resp.ok || !resp.body) return false;
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                buffer += decoder.decode(value, { stream: true });
+                let idx;
+                while ((idx = buffer.indexOf('\n\n')) !== -1) {
+                    const frame = buffer.slice(0, idx);
+                    buffer = buffer.slice(idx + 2);
+                    this.handleSSEFrame(frame);
+                }
+            }
+            return true;
+        } catch (err) {
+            // 流式失败，回退到非流式接口
+            return false;
+        } finally {
+            this.streaming = false;
+        }
+    },
+
+    handleSSEFrame(frame) {
+        const lines = frame.split('\n');
+        for (const line of lines) {
+            if (!line.startsWith('data:')) continue;
+            const payload = line.slice(5).trim();
+            if (!payload) continue;
+            let ev;
+            try { ev = JSON.parse(payload); } catch (e) { continue; }
+            this.dispatchEvent(ev);
+        }
+    },
+
+    dispatchEvent(ev) {
+        const t = ev.type;
+        const d = ev.data || {};
+        if (t === 'turn_start') {
+            if (d.session_id) this.sessionId = d.session_id;
+            this.showStopButton();
+        } else if (t === 'tool_started') {
+            this.setLoading(false);
+            this.addToolBubble(d.seq, d.tool);
+        } else if (t === 'tool_finished') {
+            this.updateToolBubble(d.seq, d.status);
+        } else if (t === 'permission_required') {
+            this.permissionRequired(d);
+        } else if (t === 'assistant_message') {
+            this.setLoading(false);
+            if (d.content) this.addMessage('assistant', d.content);
+        } else if (t === 'turn_end') {
+            if (d.session_id) this.sessionId = d.session_id;
+            this.setLoading(false);
+            this.hideStopButton();
+            this.refreshWorkbench(d.tool_calls);
+        } else if (t === 'compacted') {
+            this.addToolInfo('已整理上下文（历史摘要）');
+        } else if (t === 'interrupted') {
+            this.setLoading(false);
+            this.hideStopButton();
+            this.addMessage('assistant', '已停止本次执行。');
+        } else if (t === 'error') {
+            this.setLoading(false);
+            this.hideStopButton();
+            this.addMessage('assistant', d.error || 'AI服务调用失败');
+        }
+    },
+
+    permissionRequired(d) {
+        const bubble = this._toolBubbles.get(d.seq);
+        if (!bubble) return;
+        bubble.classList.add('approval');
+        bubble.classList.remove('running');
+        const spinner = bubble.querySelector('.tool-spinner');
+        if (spinner) spinner.remove();
+        const stateEl = bubble.querySelector('.tool-state');
+        if (stateEl) stateEl.textContent = '等待授权';
+
+        const actions = document.createElement('div');
+        actions.className = 'approval-actions';
+        const reqId = d.request_id;
+        const mk = (label, outcome) => {
+            const b = document.createElement('button');
+            b.className = 'appr-btn';
+            b.textContent = label;
+            b.addEventListener('click', () => this.submitApproval(reqId, outcome, actions, bubble));
+            return b;
+        };
+        actions.appendChild(mk('允许本次', 'once'));
+        actions.appendChild(mk('本会话允许', 'always'));
+        actions.appendChild(mk('拒绝', 'deny'));
+        bubble.appendChild(actions);
+    },
+
+    async submitApproval(requestId, outcome, actionsEl, bubble) {
+        try {
+            await fetch('/api/chat/approve', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ request_id: requestId, outcome }),
+            });
+        } catch (err) { /* 后端超时会自动拒绝，忽略 */ }
+        if (actionsEl) {
+            actionsEl.querySelectorAll('.appr-btn').forEach(b => { b.disabled = true; });
+        }
+        const stateEl = bubble.querySelector('.tool-state');
+        if (stateEl) stateEl.textContent = outcome === 'deny' ? '已拒绝' : '已批准';
+    },
+
+    showStopButton() {
+        let btn = document.getElementById('chat-stop');
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.id = 'chat-stop';
+            btn.className = 'chat-stop-btn';
+            btn.textContent = '停止';
+            btn.addEventListener('click', () => this.stopStreaming());
+            const area = document.querySelector('.chat-input-area');
+            if (area) area.insertBefore(btn, document.getElementById('chat-send'));
+        }
+        btn.hidden = false;
+        btn.disabled = false;
+        btn.textContent = '停止';
+    },
+
+    hideStopButton() {
+        const btn = document.getElementById('chat-stop');
+        if (btn) { btn.hidden = true; btn.disabled = false; btn.textContent = '停止'; }
+    },
+
+    async stopStreaming() {
+        const btn = document.getElementById('chat-stop');
+        if (btn) { btn.disabled = true; btn.textContent = '已停止'; }
+        if (this.sessionId) {
+            try {
+                await fetch('/api/chat/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ session_id: this.sessionId }),
+                });
+            } catch (err) { /* 忽略 */ }
+        }
+    },
+
+    addToolBubble(seq, toolName) {
+        const div = document.createElement('div');
+        div.className = 'msg tool-info running';
+        div.dataset.seq = seq;
+        div.innerHTML = `<span class="tool-spinner"></span><span class="tool-name">${this.escapeHtml(toolName)}</span><span class="tool-state">执行中</span>`;
+        this._toolBubbles.set(seq, div);
+        this.messagesEl.appendChild(div);
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    },
+
+    updateToolBubble(seq, status) {
+        const div = this._toolBubbles.get(seq);
+        if (!div) return;
+        div.classList.remove('running');
+        const isErr = status === 'error';
+        div.classList.add(isErr ? 'error' : 'done');
+        const spinner = div.querySelector('.tool-spinner');
+        if (spinner) spinner.remove();
+        const stateEl = div.querySelector('.tool-state');
+        if (stateEl) stateEl.textContent = isErr ? '失败' : '完成';
+    },
+
+    async sendLegacy(text) {
         try {
             const resp = await fetch('/api/chat', {
                 method: 'POST',
@@ -142,8 +366,6 @@ const Chat = {
             }
         } catch (err) {
             this.addMessage('assistant', `网络错误: ${err.message}`);
-        } finally {
-            this.setLoading(false);
         }
     },
 

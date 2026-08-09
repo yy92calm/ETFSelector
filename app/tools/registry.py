@@ -7,7 +7,8 @@ Tool Registry - LLM 工具注册中心
 
 import inspect
 import logging
-from typing import Any, Callable, Dict, List, Optional, get_type_hints
+import re
+from typing import Any, Callable, Dict, List, Optional, Set, get_type_hints
 from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
@@ -15,15 +16,67 @@ logger = logging.getLogger(__name__)
 # 全局工具注册表
 _TOOL_REGISTRY: Dict[str, "ToolDef"] = {}
 
+# docstring 中 Args/参数 段的结束标题
+_DOC_STOP_HEADINGS = {
+    "Returns:", "Return:", "返回:", "Raises:", "抛出:",
+    "Example:", "Examples:", "示例:", "Note:", "Notes:", "注意:", "说明:",
+}
+
+
+def _parse_docstring_params(func: Callable) -> Dict[str, str]:
+    """从 docstring 的 Args:/参数: 段解析 参数名 → 描述"""
+    doc = inspect.getdoc(func) or ""
+    result: Dict[str, str] = {}
+    in_args = False
+    for line in doc.splitlines():
+        s = line.strip()
+        if s in ("Args:", "参数:", "Parameters:"):
+            in_args = True
+            continue
+        if not in_args or not s:
+            continue
+        if s in _DOC_STOP_HEADINGS:
+            break
+        m = re.match(r"^[-*]?\s*(\w+)\s*[:：,]\s*(.+)$", line)
+        if m:
+            result[m.group(1)] = m.group(2).strip()
+    return result
+
+
+def _unwrap_annotated(annotation):
+    """解包 Annotated[type, "描述"]，返回 (基础类型, 描述或None)"""
+    meta = getattr(annotation, "__metadata__", None)
+    if meta and getattr(annotation, "__origin__", None) is not None:
+        desc = meta[0] if meta and isinstance(meta[0], str) else None
+        return annotation.__origin__, desc
+    return annotation, None
+
+# 未显式声明风险时，按名称归类的写操作工具（变更系统状态，需审批）
+_WRITE_TOOLS: Set[str] = {
+    "create_strategy",
+    "delete_strategy",
+    "update_allocation",
+    "pause_strategy",
+    "resume_strategy",
+    "add_etf_to_strategy",
+    "remove_etf_from_strategy",
+    "add_etf_to_pool",
+    "execute_rebalance",
+    "sync_market_data",
+}
+
 
 class ToolDef:
     """工具定义"""
 
-    def __init__(self, name: str, description: str, func: Callable, parameters: Dict):
+    def __init__(self, name: str, description: str, func: Callable, parameters: Dict,
+                 risk_level: str = "read", requires_approval: bool = False):
         self.name = name
         self.description = description
         self.func = func
         self.parameters = parameters  # JSON Schema
+        self.risk_level = risk_level  # read / write
+        self.requires_approval = requires_approval
 
     def to_openai_schema(self) -> Dict:
         """转换为 OpenAI tools 格式"""
@@ -56,7 +109,7 @@ def _python_type_to_json_schema(annotation) -> Dict:
     return {"type": "string"}
 
 
-def tool(name: str, description: str):
+def tool(name: str, description: str, risk: Optional[str] = None):
     """工具注册装饰器
 
     用法:
@@ -65,11 +118,17 @@ def tool(name: str, description: str):
             ...
 
     注意: 函数的第一个参数必须是 db: Session（自动注入，不暴露给LLM）
+
+    Args:
+        name: 工具名称
+        description: 工具描述
+        risk: 风险级别 "read"/"write"；缺省按 _WRITE_TOOLS 表归类，write 需审批
     """
 
     def decorator(func: Callable) -> Callable:
         sig = inspect.signature(func)
-        hints = get_type_hints(func) if hasattr(func, "__annotations__") else {}
+        hints = get_type_hints(func, include_extras=True) if hasattr(func, "__annotations__") else {}
+        doc_param_desc = _parse_docstring_params(func)
 
         properties = {}
         required = []
@@ -80,7 +139,13 @@ def tool(name: str, description: str):
                 continue
 
             annotation = hints.get(param_name, param.annotation)
-            prop = _python_type_to_json_schema(annotation)
+            base_ann, ann_desc = _unwrap_annotated(annotation)
+            prop = _python_type_to_json_schema(base_ann)
+
+            # 参数描述：Annotated 元数据 > docstring > 无
+            desc = ann_desc or doc_param_desc.get(param_name)
+            if desc:
+                prop["description"] = desc
 
             # 从 docstring 或默认值推断描述
             if param.default is not inspect.Parameter.empty:
@@ -97,11 +162,14 @@ def tool(name: str, description: str):
         if required:
             parameters_schema["required"] = required
 
+        effective_risk = risk or ("write" if name in _WRITE_TOOLS else "read")
         tool_def = ToolDef(
             name=name,
             description=description,
             func=func,
             parameters=parameters_schema,
+            risk_level=effective_risk,
+            requires_approval=effective_risk == "write",
         )
         _TOOL_REGISTRY[name] = tool_def
         logger.debug(f"注册工具: {name}")

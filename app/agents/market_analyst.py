@@ -1,7 +1,7 @@
 import json
 import logging
 from datetime import date
-from typing import Dict, List
+from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.agents.base import BaseAgent
@@ -109,7 +109,7 @@ class MarketAnalystAgent(BaseAgent):
             return {"error": "策略不存在"}
 
         current_allocation = strategy.allocation_config or {}
-        nav_changes = self._get_nav_changes(list(current_allocation.keys()), db)
+        nav_changes = self._get_nav_changes(list(current_allocation.keys()), db, analysis_date)
         similar_environments = self._find_similar_environments(strategy_id, analysis_date, db)
         experiences = self._get_relevant_experiences(strategy_id, analysis_date, db)
         available_etfs = self._get_available_etfs(db)
@@ -133,12 +133,15 @@ class MarketAnalystAgent(BaseAgent):
             result["similar_environments_used"] = len(similar_environments)
         return result
 
-    def _get_nav_changes(self, etf_codes: List[str], db: Session) -> Dict:
+    def _get_nav_changes(self, etf_codes: List[str], db: Session, lock_date: Optional[date] = None) -> Dict:
         result = {}
         for code in etf_codes:
-            quotations = db.query(ETFQuotation).filter(
+            query = db.query(ETFQuotation).filter(
                 ETFQuotation.etf_code == code
-            ).order_by(ETFQuotation.trade_date.desc()).limit(5).all()
+            )
+            if lock_date is not None:
+                query = query.filter(ETFQuotation.trade_date <= lock_date)
+            quotations = query.order_by(ETFQuotation.trade_date.desc()).limit(5).all()
             if quotations:
                 latest = quotations[0]
                 change_5d = None

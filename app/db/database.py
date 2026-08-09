@@ -94,3 +94,23 @@ def init_db():
 
     except Exception as e:
         print(f"experience 表迁移警告: {e}")
+
+    # 兼容旧数据库：chat_session 表新增字段
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("PRAGMA table_info(chat_session)"))
+            columns = [row[1] for row in result.fetchall()]
+
+            chat_migrations = [
+                ("context_summary", "TEXT"),
+                ("model", "VARCHAR(100)"),
+            ]
+
+            for col_name, col_type in chat_migrations:
+                if col_name not in columns:
+                    conn.execute(text(f"ALTER TABLE chat_session ADD COLUMN {col_name} {col_type}"))
+                    conn.commit()
+                    print(f"✓ 已添加 chat_session.{col_name} 字段")
+
+    except Exception as e:
+        print(f"chat_session 表迁移警告: {e}")

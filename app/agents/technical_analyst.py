@@ -38,9 +38,9 @@ class TechnicalAnalystAgent(BaseAgent):
 注意：strength字段代表整体技术面强度，0最弱1最强。
 etf_rankings是对各ETF技术面的排序评分，用于后续配置决策参考。"""
 
-    def analyze(self, etf_codes: List[str], db: Session) -> Dict:
+    def analyze(self, etf_codes: List[str], db: Session, lock_date: Optional[date] = None) -> Dict:
         tech_svc = TechnicalIndicatorService()
-        indicators = tech_svc.batch_calculate_indicators(etf_codes, db)
+        indicators = tech_svc.batch_calculate_indicators(etf_codes, db, end_date=lock_date)
 
         prompt = self.PROMPT.format(
             technical_data=json.dumps(indicators, ensure_ascii=False, indent=2),

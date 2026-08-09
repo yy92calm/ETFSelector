@@ -201,6 +201,7 @@ class TestOrchestratorWithMocks(unittest.TestCase):
     """测试 Orchestrator 辩论流程（全部 mock LLM）"""
 
     def setUp(self):
+        from datetime import date
         from app.agents.orchestrator import Orchestrator
         self.orchestrator = Orchestrator()
         # Mock all sub-agents
@@ -209,6 +210,11 @@ class TestOrchestratorWithMocks(unittest.TestCase):
         self.orchestrator.bull_researcher = MagicMock()
         self.orchestrator.bear_researcher = MagicMock()
         self.orchestrator.market_analyst = MagicMock()
+        # 数据新鲜度与快照锁定用固定值（db 为 MagicMock，跳过真实数据层查询）
+        self.orchestrator._ensure_fresh_data = MagicMock(return_value={
+            "status": "fresh", "latest_date": "2026-06-10", "lag_days": 1,
+        })
+        self.orchestrator._compute_lock_date = MagicMock(return_value=date(2026, 6, 10))
 
     def test_full_debate_flow(self):
         """验证辩论流程：技术→情绪→多头→空头→主管"""

@@ -18,6 +18,28 @@ class Settings(BaseSettings):
     llm_api_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = ""
     llm_model: str = "gpt-4o-mini"
+    # 模型名前缀 → base_url 路由表（JSON，最长前缀匹配；key 是模型名前缀）
+    # 示例: {"qwen": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    #        "deepseek": "https://api.deepseek.com/v1"}
+    llm_model_aliases: str = ""
+
+    # AI 对话
+    chat_approval_timeout: int = 120  # 写操作审批等待超时秒数
+
+    # 上下文压缩
+    context_window_tokens: int = 128000
+    compaction_threshold: float = 0.8
+    compaction_min_tokens: int = 20000
+
+    # 数据源容错（efinance 防封）
+    data_source_retries: int = 3  # 单次拉取失败重试次数
+    data_source_retry_base: float = 1.5  # 退避基数（秒）
+    circuit_break_failures: int = 5  # 连续失败触发熔断次数
+    circuit_break_seconds: int = 600  # 熔断时长（秒）
+    etf_list_cache_path: str = "app/data/etf_list_cache.json"  # ETF列表本地缓存
+
+    # 多Agent辩论
+    debate_max_data_lag_days: int = 3  # 辩论前允许的数据最大滞后自然日，超过则自动同步
 
     # 定时任务（每个工作日20:00更新净值数据）
     scheduler_hour: int = 20

@@ -9,6 +9,7 @@
 
 import logging
 from datetime import date
+from pathlib import Path
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from app.config import get_settings
@@ -19,34 +20,21 @@ settings = get_settings()
 
 _scheduler: BackgroundScheduler | None = None
 
+# 提示词文件目录
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+def _load_prompt(filename: str, **kwargs) -> str:
+    """从 prompts/ 目录加载提示词模板，支持变量替换"""
+    filepath = _PROMPTS_DIR / filename
+    content = filepath.read_text(encoding="utf-8")
+    if kwargs:
+        content = content.format(**kwargs)
+    return content
+
+
 # 自主决策指令：驱动LLM主动管理而非被动维持
-AUTONOMOUS_INSTRUCTION = """你是ETF量化工作台的自主决策大脑，请执行以下完整决策流程：
-
-【第1步：感知市场】
-- 查看市场概况，识别当日热点板块和异动ETF
-- 查看舆情数据，判断市场情绪方向
-
-【第2步：审视持仓】
-- 检查所有活跃策略的持仓状态和收益表现
-- 检查风控状态（熔断/回撤）
-
-【第3步：主动决策】根据以上分析，自主执行以下操作（可多选）：
-- 调整配置：如果某ETF趋势走弱或另一只更强，用 update_allocation 调整比例
-- 发现新标的：如果市场出现新热点，用 search_etf 搜索相关ETF，用 add_etf_to_pool 拉取数据，然后纳入策略配置
-- 汰换劣策略：如果某策略连续表现差（收益远低于市场），用 pause_strategy 暂停它
-- 创建新策略：如果发现明确机会，用 create_strategy 建立新组合
-- 触发深度分析：对重点策略调用 run_multi_agent_analysis 获取辩论式分析结论
-
-【第4步：输出结论】
-- 先给出今日操作摘要（做了什么/为什么）
-- 如果确实无需任何操作，说明原因
-
-重要原则：
-- 你是主动管理者，不是被动观察者。发现机会要敢于行动
-- 每次至少检查是否有优化空间，而不是默认维持现状
-- 风控优先：任何操作前先确认风控状态正常
-- 分散风险：单一ETF配置不超过40%
-"""
+AUTONOMOUS_INSTRUCTION = _load_prompt("autonomous_instruction.md")
 
 
 @log_task_execution("daily_pipeline")
@@ -449,7 +437,7 @@ def _job_auto_fetch_quotes():
             start = item["start_date"]
             end = item.get("end_date", today.strftime("%Y%m%d"))
             try:
-                df = svc.fetch_etf_daily(code, start_date=start, end_date=end)
+                df = svc.fetch_etf_daily_scheduled(code, start_date=start, end_date=end)
                 if not df.empty:
                     added = svc.save_daily_quotes(code, df, db)
                     total_success += 1
@@ -484,22 +472,15 @@ def _llm_plan_fetch(no_data: list, stale: list, settings) -> list:
         return [{"code": s["code"], "start_date": default_start, "end_date": today_str}
                 for s in (no_data + stale)]
 
-    prompt = f"""你是ETF数据管理助手。以下是需要补全行情数据的ETF列表。
-请为每只ETF决定需要拉取的起始日期（格式YYYYMMDD），结束日期统一为{today_str}。
-
-## 无历史数据的ETF（{len(no_data)}只）
-{_json.dumps(no_data[:50], ensure_ascii=False)}
-
-## 数据过期的ETF（{len(stale)}只，latest_date为当前最新日期）
-{_json.dumps(stale[:50], ensure_ascii=False)}
-
-## 规则
-- 无数据的ETF：start_date设为30天前（{default_start}）
-- 过期ETF：start_date设为其latest_date次日
-- 如果列表超过50只，只输出前50只最重要的（优先策略持仓中的ETF）
-
-输出JSON数组（不要其他文字）：
-[{{"code": "ETF代码", "start_date": "YYYYMMDD", "end_date": "{today_str}"}}]"""
+    prompt = _load_prompt(
+        "fetch_plan_prompt.md",
+        today_str=today_str,
+        default_start=default_start,
+        no_data_count=len(no_data),
+        no_data_json=_json.dumps(no_data[:50], ensure_ascii=False),
+        stale_count=len(stale),
+        stale_json=_json.dumps(stale[:50], ensure_ascii=False),
+    )
 
     try:
         client = OpenAI(api_key=settings.llm_api_key, base_url=settings.llm_api_base_url)
@@ -547,14 +528,17 @@ def get_scheduler() -> BackgroundScheduler:
             misfire_grace_time=3600,
         )
 
-        # ========== 工作日行情自动补全（盘后18:30） ==========
+        # ========== 工作日行情自动补全（盘后18:00-19:00随机） ==========
+        # 使用 jitter 实现每天随机时间执行，避免固定时间被识别
         _scheduler.add_job(
             _job_auto_fetch_quotes,
             trigger=CronTrigger(day_of_week='mon-fri', hour=18, minute=30),
             id="auto_fetch_quotes",
             replace_existing=True,
             misfire_grace_time=3600,
+            jitter=1800,  # ±30分钟，实际执行时间 18:00-19:00
         )
+        logger.info("行情补全任务已调度: 工作日 18:00-19:00 随机执行")
 
         # ========== 交易时段舆情采集（每2小时一次：10:00, 12:00, 14:00） ==========
         for hour in [10, 12, 14]:

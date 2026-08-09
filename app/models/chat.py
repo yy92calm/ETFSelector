@@ -12,6 +12,8 @@ class ChatSession(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     session_id = Column(String(64), nullable=False, unique=True, index=True, comment="会话唯一标识")
     title = Column(String(200), nullable=True, comment="会话标题（自动生成）")
+    context_summary = Column(Text, nullable=True, comment="上下文压缩摘要（只用于出站视图）")
+    model = Column(String(100), nullable=True, comment="会话级模型（覆盖默认模型，空则用默认）")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

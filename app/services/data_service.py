@@ -23,10 +23,14 @@ logger = logging.getLogger(__name__)
 # Ashare 使用新浪/腾讯接口，相对稳定，间隔可以稍短
 REQUEST_INTERVAL_MIN = 1.5
 REQUEST_INTERVAL_MAX = 3.0
+# 全量/列表类大请求间隔（秒）
+BULK_REQUEST_INTERVAL_MIN = 3.0
+BULK_REQUEST_INTERVAL_MAX = 6.0
 
 
-def _random_sleep():
-    time.sleep(random.uniform(REQUEST_INTERVAL_MIN, REQUEST_INTERVAL_MAX))
+def _random_sleep(interval_min: float = REQUEST_INTERVAL_MIN,
+                  interval_max: float = REQUEST_INTERVAL_MAX):
+    time.sleep(random.uniform(interval_min, interval_max))
 
 
 class DataService:
@@ -45,11 +49,11 @@ class DataService:
         return self._scheduled_task_source
 
     # ------------------------------------------------------------------ #
-    #  ETF 列表（广发、易方达、华夏）
+    #  ETF 列表（天天基金JS主源 + 本地缓存 + efinance兜底）
     # ------------------------------------------------------------------ #
     def fetch_etf_list(self) -> pd.DataFrame:
         """
-        从efinance获取ETF列表
+        从数据源获取ETF列表（主源失败自动降级缓存/efinance）
         返回DataFrame包含: etf_code, etf_name 等字段
         """
         df = self.data_source.fetch_etf_list()
@@ -120,7 +124,21 @@ class DataService:
             logger.warning(f"{etf_code} efinance未获取到数据")
         
         return df
-    
+
+    def fetch_etf_daily_scheduled(
+        self,
+        etf_code: str,
+        start_date: str,
+        end_date: Optional[str] = None,
+    ) -> pd.DataFrame:
+        """
+        定时任务专用：仅使用Ashare获取日K线，不降级到efinance。
+        """
+        if end_date is None:
+            end_date = datetime.now().strftime("%Y%m%d")
+        source = self._get_scheduled_source()
+        return source.fetch_etf_daily(etf_code, start_date, end_date)
+
     def _is_gf_etf(self, etf_code: str) -> bool:
         """判断是否为广发基金ETF"""
         code = etf_code.replace('sh', '').replace('sz', '').strip()

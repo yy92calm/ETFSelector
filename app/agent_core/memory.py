@@ -45,7 +45,15 @@ class ChatMemory:
         db.commit()
 
     def get_history(self, session_id: str, db: Session, limit: int = MAX_HISTORY_ROUNDS) -> List[dict]:
-        """获取对话历史（OpenAI messages 格式）"""
+        """获取对话历史（OpenAI messages 格式）
+
+        若有压缩摘要，返回「摘要块 + 最近若干轮」的只读出站视图，canonical 历史不变。
+        """
+        summary = self.get_summary(session_id, db)
+        if summary:
+            # 压缩后只保留最近若干轮，避免超长
+            limit = min(limit, 8)
+
         messages = (
             db.query(ChatMessage)
             .filter(ChatMessage.session_id == session_id)
@@ -56,6 +64,9 @@ class ChatMemory:
         messages.reverse()
 
         history = []
+        if summary:
+            history.append({"role": "system", "content": f"[历史对话摘要]\n{summary}"})
+
         for msg in messages:
             entry = {"role": msg.role, "content": msg.content or ""}
             if msg.tool_calls:
@@ -71,6 +82,30 @@ class ChatMemory:
             history.append(entry)
 
         return history
+
+    def get_summary(self, session_id: str, db: Session) -> str:
+        """获取会话的上下文压缩摘要"""
+        session = db.query(ChatSession).filter(ChatSession.session_id == session_id).first()
+        return (session.context_summary or "") if session else ""
+
+    def save_summary(self, session_id: str, summary: str, db: Session):
+        """保存会话的上下文压缩摘要"""
+        session = db.query(ChatSession).filter(ChatSession.session_id == session_id).first()
+        if session:
+            session.context_summary = summary
+            db.commit()
+
+    def get_session_model(self, session_id: str, db: Session) -> str:
+        """获取会话级模型（空表示用默认模型）"""
+        session = db.query(ChatSession).filter(ChatSession.session_id == session_id).first()
+        return (session.model or "") if session else ""
+
+    def set_session_model(self, session_id: str, model: str, db: Session):
+        """设置会话级模型"""
+        session = db.query(ChatSession).filter(ChatSession.session_id == session_id).first()
+        if session:
+            session.model = model or None
+            db.commit()
 
     def get_all_messages(self, session_id: str, db: Session) -> List[dict]:
         """获取会话的所有消息（用于前端展示）"""

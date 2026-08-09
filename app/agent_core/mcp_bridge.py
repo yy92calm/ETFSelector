@@ -86,7 +86,9 @@ class McpBridge:
             if not name or stype not in ("stdio", "http"):
                 logger.warning(f"跳过无效 MCP server 配置: {item}")
                 continue
-            servers.append({"name": name, "type": stype, **item})
+            # read_tools: 显式声明为只读的工具名（不带 server 前缀），其余按写操作处理（需审批）
+            read_tools = set(item.get("read_tools") or [])
+            servers.append({"name": name, "type": stype, "read_tools": read_tools, **item})
         return servers
 
     def _discover(self):
@@ -94,14 +96,18 @@ class McpBridge:
         for server in self.servers:
             try:
                 tools = self._run_coroutine(self._list_tools(server))
+                read_tools = server.get("read_tools") or set()
                 for tool in tools:
                     prefixed = f"{server['name']}.{tool.name}"
                     params = tool.inputSchema or {"type": "object", "properties": {}}
+                    is_read = tool.name in read_tools
                     self.tool_defs.append(ToolDef(
                         name=prefixed,
                         description=tool.description or "",
                         func=self._make_func(server["name"], tool.name),
                         parameters=params,
+                        risk_level="read" if is_read else "write",
+                        requires_approval=not is_read,
                     ))
                 logger.info(f"MCP server [{server['name']}] 注册 {len(tools)} 个工具")
             except Exception as e:
