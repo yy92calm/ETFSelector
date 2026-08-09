@@ -3201,59 +3201,156 @@ async function loadAutoStrategyOverview() {
 }
 
 async function loadSentimentPage() {
-    await Promise.all([
-        loadSentimentSummaryForTable(),
-        loadSentimentTable(),
-        loadMarketEnvironment(),
-    ]);
+    if (!window.sentimentSelectedDate) {
+        window.sentimentSelectedDate = new Date().toISOString().slice(0, 10);
+    }
+    if (!window.sentimentCalDate) {
+        window.sentimentCalDate = new Date();
+    }
+    await loadSentimentCalendar();
+    await loadSentimentForDate(window.sentimentSelectedDate);
 }
 
-async function loadSentimentSummaryForTable() {
+async function loadSentimentCalendar() {
+    const calDate = window.sentimentCalDate || new Date();
+    const year = calDate.getFullYear();
+    const month = calDate.getMonth();
+    
+    document.getElementById('sentiment-cal-title').textContent = `${year}年${month + 1}月`;
+    
+    const startDate = new Date(year, month - 1, 1).toISOString().slice(0, 10);
+    const endDate = new Date(year, month + 2, 0).toISOString().slice(0, 10);
+    
     try {
-        const data = await api('/api/auto-strategy/sentiments/summary');
-        const summary = data.data;
-
-        document.getElementById('sentiment-total').textContent = summary.total || 0;
-        document.getElementById('sentiment-positive-count').textContent = summary.positive || 0;
-        document.getElementById('sentiment-negative-count').textContent = summary.negative || 0;
-        document.getElementById('sentiment-avg-score').textContent = summary.avg_score || '-';
+        const data = await api(`/api/auto-strategy/sentiments/calendar?start_date=${startDate}&end_date=${endDate}`);
+        const days = data.data.days || [];
+        const dayMap = {};
+        days.forEach(d => { dayMap[d.date] = d; });
+        
+        const firstDay = new Date(year, month, 1);
+        const lastDay = new Date(year, month + 1, 0);
+        const startWeekday = firstDay.getDay();
+        const daysInMonth = lastDay.getDate();
+        
+        let html = '<div style="display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center;">';
+        html += '<div style="padding:4px;color:var(--text-secondary);font-weight:600;">日</div>';
+        html += '<div style="padding:4px;color:var(--text-secondary);font-weight:600;">一</div>';
+        html += '<div style="padding:4px;color:var(--text-secondary);font-weight:600;">二</div>';
+        html += '<div style="padding:4px;color:var(--text-secondary);font-weight:600;">三</div>';
+        html += '<div style="padding:4px;color:var(--text-secondary);font-weight:600;">四</div>';
+        html += '<div style="padding:4px;color:var(--text-secondary);font-weight:600;">五</div>';
+        html += '<div style="padding:4px;color:var(--text-secondary);font-weight:600;">六</div>';
+        
+        for (let i = 0; i < startWeekday; i++) {
+            html += '<div></div>';
+        }
+        
+        const today = new Date().toISOString().slice(0, 10);
+        const selected = window.sentimentSelectedDate;
+        
+        for (let d = 1; d <= daysInMonth; d++) {
+            const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+            const dayData = dayMap[dateStr];
+            const isToday = dateStr === today;
+            const isSelected = dateStr === selected;
+            
+            let bg = 'transparent';
+            let textColor = 'var(--text)';
+            let scoreText = '';
+            
+            if (dayData && dayData.avg_score !== null) {
+                const score = dayData.avg_score;
+                if (score > 0.3) { bg = '#86efac'; scoreText = score.toFixed(1); }
+                else if (score > 0) { bg = '#bbf7d0'; scoreText = score.toFixed(1); }
+                else if (score < -0.3) { bg = '#fecaca'; scoreText = score.toFixed(1); }
+                else if (score < 0) { bg = '#fee2e2'; scoreText = score.toFixed(1); }
+                else { bg = '#e5e7eb'; }
+            }
+            
+            if (isSelected) {
+                textColor = 'white';
+                bg = 'var(--primary)';
+            } else if (isToday) {
+                textColor = 'var(--primary)';
+            }
+            
+            html += `<div onclick="selectSentimentDate('${dateStr}')" style="padding:6px 4px;border-radius:4px;cursor:pointer;background:${bg};color:${textColor};${isSelected ? 'font-weight:700;' : ''}${isToday && !isSelected ? 'font-weight:600;' : ''}" title="${dateStr}${dayData ? ' | 均分:' + (dayData.avg_score?.toFixed(2) || '-') + ' | 共' + dayData.total + '条' : ''}">`;
+            html += `<div>${d}</div>`;
+            if (scoreText && !isSelected) {
+                html += `<div style="font-size:9px;opacity:0.8;">${scoreText}</div>`;
+            }
+            html += '</div>';
+        }
+        
+        html += '</div>';
+        document.getElementById('sentiment-calendar').innerHTML = html;
     } catch (e) {
-        console.error('获取舆情汇总失败', e);
+        document.getElementById('sentiment-calendar').innerHTML = '<div style="color:var(--danger);padding:10px;">加载失败</div>';
     }
 }
 
-async function loadSentimentTable() {
-    try {
-        const data = await api('/api/auto-strategy/sentiments?days=1');
-        const sentiments = data.data.sentiments || [];
+function sentimentCalPrev() {
+    const d = window.sentimentCalDate || new Date();
+    d.setMonth(d.getMonth() - 1);
+    window.sentimentCalDate = d;
+    loadSentimentCalendar();
+}
 
+function sentimentCalNext() {
+    const d = window.sentimentCalDate || new Date();
+    d.setMonth(d.getMonth() + 1);
+    window.sentimentCalDate = d;
+    loadSentimentCalendar();
+}
+
+async function selectSentimentDate(dateStr) {
+    window.sentimentSelectedDate = dateStr;
+    await loadSentimentCalendar();
+    await loadSentimentForDate(dateStr);
+}
+
+async function loadSentimentForDate(dateStr) {
+    document.getElementById('sentiment-current-date').textContent = dateStr;
+    document.getElementById('sentiment-list-title').textContent = `舆情列表 - ${dateStr}`;
+    
+    try {
+        const data = await api(`/api/auto-strategy/sentiments/by-date?target_date=${dateStr}`);
+        const sentiments = data.data.sentiments || [];
+        
         if (sentiments.length === 0) {
             document.getElementById('sentiment-table').innerHTML = 
-                '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">暂无舆情数据</td></tr>';
+                '<tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">该日期暂无舆情数据</td></tr>';
+            document.getElementById('sentiment-total').textContent = '0';
+            document.getElementById('sentiment-positive-count').textContent = '0';
+            document.getElementById('sentiment-negative-count').textContent = '0';
+            document.getElementById('sentiment-avg-score').textContent = '-';
             return;
         }
-
+        
+        const positive = sentiments.filter(s => s.sentiment_label === 'positive').length;
+        const negative = sentiments.filter(s => s.sentiment_label === 'negative').length;
+        const avgScore = sentiments.reduce((sum, s) => sum + (s.sentiment_score || 0), 0) / sentiments.length;
+        
+        document.getElementById('sentiment-total').textContent = sentiments.length;
+        document.getElementById('sentiment-positive-count').textContent = positive;
+        document.getElementById('sentiment-negative-count').textContent = negative;
+        document.getElementById('sentiment-avg-score').textContent = avgScore.toFixed(2);
+        
         const sourceLabels = {
-            'eastmoney': '东财',
-            'cls': '财联社',
-            'ths': '同花顺',
-            'sina': '新浪',
-            'jin10': '金十',
-            'eastmoney_hot': '热点',
-            'eastmoney_keyword': '关键词'
+            'eastmoney': '东财', 'cls': '财联社', 'ths': '同花顺',
+            'sina': '新浪', 'jin10': '金十', 'eastmoney_hot': '热点', 'eastmoney_keyword': '关键词'
         };
-
+        
         const html = sentiments.map((s, idx) => {
             const score = s.sentiment_score || 0;
             const scoreClass = score > 0 ? 'text-success' : score < 0 ? 'text-danger' : '';
             const labelIcon = s.sentiment_label === 'positive' ? '✅' : s.sentiment_label === 'negative' ? '⚠️' : '➖';
             const labelText = s.sentiment_label === 'positive' ? '正面' : s.sentiment_label === 'negative' ? '负面' : '中性';
             const labelClass = s.sentiment_label === 'positive' ? 'badge-success' : s.sentiment_label === 'negative' ? 'badge-danger' : '';
-            
             const title = s.title || s.content?.substring(0, 60) || '无标题';
             const time = s.publish_time ? new Date(s.publish_time).toLocaleTimeString('zh-CN', {hour: '2-digit', minute: '2-digit'}) : '-';
             const sourceLabel = sourceLabels[s.source] || s.source;
-
+            
             return `
                 <tr onclick="showSentimentDetail(${idx})" style="cursor:pointer;">
                     <td><span class="badge" style="font-size:11px;background:var(--primary);color:white;">${sourceLabel}</span></td>
@@ -3265,11 +3362,9 @@ async function loadSentimentTable() {
                 </tr>
             `;
         }).join('');
-
+        
         document.getElementById('sentiment-table').innerHTML = html;
-        
         window.currentSentiments = sentiments;
-        
     } catch (e) {
         document.getElementById('sentiment-table').innerHTML = 
             `<tr><td colspan="6" style="text-align:center;color:var(--danger);">加载失败: ${e.message}</td></tr>`;

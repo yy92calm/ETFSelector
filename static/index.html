@@ -233,63 +233,79 @@
         <div id="subtab-sentiment" class="subtab-content">
             <div class="toolbar" style="gap:12px;">
                 <button class="btn btn-success" onclick="triggerSentimentCollect()">采集舆情</button>
-                <button class="btn btn-info" onclick="loadSentimentPage()">刷新舆情</button>
+                <button class="btn btn-info" onclick="loadSentimentPage()">刷新</button>
+                <span id="sentiment-current-date" style="margin-left:auto;font-size:14px;font-weight:600;color:var(--text);"></span>
             </div>
 
-            <!-- 舆情统计卡片 -->
-            <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:20px;">
-                <div class="card" style="padding:16px;text-align:center;">
-                    <div class="stat-label" style="font-size:12px;">舆情总数</div>
-                    <div class="stat-value" id="sentiment-total" style="font-size:24px;">-</div>
+            <div style="display:flex;gap:16px;margin-top:16px;">
+                <!-- 左侧日历 -->
+                <div class="card" style="width:280px;flex-shrink:0;padding:16px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                        <button onclick="sentimentCalPrev()" style="background:none;border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer;">&lt;</button>
+                        <span id="sentiment-cal-title" style="font-weight:600;font-size:14px;"></span>
+                        <button onclick="sentimentCalNext()" style="background:none;border:1px solid var(--border);border-radius:4px;padding:4px 10px;cursor:pointer;">&gt;</button>
+                    </div>
+                    <div id="sentiment-calendar" style="font-size:12px;"></div>
+                    <div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+                        <div style="font-size:11px;color:var(--text-secondary);margin-bottom:6px;">情绪色阶</div>
+                        <div style="display:flex;gap:4px;align-items:center;">
+                            <span style="font-size:11px;">负面</span>
+                            <div style="display:flex;gap:2px;flex:1;">
+                                <div style="flex:1;height:14px;background:#fee2e2;border-radius:2px;"></div>
+                                <div style="flex:1;height:14px;background:#fecaca;border-radius:2px;"></div>
+                                <div style="flex:1;height:14px;background:#e5e7eb;border-radius:2px;"></div>
+                                <div style="flex:1;height:14px;background:#bbf7d0;border-radius:2px;"></div>
+                                <div style="flex:1;height:14px;background:#86efac;border-radius:2px;"></div>
+                            </div>
+                            <span style="font-size:11px;">正面</span>
+                        </div>
+                    </div>
                 </div>
-                <div class="card" style="padding:16px;text-align:center;">
-                    <div class="stat-label" style="font-size:12px;">正面舆情</div>
-                    <div class="stat-value text-success" id="sentiment-positive-count" style="font-size:24px;">-</div>
-                </div>
-                <div class="card" style="padding:16px;text-align:center;">
-                    <div class="stat-label" style="font-size:12px;">负面舆情</div>
-                    <div class="stat-value text-danger" id="sentiment-negative-count" style="font-size:24px;">-</div>
-                </div>
-                <div class="card" style="padding:16px;text-align:center;">
-                    <div class="stat-label" style="font-size:12px;">平均评分</div>
-                    <div class="stat-value" id="sentiment-avg-score" style="font-size:24px;">-</div>
-                </div>
-            </div>
 
-            <!-- 舆情列表表格 -->
-            <div class="card" style="margin-top:20px;">
-                <div class="card-title">
-                    <span style="font-size:18px;">📡 今日舆情列表</span>
-                </div>
-                <div class="table-wrap" style="max-height:500px;overflow-y:auto;">
-                    <table>
-                        <thead>
-                            <tr>
-                                <th style="width:60px;">来源</th>
-                                <th>标题/内容</th>
-                                <th style="width:80px;">情绪</th>
-                                <th style="width:70px;">评分</th>
-                                <th style="width:100px;">发布时间</th>
-                                <th style="width:80px;">操作</th>
-                            </tr>
-                        </thead>
-                        <tbody id="sentiment-table">
-                            <tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">点击"采集舆情"获取数据</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+                <!-- 右侧舆情列表 -->
+                <div style="flex:1;min-width:0;">
+                    <!-- 当日统计 -->
+                    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px;">
+                        <div class="card" style="padding:12px;text-align:center;">
+                            <div class="stat-label" style="font-size:11px;">舆情总数</div>
+                            <div class="stat-value" id="sentiment-total" style="font-size:22px;">-</div>
+                        </div>
+                        <div class="card" style="padding:12px;text-align:center;">
+                            <div class="stat-label" style="font-size:11px;">正面</div>
+                            <div class="stat-value text-success" id="sentiment-positive-count" style="font-size:22px;">-</div>
+                        </div>
+                        <div class="card" style="padding:12px;text-align:center;">
+                            <div class="stat-label" style="font-size:11px;">负面</div>
+                            <div class="stat-value text-danger" id="sentiment-negative-count" style="font-size:22px;">-</div>
+                        </div>
+                        <div class="card" style="padding:12px;text-align:center;">
+                            <div class="stat-label" style="font-size:11px;">平均评分</div>
+                            <div class="stat-value" id="sentiment-avg-score" style="font-size:22px;">-</div>
+                        </div>
+                    </div>
 
-            <!-- 市场环境分析 -->
-            <div class="card" style="margin-top:20px;">
-                <div class="card-title">
-                    <span style="font-size:18px;">🌐 市场环境分析</span>
-                    <button class="btn btn-sm btn-outline" onclick="loadMarketEnvironment()" style="margin-left:auto;font-size:12px;">刷新</button>
-                </div>
-                <div id="market-environment-content" style="max-height:300px;overflow-y:auto;">
-                    <div class="empty-state-mini">
-                        <div style="font-size:28px;margin-bottom:8px;opacity:0.5;">🌍</div>
-                        <div>采集舆情后自动分析</div>
+                    <!-- 舆情列表 -->
+                    <div class="card">
+                        <div class="card-title">
+                            <span id="sentiment-list-title" style="font-size:16px;">舆情列表</span>
+                        </div>
+                        <div class="table-wrap" style="max-height:500px;overflow-y:auto;">
+                            <table>
+                                <thead>
+                                    <tr>
+                                        <th style="width:60px;">来源</th>
+                                        <th>标题/内容</th>
+                                        <th style="width:80px;">情绪</th>
+                                        <th style="width:70px;">评分</th>
+                                        <th style="width:100px;">发布时间</th>
+                                        <th style="width:80px;">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="sentiment-table">
+                                    <tr><td colspan="6" style="text-align:center;color:var(--text-secondary);">加载中...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             </div>

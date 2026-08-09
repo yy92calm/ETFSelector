@@ -94,6 +94,65 @@ def get_sentiment_summary(target_date: date = None, db: Session = Depends(get_db
     return APIResponse(data=summary)
 
 
+@router.get("/sentiments/calendar", response_model=APIResponse)
+def get_sentiment_calendar(
+    start_date: date = None,
+    end_date: date = None,
+    db: Session = Depends(get_db)
+):
+    """获取日期范围内每日舆情汇总（用于日历热力图）"""
+    if not end_date:
+        end_date = db.query(func.max(SentimentData.data_date)).scalar() or date.today()
+    if not start_date:
+        start_date = end_date - timedelta(days=30)
+
+    from sqlalchemy import case, func as sql_func
+    daily = (
+        db.query(
+            SentimentData.data_date,
+            sql_func.count(SentimentData.id).label("total"),
+            sql_func.avg(SentimentData.sentiment_score).label("avg_score"),
+            sql_func.sum(case((SentimentData.sentiment_label == "positive", 1), else_=0)).label("positive"),
+            sql_func.sum(case((SentimentData.sentiment_label == "negative", 1), else_=0)).label("negative"),
+        )
+        .filter(
+            SentimentData.data_date >= start_date,
+            SentimentData.data_date <= end_date,
+        )
+        .group_by(SentimentData.data_date)
+        .all()
+    )
+
+    return APIResponse(data={
+        "days": [
+            {
+                "date": d.data_date.isoformat(),
+                "total": d.total,
+                "avg_score": round(d.avg_score, 3) if d.avg_score is not None else None,
+                "positive": d.positive,
+                "negative": d.negative,
+            }
+            for d in daily
+        ]
+    })
+
+
+@router.get("/sentiments/by-date", response_model=APIResponse)
+def get_sentiments_by_date(target_date: date, db: Session = Depends(get_db)):
+    """获取指定日期的舆情列表"""
+    sentiments = (
+        db.query(SentimentData)
+        .filter(SentimentData.data_date == target_date)
+        .order_by(SentimentData.publish_time.desc())
+        .all()
+    )
+    return APIResponse(data={
+        "date": target_date.isoformat(),
+        "sentiments": [s.to_dict() for s in sentiments],
+        "total": len(sentiments),
+    })
+
+
 @router.get("/experiences", response_model=APIResponse)
 def get_experiences(strategy_id: int, db: Session = Depends(get_db)):
     """获取策略经验"""
