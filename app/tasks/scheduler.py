@@ -37,6 +37,57 @@ def _load_prompt(filename: str, **kwargs) -> str:
 AUTONOMOUS_INSTRUCTION = _load_prompt("autonomous_instruction.md")
 
 
+def _record_failure_experience(db, stage: str, error_msg: str, run_date):
+    """将定时任务阶段失败记录为经验，供后续 LLM 决策参考"""
+    from app.models.experience import Experience
+    from datetime import timedelta
+
+    # 提取错误类型作为签名
+    error_type = error_msg.split(':')[0] if ':' in error_msg else error_msg[:50]
+    failure_sig = f"pipeline_{stage}_{error_type}"
+
+    # 检查是否已有相同签名的经验（合并计数）
+    existing = db.query(Experience).filter(
+        Experience.failure_signature == failure_sig,
+        Experience.is_active == True
+    ).first()
+
+    if existing:
+        existing.occurrence_count += 1
+        existing.last_triggered_date = run_date
+        existing.description = f"{existing.description}\n\n[{run_date}] 再次失败: {error_msg[:200]}"
+        db.commit()
+        logger.info(f"经验合并: {failure_sig} 第{existing.occurrence_count}次")
+    else:
+        # 新建经验
+        exp = Experience(
+            strategy_id=None,  # 系统级经验
+            experience_type="failure",
+            scenario_tags=["定时任务", stage, "管道失败"],
+            title=f"管道阶段 {stage} 执行失败",
+            description=f"执行日期: {run_date}\n错误信息: {error_msg}",
+            result="negative",
+            key_insight=f"{stage} 阶段不稳定，需关注 {error_type}",
+            effectiveness_score=0.0,
+            application_count=0,
+            success_count=0,
+            failure_count=1,
+            source_type="scheduler",
+            generated_date=run_date,
+            is_validated=False,
+            is_active=True,
+            expires_date=run_date + timedelta(days=90),
+            weight=1.0,
+            review_status="pending",
+            failure_signature=failure_sig,
+            occurrence_count=1,
+            last_triggered_date=run_date,
+        )
+        db.add(exp)
+        db.commit()
+        logger.info(f"失败经验已记录: {failure_sig}")
+
+
 @log_task_execution("daily_pipeline")
 def _job_daily_pipeline():
     """
@@ -77,6 +128,8 @@ def _job_daily_pipeline():
             logger.error(f"[Checkpoint] 阶段 {stage} 失败: {e}")
             try:
                 _cp_svc.mark_failed("daily_pipeline", _run_date, stage, str(e), db_local)
+                # 写入失败经验
+                _record_failure_experience(db_local, stage, str(e), _run_date)
             finally:
                 db_local.close()
             return

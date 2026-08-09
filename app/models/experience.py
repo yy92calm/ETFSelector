@@ -10,7 +10,7 @@ class Experience(Base):
     __tablename__ = "experience"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
-    strategy_id = Column(Integer, ForeignKey('strategy.id'), nullable=False, index=True)
+    strategy_id = Column(Integer, ForeignKey('strategy.id'), nullable=True, index=True, comment="关联策略ID，空表示系统级经验")
     
     # 经验分类
     experience_type = Column(String(20), nullable=False, comment="经验类型: success/failure/insight")
