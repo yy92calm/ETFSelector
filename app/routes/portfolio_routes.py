@@ -1,7 +1,9 @@
 """组合/持仓/交易记录API"""
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
+from typing import Optional
+from datetime import date
 
 from app.db.database import get_db
 from app.schemas.schemas import APIResponse
@@ -12,10 +14,14 @@ router = APIRouter(prefix="/api/portfolio", tags=["组合管理"])
 
 
 @router.get("/{strategy_id}/history", response_model=APIResponse)
-def get_portfolio_history(strategy_id: int, db: Session = Depends(get_db)):
+def get_portfolio_history(
+    strategy_id: int,
+    start_date: Optional[date] = Query(None, description="起始日期，过滤该日期之后的快照"),
+    db: Session = Depends(get_db)
+):
     """获取策略的每日资产快照"""
     svc = get_portfolio_service()
-    snapshots = svc.get_portfolio_history(strategy_id, db)
+    snapshots = svc.get_portfolio_history(strategy_id, db, start_date)
     return APIResponse(data={
         "snapshots": [{
             "trade_date": s.trade_date.isoformat(),

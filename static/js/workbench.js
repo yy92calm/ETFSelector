@@ -1189,10 +1189,8 @@ const Workbench = {
         const bodyEl = document.getElementById(`bt-actual-body-${id}`);
         if (!bodyEl) return;
         try {
-            const histResp = await fetch(`/api/portfolio/${id}/history`).then(r => r.json());
-            const snapshots = (histResp.code === 200 ? histResp.data.snapshots : []).filter(
-                s => s.trade_date >= startDate
-            );
+            const histResp = await fetch(`/api/portfolio/${id}/history?start_date=${startDate}`).then(r => r.json());
+            const snapshots = (histResp.code === 200 ? histResp.data.snapshots : []);
             if (snapshots.length === 0) {
                 bodyEl.innerHTML = '<span class="text-secondary">暂无该日期之后的快照数据</span>';
                 return;

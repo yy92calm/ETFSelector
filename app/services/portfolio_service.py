@@ -233,13 +233,11 @@ class PortfolioService:
             except Exception as e:
                 logger.error(f"补跑策略 {strategy.id} 日期 {td} 失败: {e}")
 
-    def get_portfolio_history(self, strategy_id: int, db: Session) -> List[PortfolioSnapshot]:
-        return (
-            db.query(PortfolioSnapshot)
-            .filter(PortfolioSnapshot.strategy_id == strategy_id)
-            .order_by(PortfolioSnapshot.trade_date.asc())
-            .all()
-        )
+    def get_portfolio_history(self, strategy_id: int, db: Session, start_date: date = None) -> List[PortfolioSnapshot]:
+        query = db.query(PortfolioSnapshot).filter(PortfolioSnapshot.strategy_id == strategy_id)
+        if start_date:
+            query = query.filter(PortfolioSnapshot.trade_date >= start_date)
+        return query.order_by(PortfolioSnapshot.trade_date.asc()).all()
 
     def get_holdings(self, strategy_id: int, db: Session) -> List[Holding]:
         return (
