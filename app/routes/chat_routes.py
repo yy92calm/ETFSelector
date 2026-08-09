@@ -37,12 +37,15 @@ class ModelRequest(BaseModel):
 
 @router.post("", response_model=APIResponse)
 def chat(request: ChatRequest, db: Session = Depends(get_db)):
-    """对话接口 - 发送消息给AI，返回回复+工具执行结果（只读模式，写操作需走流式接口审批）"""
+    """对话接口 - 发送消息给AI，返回回复+工具执行结果
+    
+    注意：非流式接口写操作直接执行（AUTO模式，无审批），流式接口 /api/chat/stream 支持审批（INTERACTIVE模式）
+    """
     from app.agent_core.loop import AgentLoop
     from app.agent_core.permissions import Mode
 
     agent = AgentLoop()
-    agent.permissions.mode = Mode.DISCUSS
+    agent.permissions.mode = Mode.AUTO  # 非流式接口写操作直接执行
     result = agent.run(request.message, request.session_id, db)
 
     return APIResponse(data={
