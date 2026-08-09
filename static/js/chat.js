@@ -26,7 +26,7 @@ const Chat = {
         document.querySelectorAll('.quick-cmd').forEach(btn => {
             btn.addEventListener('click', () => {
                 this.inputEl.value = btn.dataset.cmd;
-                this.send();
+                this.inputEl.focus();
             });
         });
 

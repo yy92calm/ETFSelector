@@ -399,41 +399,6 @@ body {
     gap: 2px;
 }
 
-/* 会话模型选择栏 */
-.chat-model-bar {
-    padding: 8px 16px;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-}
-
-.chat-model-bar select {
-    flex: 1;
-    padding: 5px 8px;
-    font-size: 12px;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-}
-
-.auto-approve-toggle {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 11px;
-    color: var(--text-secondary);
-    cursor: pointer;
-    white-space: nowrap;
-}
-
-.auto-approve-toggle input[type="checkbox"] {
-    width: 14px;
-    height: 14px;
-    cursor: pointer;
-}
-
 /* 历史会话面板 */
 .session-panel {
     border-bottom: 1px solid var(--border);
@@ -696,6 +661,50 @@ body {
 .chat-input-area {
     padding: 12px 16px;
     border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.chat-input-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 0 4px;
+}
+
+.chat-input-toolbar select {
+    flex: 1;
+    padding: 6px 10px;
+    font-size: 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    outline: none;
+}
+
+.chat-input-toolbar select:focus {
+    border-color: var(--accent);
+}
+
+.auto-approve-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.auto-approve-toggle input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
+}
+
+.chat-input-row {
     display: flex;
     gap: 8px;
 }

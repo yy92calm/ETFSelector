@@ -176,14 +176,6 @@
             </div>
         </div>
 
-        <div class="chat-model-bar">
-            <select id="chat-model-select" onchange="Chat.switchModel(this.value)" title="会话模型（别名前缀→Provider）"></select>
-            <label class="auto-approve-toggle" title="自动审批：开启后写操作不再弹窗确认">
-                <input type="checkbox" id="auto-approve-checkbox" onchange="Chat.toggleAutoApprove(this.checked)">
-                <span>自动审批</span>
-            </label>
-        </div>
-
         <div class="session-panel" id="session-panel" hidden>
             <div class="session-panel-header">
                 <span>历史会话</span>
@@ -202,8 +194,17 @@
         </div>
 
         <div class="chat-input-area">
-            <input type="text" class="chat-input" id="chat-input" placeholder="输入指令或问题..." autocomplete="off">
-            <button class="chat-send" id="chat-send">➤</button>
+            <div class="chat-input-toolbar">
+                <select id="chat-model-select" onchange="Chat.switchModel(this.value)" title="会话模型"></select>
+                <label class="auto-approve-toggle" title="自动审批：开启后写操作不再弹窗确认">
+                    <input type="checkbox" id="auto-approve-checkbox" onchange="Chat.toggleAutoApprove(this.checked)">
+                    <span>自动</span>
+                </label>
+            </div>
+            <div class="chat-input-row">
+                <input type="text" class="chat-input" id="chat-input" placeholder="输入指令或问题..." autocomplete="off">
+                <button class="chat-send" id="chat-send">➤</button>
+            </div>
         </div>
     </aside>
 </div>
