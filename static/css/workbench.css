@@ -403,16 +403,35 @@ body {
 .chat-model-bar {
     padding: 8px 16px;
     border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 
 .chat-model-bar select {
-    width: 100%;
+    flex: 1;
     padding: 5px 8px;
     font-size: 12px;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 6px;
     color: var(--text);
+}
+
+.auto-approve-toggle {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.auto-approve-toggle input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    cursor: pointer;
 }
 
 /* 历史会话面板 */
@@ -460,9 +479,17 @@ body {
     cursor: pointer;
     transition: background 0.15s;
     margin-bottom: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
 }
 .session-item:hover { background: var(--bg-card); }
 .session-item.active { background: rgba(2, 132, 199, 0.12); }
+
+.session-item-content {
+    flex: 1;
+    min-width: 0;
+}
 
 .session-item-title {
     font-size: 12px;
@@ -476,6 +503,24 @@ body {
     font-size: 11px;
     color: var(--text-secondary);
     margin-top: 2px;
+}
+
+.session-delete-btn {
+    opacity: 0;
+    padding: 2px 6px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.15s;
+    flex-shrink: 0;
+}
+.session-item:hover .session-delete-btn { opacity: 1; }
+.session-delete-btn:hover {
+    background: rgba(220, 38, 38, 0.1);
+    color: #dc2626;
 }
 
 .session-empty {

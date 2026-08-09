@@ -141,3 +141,10 @@ class ChatMemory:
             }
             for s in sessions
         ]
+
+    def delete_session(self, session_id: str, db: Session) -> bool:
+        """删除会话及其所有消息"""
+        db.query(ChatMessage).filter(ChatMessage.session_id == session_id).delete()
+        result = db.query(ChatSession).filter(ChatSession.session_id == session_id).delete()
+        db.commit()
+        return result > 0

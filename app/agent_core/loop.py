@@ -378,8 +378,13 @@ class AgentLoop:
         if not decision.needs_user:
             return {"error": decision.reason}
 
+        # 全局自动审批模式：跳过弹窗直接执行
+        store = get_approval_store()
+        if store.auto_approve:
+            return self.registry.execute(tool_name, arguments, db)
+
         # 需要审批的写操作：发权限事件，阻塞等待用户在前端审批
-        req = get_approval_store().create(
+        req = store.create(
             tool_name, arguments, timeout=getattr(settings, "chat_approval_timeout", 120)
         )
         yield {
@@ -392,7 +397,7 @@ class AgentLoop:
                 "reason": decision.reason,
             },
         }
-        outcome = get_approval_store().wait(req)
+        outcome = store.wait(req)
         if outcome == APPROVAL_OUTCOME_DENY:
             return {"error": "用户拒绝授权，写操作未执行"}
         if outcome == APPROVAL_OUTCOME_ALWAYS:

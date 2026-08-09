@@ -32,6 +32,15 @@ class ApprovalStore:
     def __init__(self):
         self._pending: Dict[str, PendingApproval] = {}
         self._lock = threading.Lock()
+        self._auto_approve: bool = False
+
+    @property
+    def auto_approve(self) -> bool:
+        return self._auto_approve
+
+    @auto_approve.setter
+    def auto_approve(self, value: bool):
+        self._auto_approve = value
 
     def create(self, tool: str, arguments: dict, timeout: int = 120) -> PendingApproval:
         req = PendingApproval(tool, arguments, timeout)

@@ -32,6 +32,7 @@ const Chat = {
 
         this.loadSessions();
         this.loadModels();
+        this.loadAutoApproveState();
         this.addMessage('assistant', '你好！我是ETF工作台的AI助手。我可以帮你分析市场、管理策略、检查风控、执行回测。试试下方的快捷指令，或直接输入问题。');
     },
 
@@ -79,8 +80,11 @@ const Chat = {
             list.innerHTML = sessions.map(s => {
                 const active = this.sessionId && s.session_id === this.sessionId ? ' active' : '';
                 return `<div class="session-item${active}" onclick="Chat.selectSession('${s.session_id}')">
-                    <div class="session-item-title">${this.escapeHtml(s.title || '新对话')}</div>
-                    <div class="session-item-time">${this.formatTime(s.updated_at)}</div>
+                    <div class="session-item-content">
+                        <div class="session-item-title">${this.escapeHtml(s.title || '新对话')}</div>
+                        <div class="session-item-time">${this.formatTime(s.updated_at)}</div>
+                    </div>
+                    <button class="session-delete-btn" onclick="event.stopPropagation();Chat.deleteSession('${s.session_id}')" title="删除">×</button>
                 </div>`;
             }).join('');
         } catch (err) {
@@ -94,6 +98,37 @@ const Chat = {
         if (!panel) return;
         panel.hidden = !panel.hidden;
         if (!panel.hidden) this.loadSessions();
+    },
+
+    async deleteSession(sessionId) {
+        if (!confirm('确定删除此会话？')) return;
+        try {
+            const resp = await fetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+            const data = await resp.json();
+            if (data.code === 200) {
+                if (this.sessionId === sessionId) this.sessionId = null;
+                this.loadSessions();
+            }
+        } catch (err) { /* 忽略 */ }
+    },
+
+    async loadAutoApproveState() {
+        try {
+            const resp = await fetch('/api/chat/auto-approve');
+            const data = await resp.json();
+            const cb = document.getElementById('auto-approve-checkbox');
+            if (cb) cb.checked = data.data && data.data.enabled;
+        } catch (err) { /* 忽略 */ }
+    },
+
+    async toggleAutoApprove(enabled) {
+        try {
+            await fetch('/api/chat/auto-approve', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled }),
+            });
+        } catch (err) { /* 忽略 */ }
     },
 
     newSession() {

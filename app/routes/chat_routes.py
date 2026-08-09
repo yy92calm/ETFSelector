@@ -128,6 +128,19 @@ def list_sessions(db: Session = Depends(get_db)):
     return APIResponse(data={"sessions": sessions})
 
 
+@router.delete("/sessions/{session_id}", response_model=APIResponse)
+def delete_session(session_id: str, db: Session = Depends(get_db)):
+    """删除指定会话及其所有消息"""
+    from app.agent_core.memory import ChatMemory
+
+    memory = ChatMemory()
+    deleted = memory.delete_session(session_id, db)
+
+    if not deleted:
+        return APIResponse(code=404, message="会话不存在", data=None)
+    return APIResponse(data={"session_id": session_id, "deleted": True})
+
+
 @router.get("/tools", response_model=APIResponse)
 def list_tools():
     """列出所有可用的AI工具"""
@@ -140,3 +153,24 @@ def list_tools():
         "total": len(tools),
         "tools": [{"name": t["function"]["name"], "description": t["function"]["description"]} for t in tools],
     })
+
+
+class AutoApproveRequest(BaseModel):
+    enabled: bool = Field(..., description="是否开启自动审批")
+
+
+@router.get("/auto-approve", response_model=APIResponse)
+def get_auto_approve():
+    """查询自动审批状态"""
+    from app.agent_core.approvals import get_approval_store
+
+    return APIResponse(data={"enabled": get_approval_store().auto_approve})
+
+
+@router.post("/auto-approve", response_model=APIResponse)
+def set_auto_approve(request: AutoApproveRequest):
+    """设置自动审批开关"""
+    from app.agent_core.approvals import get_approval_store
+
+    get_approval_store().auto_approve = request.enabled
+    return APIResponse(data={"enabled": request.enabled})

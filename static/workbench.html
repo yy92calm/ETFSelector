@@ -178,6 +178,10 @@
 
         <div class="chat-model-bar">
             <select id="chat-model-select" onchange="Chat.switchModel(this.value)" title="会话模型（别名前缀→Provider）"></select>
+            <label class="auto-approve-toggle" title="自动审批：开启后写操作不再弹窗确认">
+                <input type="checkbox" id="auto-approve-checkbox" onchange="Chat.toggleAutoApprove(this.checked)">
+                <span>自动审批</span>
+            </label>
         </div>
 
         <div class="session-panel" id="session-panel" hidden>
