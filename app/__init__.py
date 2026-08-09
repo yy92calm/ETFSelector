@@ -3,14 +3,14 @@
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from app.config import get_settings
 from app.db.database import init_db
-from app.routes import etf_routes, strategy_routes, backtest_routes, net_value_routes, auto_strategy_routes, portfolio_routes, config_routes, chat_routes, workbench_routes, task_routes, factor_routes
+from app.routes import etf_routes, strategy_routes, backtest_routes, net_value_routes, auto_strategy_routes, portfolio_routes, config_routes, chat_routes, workbench_routes, task_routes, factor_routes, auth_routes
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,6 +83,22 @@ app.include_router(chat_routes.router)
 app.include_router(workbench_routes.router)
 app.include_router(task_routes.router)
 app.include_router(factor_routes.router)
+app.include_router(auth_routes.router)
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    path = request.url.path
+    if path.startswith("/api/") and not path.startswith("/api/auth/"):
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            from app.routes.auth_routes import verify_token
+            token = auth_header[7:]
+            if not verify_token(token):
+                return JSONResponse(status_code=401, content={"code": 401, "message": "未授权", "data": None})
+        else:
+            return JSONResponse(status_code=401, content={"code": 401, "message": "未授权", "data": None})
+    return await call_next(request)
 
 
 @app.get("/")
