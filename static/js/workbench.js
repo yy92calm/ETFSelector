@@ -1208,6 +1208,16 @@ const Workbench = {
                         <div class="strat-block-alloc">${alloc}</div>
                     </div>
                     <div class="bt-inline" id="bt-panel-${s.id}" style="display:block">
+                        <div class="sh-wrap">
+                            <div class="sh-panel">
+                                <div class="sh-title">当前持仓</div>
+                                <div class="sh-body" id="strat-holdings-${s.id}"><div class="empty-hint">加载中...</div></div>
+                            </div>
+                            <div class="sh-panel">
+                                <div class="sh-title">调仓动态</div>
+                                <div class="sh-body" id="strat-adjust-${s.id}"><div class="empty-hint">加载中...</div></div>
+                            </div>
+                        </div>
                         ${s.holding_start_date ? `
                         <div class="bt-actual" id="bt-actual-${s.id}">
                             <div class="bt-actual-title">实际持仓收益（自 ${s.holding_start_date} 建仓）</div>
@@ -1245,9 +1255,97 @@ const Workbench = {
                 const endEl = document.getElementById(`bt-end-${s.id}`);
                 if (startEl && !startEl.value) { const d = new Date(); d.setFullYear(d.getFullYear() - 1); startEl.value = d.toISOString().slice(0, 10); }
                 if (endEl && !endEl.value) endEl.value = new Date().toISOString().slice(0, 10);
+                this.loadStrategyHoldings(s);
+                if (s.holding_start_date) this.loadActualReturn(s.id, s.holding_start_date);
             });
         } catch (e) {
             el.innerHTML = '<div style="color:var(--danger)">请求失败</div>';
+        }
+    },
+
+    async loadStrategyHoldings(s) {
+        const holdEl = document.getElementById(`strat-holdings-${s.id}`);
+        const adjEl = document.getElementById(`strat-adjust-${s.id}`);
+
+        // 当前持仓
+        if (holdEl) {
+            try {
+                const resp = await fetch(`/api/portfolio/${s.id}/holdings`).then(r => r.json());
+                const holdings = resp.code === 200 ? (resp.data.holdings || []) : [];
+                if (holdings.length === 0) {
+                    holdEl.innerHTML = '<div class="empty-hint">尚未建仓</div>';
+                } else {
+                    const total = holdings.reduce((sum, h) => sum + (h.market_value || 0), 0);
+                    holdEl.innerHTML = `<table class="wb-table sh-table">
+                        <thead><tr><th>代码</th><th>数量</th><th>成本</th><th>现价</th><th>市值</th><th>占比</th></tr></thead>
+                        <tbody>${holdings.map(h => {
+                            const pct = total > 0 ? (h.market_value / total * 100).toFixed(1) : '0.0';
+                            return `<tr>
+                                <td>${this.etfLabel(h.etf_code)}</td>
+                                <td>${h.quantity}</td>
+                                <td>${Number(h.avg_cost).toFixed(3)}</td>
+                                <td>${Number(h.current_price).toFixed(3)}</td>
+                                <td>${Math.round(h.market_value).toLocaleString()}</td>
+                                <td>${pct}%</td>
+                            </tr>`;
+                        }).join('')}</tbody>
+                    </table>
+                    <div class="sh-total">持仓市值 ¥${Math.round(total).toLocaleString()}</div>`;
+                }
+            } catch (e) {
+                holdEl.innerHTML = '<div class="empty-hint" style="color:var(--danger)">加载失败</div>';
+            }
+        }
+
+        // 调仓动态：待生效配置对比 + 最近交易记录
+        if (adjEl) {
+            try {
+                let html = '';
+                if (s.pending_allocation) {
+                    const oldAlloc = s.allocation_config || {};
+                    const newAlloc = s.pending_allocation || {};
+                    const codes = [...new Set([...Object.keys(oldAlloc), ...Object.keys(newAlloc)])];
+                    html += `<div class="sh-pending">
+                        <div class="sh-pending-title"><span class="s-badge s-pending">待生效</span> 提交于 ${s.pending_set_date || '-'}，下一交易日执行</div>
+                        <table class="wb-table sh-table">
+                            <thead><tr><th>代码</th><th>当前</th><th>目标</th><th>变化</th></tr></thead>
+                            <tbody>${codes.map(c => {
+                                const ov = oldAlloc[c] || 0;
+                                const nv = newAlloc[c] || 0;
+                                const diff = nv - ov;
+                                const diffCls = diff > 0 ? 'text-up' : diff < 0 ? 'text-down' : '';
+                                const diffTxt = diff === 0 ? '-' : `${diff > 0 ? '+' : ''}${(diff * 100).toFixed(1)}%`;
+                                return `<tr>
+                                    <td>${this.etfLabel(c)}</td>
+                                    <td>${(ov * 100).toFixed(1)}%</td>
+                                    <td>${(nv * 100).toFixed(1)}%</td>
+                                    <td class="${diffCls}">${diffTxt}</td>
+                                </tr>`;
+                            }).join('')}</tbody>
+                        </table>
+                    </div>`;
+                }
+
+                const resp = await fetch(`/api/portfolio/${s.id}/trades`).then(r => r.json());
+                const trades = resp.code === 200 ? (resp.data.trades || []) : [];
+                if (trades.length > 0) {
+                    html += `<div class="sh-trades-title">最近交易</div>
+                        <div class="sh-trades">${trades.slice(0, 6).map(t => {
+                            const dirCls = t.direction === 'buy' ? 'text-up' : 'text-down';
+                            const dirTxt = t.direction === 'buy' ? '买入' : '卖出';
+                            return `<div class="sh-trade-item">
+                                <span class="sh-trade-date">${t.trade_date.slice(5)}</span>
+                                <span class="sh-trade-dir ${dirCls}">${dirTxt}</span>
+                                <span class="sh-trade-code">${this.etfLabel(t.etf_code)}</span>
+                                <span class="sh-trade-amt">${t.quantity}股 @${Number(t.price).toFixed(3)}</span>
+                            </div>`;
+                        }).join('')}</div>`;
+                }
+
+                adjEl.innerHTML = html || '<div class="empty-hint">暂无调仓记录</div>';
+            } catch (e) {
+                adjEl.innerHTML = '<div class="empty-hint" style="color:var(--danger)">加载失败</div>';
+            }
         }
     },
 

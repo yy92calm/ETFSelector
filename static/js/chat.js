@@ -221,7 +221,11 @@ const Chat = {
                 while ((idx = buffer.indexOf('\n\n')) !== -1) {
                     const frame = buffer.slice(0, idx);
                     buffer = buffer.slice(idx + 2);
-                    this.handleSSEFrame(frame);
+                    try {
+                        this.handleSSEFrame(frame);
+                    } catch (err) {
+                        console.error('SSE事件处理失败', err, frame);
+                    }
                 }
             }
             return true;
@@ -328,8 +332,13 @@ const Chat = {
             btn.className = 'chat-stop-btn';
             btn.textContent = '停止';
             btn.addEventListener('click', () => this.stopStreaming());
-            const area = document.querySelector('.chat-input-area');
-            if (area) area.insertBefore(btn, document.getElementById('chat-send'));
+            const sendBtn = document.getElementById('chat-send');
+            if (sendBtn && sendBtn.parentElement) {
+                sendBtn.parentElement.insertBefore(btn, sendBtn);
+            } else {
+                const area = document.querySelector('.chat-input-area');
+                if (area) area.appendChild(btn);
+            }
         }
         btn.hidden = false;
         btn.disabled = false;
@@ -383,7 +392,7 @@ const Chat = {
             'add_etf_to_pool', 'run_backtest', 'run_multi_agent_analysis',
             'execute_rebalance', 'delete_strategy',
         ]);
-        const hasMutation = toolCalls.some(t => mutatingTools.has(t.tool));
+        const hasMutation = (toolCalls || []).some(t => mutatingTools.has(t.tool));
         if (!hasMutation) return;
 
         setTimeout(() => {
