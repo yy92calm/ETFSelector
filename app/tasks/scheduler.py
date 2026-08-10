@@ -258,6 +258,12 @@ def _step_collect_sentiments():
         db.close()
 
 
+@log_task_execution("sentiment_collect")
+def _job_collect_sentiments():
+    """交易时段舆情采集独立任务（10/12/14点定时执行）"""
+    _step_collect_sentiments()
+
+
 def _step_policy_impact():
     """STEP 4: 政策事件冲击评估"""
     from app.db.database import SessionLocal
@@ -625,7 +631,7 @@ def get_scheduler() -> BackgroundScheduler:
         # ========== 交易时段舆情采集（每2小时一次：10:00, 12:00, 14:00） ==========
         for hour in [10, 12, 14]:
             _scheduler.add_job(
-                _step_collect_sentiments,
+                _job_collect_sentiments,
                 trigger=CronTrigger(day_of_week='mon-fri', hour=hour, minute=0),
                 id=f"sentiment_collect_{hour}",
                 replace_existing=True,

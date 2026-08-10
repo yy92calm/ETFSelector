@@ -328,14 +328,19 @@ class DataSourceManager:
     def __init__(self, ashare_only: bool = False):
         """
         Args:
-            ashare_only: True=仅使用Ashare（定时任务场景），False=允许降级到efinance
+            ashare_only: True=定时任务场景；但若 settings.scheduled_task_allow_fallback=True
+                         （部署环境）仍会降级到 efinance，避免 Ashare 不可用时全盘失败
         """
         self.primary = AshareDataSource()
         self.fallback = EFinanceDataSource()
         self.list_source = EastmoneyListDataSource()
-        self.ashare_only = ashare_only
+        # 定时任务专用源在配置允许降级时，自动转为可降级模式
+        self.ashare_only = ashare_only and not settings.scheduled_task_allow_fallback
         if ashare_only:
-            logger.info("✓ 数据源已加载: Ashare (定时任务模式，不降级)")
+            if self.ashare_only:
+                logger.info("✓ 数据源已加载: Ashare (定时任务模式，不降级)")
+            else:
+                logger.info("✓ 数据源已加载: Ashare (定时任务模式，部署环境允许降级到 efinance)")
         else:
             logger.info("✓ 数据源已加载: Ashare(主) + 天天列表 + efinance(备)")
 
@@ -382,7 +387,13 @@ class DataSourceManager:
 
 # ---------------- 列表本地缓存 ----------------
 def _list_cache_path() -> Path:
-    return Path(settings.etf_list_cache_path)
+    """缓存路径：相对路径基于项目根目录解析，避免部署时 cwd 不对导致缓存丢失"""
+    p = Path(settings.etf_list_cache_path)
+    if not p.is_absolute():
+        # app/services/data_sources.py → 上两级为项目根目录
+        project_root = Path(__file__).resolve().parent.parent.parent
+        p = project_root / p
+    return p
 
 
 def _save_list_cache(df: pd.DataFrame) -> None:

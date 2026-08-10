@@ -36,7 +36,12 @@ class Settings(BaseSettings):
     data_source_retry_base: float = 1.5  # 退避基数（秒）
     circuit_break_failures: int = 5  # 连续失败触发熔断次数
     circuit_break_seconds: int = 600  # 熔断时长（秒）
-    etf_list_cache_path: str = "app/data/etf_list_cache.json"  # ETF列表本地缓存
+    # ETF列表本地缓存（相对路径基于项目根目录，部署时可改为绝对路径）
+    etf_list_cache_path: str = "app/data/etf_list_cache.json"
+    # 定时任务数据源是否允许降级到 efinance：
+    #   False（默认）= Ashare 失败即放弃（开发环境防封策略）
+    #   True = Ashare 失败时降级到 efinance（部署环境网络受限时使用）
+    scheduled_task_allow_fallback: bool = False
 
     # 多Agent辩论
     debate_max_data_lag_days: int = 3  # 辩论前允许的数据最大滞后自然日，超过则自动同步

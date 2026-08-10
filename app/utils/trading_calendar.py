@@ -1,16 +1,24 @@
 """A股交易日历工具"""
 
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
 import logging
 
 logger = logging.getLogger(__name__)
+
+# A股时区（Asia/Shanghai = UTC+8），部署服务器时区不一致时统一用此取时间
+_CN_TZ = timezone(timedelta(hours=8))
 
 # A股交易时段
 MARKET_MORNING_OPEN = time(9, 30)
 MARKET_MORNING_CLOSE = time(11, 30)
 MARKET_AFTERNOON_OPEN = time(13, 0)
 MARKET_AFTERNOON_CLOSE = time(15, 0)
+
+
+def now_cn() -> datetime:
+    """获取当前北京时间（不受服务器时区影响）"""
+    return datetime.now(_CN_TZ).replace(tzinfo=None)
 
 
 def is_trading_day(d: date) -> bool:
@@ -20,7 +28,7 @@ def is_trading_day(d: date) -> bool:
 
 def is_market_open_now() -> bool:
     """判断当前是否在交易时段内"""
-    now = datetime.now()
+    now = now_cn()
     if not is_trading_day(now.date()):
         return False
     current_time = now.time()
@@ -30,7 +38,7 @@ def is_market_open_now() -> bool:
 
 def is_during_trading_hours() -> bool:
     """判断当前是否在交易时间内（9:30-15:00，含午休）"""
-    now = datetime.now()
+    now = now_cn()
     if not is_trading_day(now.date()):
         return False
     current_time = now.time()
@@ -39,7 +47,7 @@ def is_during_trading_hours() -> bool:
 
 def is_after_market_close() -> bool:
     """判断当前是否已收盘（15:00之后）"""
-    now = datetime.now()
+    now = now_cn()
     if not is_trading_day(now.date()):
         return False
     return now.time() > MARKET_AFTERNOON_CLOSE
@@ -66,9 +74,9 @@ def get_display_date() -> date:
     from app.models.etf import ETFDailyIndicator
     from sqlalchemy import func
     
-    now = datetime.now()
+    now = now_cn()
     today = now.date()
-    
+
     # 交易时段内，显示T-1
     if is_during_trading_hours():
         return get_previous_trading_day(today)

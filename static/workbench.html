@@ -176,7 +176,13 @@
         <div id="view-tasks" class="view-panel" style="display:none">
             <div class="tasks-layout">
                 <div class="panel">
-                    <div class="panel-header">📊 任务统计 <span class="panel-sub" id="tasks-stats-sub"></span></div>
+                    <div class="panel-header">⚙️ 定时任务 <span class="panel-sub" id="tasks-list-sub">所有已注册任务</span></div>
+                    <div class="panel-body" id="tasks-list">
+                        <div class="empty-hint">加载中...</div>
+                    </div>
+                </div>
+                <div class="panel">
+                    <div class="panel-header">📊 执行统计 <span class="panel-sub" id="tasks-stats-sub"></span></div>
                     <div class="panel-body" id="tasks-stats">
                         <div class="empty-hint">加载中...</div>
                     </div>

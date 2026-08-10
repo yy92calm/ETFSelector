@@ -789,32 +789,84 @@ const Workbench = {
     },
 
     async loadTasksView() {
+        const listEl = document.getElementById('tasks-list');
         const statsEl = document.getElementById('tasks-stats');
         const historyEl = document.getElementById('tasks-history');
         if (!statsEl || !historyEl) return;
-
+        if (listEl) listEl.innerHTML = '<div class="empty-hint">加载中...</div>';
         statsEl.innerHTML = '<div class="empty-hint">加载中...</div>';
         historyEl.innerHTML = '<div class="empty-hint">加载中...</div>';
 
         try {
-            const [statsResp, historyResp] = await Promise.all([
+            const [listResp, statsResp, historyResp] = await Promise.all([
+                fetch('/api/tasks/list').then(r => r.json()).catch(() => ({code: 500})),
                 fetch('/api/tasks/stats?days=7').then(r => r.json()).catch(() => ({code: 500})),
                 fetch('/api/tasks/history?days=7&limit=50').then(r => r.json()).catch(() => ({code: 500})),
             ]);
 
+            const listData = listResp.code === 200 ? listResp.data : null;
             const statsData = statsResp.code === 200 ? statsResp.data : null;
             const historyData = historyResp.code === 200 ? historyResp.data : null;
+
+            // task_name 中文映射（含阶段名）
+            const taskNames = {
+                'daily_pipeline': '每日管道',
+                'weekly_review': '每周复盘',
+                'auto_fetch_quotes': '行情补全',
+                'sentiment_collect': '舆情采集',
+                'sentiment_collect_10': '舆情采集(10:00)',
+                'sentiment_collect_12': '舆情采集(12:00)',
+                'sentiment_collect_14': '舆情采集(14:00)',
+                'daily_pipeline.net_value': '阶段·净值更新',
+                'daily_pipeline.quotes': '阶段·行情更新',
+                'daily_pipeline.rebalance': '阶段·组合再平衡',
+                'daily_pipeline.sentiment': '阶段·舆情采集',
+                'daily_pipeline.policy_flow': '阶段·政策与资金流',
+                'daily_pipeline.market_scan': '阶段·市场扫描',
+                'daily_pipeline.rotation_review': '阶段·轮动复盘',
+                'daily_pipeline.autonomous': '阶段·自主决策',
+            };
+
+            // 渲染任务列表（含手动触发按钮）
+            if (listEl) {
+                if (listData && listData.tasks && listData.tasks.length > 0) {
+                    listEl.innerHTML = listData.tasks.map(t => {
+                        const lastRun = t.last_run ? parseServerTime(t.last_run) : null;
+                        const lastRunStr = lastRun ? lastRun.toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '从未执行';
+                        const running = (t.running_count || 0) > 0;
+                        const statusBadge = running
+                            ? '<span class="task-badge task-badge-running">运行中</span>'
+                            : (t.failed_count > 0 ? `<span class="task-badge task-badge-warn">失败 ${t.failed_count}</span>` : '<span class="task-badge task-badge-ok">正常</span>');
+                        const triggerBtn = t.trigger
+                            ? `<button class="btn-trigger" data-trigger="${t.trigger}" data-name="${this.esc(t.name)}">▶ 立即执行</button>`
+                            : '<span class="task-badge task-badge-muted">仅定时</span>';
+                        return `<div class="task-row">
+                            <div class="task-row-main">
+                                <div class="task-row-name">${this.esc(t.name)} ${statusBadge}</div>
+                                <div class="task-row-desc">${this.esc(t.description || '')}</div>
+                                <div class="task-row-meta">
+                                    <span>📅 ${this.esc(t.schedule || '')}</span>
+                                    <span>🔢 总${t.total_executions||0} · 成${t.success_count||0} · 败${t.failed_count||0}</span>
+                                    <span>🕒 上次: ${lastRunStr}</span>
+                                </div>
+                            </div>
+                            <div class="task-row-action">${triggerBtn}</div>
+                        </div>`;
+                    }).join('');
+
+                    // 绑定触发按钮
+                    listEl.querySelectorAll('.btn-trigger').forEach(btn => {
+                        btn.addEventListener('click', () => this.triggerTask(btn.dataset.trigger, btn.dataset.name));
+                    });
+                } else {
+                    listEl.innerHTML = '<div class="empty-hint">暂无已注册任务</div>';
+                }
+            }
 
             // 渲染统计
             if (statsData && statsData.stats) {
                 const subEl = document.getElementById('tasks-stats-sub');
                 if (subEl) subEl.textContent = `近${statsData.days}天 · ${statsData.total_executions}次执行`;
-
-                const taskNames = {
-                    'daily_pipeline': '每日管道',
-                    'weekly_review': '每周复盘',
-                    'auto_fetch_quotes': '行情补全'
-                };
 
                 statsEl.innerHTML = `<div class="task-stats-grid">
                     ${Object.entries(statsData.stats).map(([name, s]) => `
@@ -848,12 +900,6 @@ const Workbench = {
                 const subEl = document.getElementById('tasks-history-sub');
                 if (subEl) subEl.textContent = `${historyData.total}条记录`;
 
-                const taskNames = {
-                    'daily_pipeline': '每日管道',
-                    'weekly_review': '每周复盘',
-                    'auto_fetch_quotes': '行情补全'
-                };
-
                 historyEl.innerHTML = historyData.logs.map(log => {
                     const statusColor = log.status === 'success' ? 'var(--success)' : log.status === 'failed' ? 'var(--danger)' : 'var(--warning)';
                     const statusIcon = log.status === 'success' ? '✓' : log.status === 'failed' ? '✕' : '…';
@@ -875,8 +921,27 @@ const Workbench = {
                 historyEl.innerHTML = '<div class="empty-hint">暂无执行记录</div>';
             }
         } catch (e) {
+            if (listEl) listEl.innerHTML = '<div class="empty-hint" style="color:var(--danger)">加载失败</div>';
             statsEl.innerHTML = '<div class="empty-hint" style="color:var(--danger)">加载失败</div>';
             historyEl.innerHTML = '';
+        }
+    },
+
+    async triggerTask(trigger, name) {
+        if (!trigger) return;
+        if (!confirm(`确定要立即执行「${name || trigger}」吗？\n任务将在后台异步运行，可在执行历史中查看结果。`)) return;
+        try {
+            const resp = await fetch(`/api/tasks/trigger/${trigger}`, {method: 'POST'});
+            const data = await resp.json();
+            if (data.code === 200) {
+                alert(`✓ ${name || trigger} 已提交后台执行`);
+                // 刷新视图
+                setTimeout(() => this.loadTasksView(), 1000);
+            } else {
+                alert(`✕ 触发失败: ${data.message || '未知错误'}`);
+            }
+        } catch (e) {
+            alert(`✕ 触发失败: ${e.message}`);
         }
     },
 

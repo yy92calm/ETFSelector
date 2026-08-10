@@ -16,36 +16,44 @@ router = APIRouter(prefix="/api/tasks", tags=["定时任务"])
 
 
 # 任务定义（与 scheduler.py 中的 job 对应）
+# log_name: 实际写入 TaskExecutionLog 的 task_name；缺省与 key 相同
 TASK_DEFINITIONS = {
     "daily_auto_pipeline": {
         "name": "每日自驱动管道",
         "description": "完整管道：净值更新 → 组合再平衡 → 舆情采集 → AI分析+风控+策略调整",
         "schedule": "工作日 20:00",
+        "log_name": "daily_pipeline",
+        "trigger": "daily-pipeline",
     },
     "weekly_review": {
         "name": "每周复盘",
         "description": "所有活跃策略的周度复盘分析",
         "schedule": "周日 21:00",
+        "trigger": "weekly-review",
     },
     "auto_fetch_quotes": {
         "name": "LLM自动行情补全",
         "description": "LLM判断哪些ETF需要补数据，自动执行行情补全",
         "schedule": "工作日 18:00-19:00 随机",
+        "trigger": "auto-fetch-quotes",
     },
     "sentiment_collect_10": {
         "name": "舆情采集(10:00)",
         "description": "交易时段舆情采集",
         "schedule": "工作日 10:00",
+        "log_name": "sentiment_collect",
     },
     "sentiment_collect_12": {
         "name": "舆情采集(12:00)",
         "description": "交易时段舆情采集",
         "schedule": "工作日 12:00",
+        "log_name": "sentiment_collect",
     },
     "sentiment_collect_14": {
         "name": "舆情采集(14:00)",
         "description": "交易时段舆情采集",
         "schedule": "工作日 14:00",
+        "log_name": "sentiment_collect",
     },
 }
 
@@ -76,12 +84,15 @@ def list_tasks(db: Session = Depends(get_db)):
     # 组装结果
     tasks = []
     for task_id, defn in TASK_DEFINITIONS.items():
-        task_stats = stats.get(task_id, {"total": 0, "success": 0, "failed": 0, "running": 0, "last_run": None})
+        # 日志中实际使用的 task_name（默认与 task_id 相同，daily_pipeline 除外）
+        log_name = defn.get("log_name", task_id)
+        task_stats = stats.get(log_name, {"total": 0, "success": 0, "failed": 0, "running": 0, "last_run": None})
         tasks.append({
             "id": task_id,
             "name": defn["name"],
             "description": defn["description"],
             "schedule": defn["schedule"],
+            "trigger": defn.get("trigger"),  # 手动触发接口路径后缀，无则不支持手动触发
             "total_executions": task_stats["total"],
             "success_count": task_stats["success"],
             "failed_count": task_stats["failed"],

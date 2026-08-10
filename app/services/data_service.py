@@ -235,8 +235,9 @@ class DataService:
                 "message": "数据库中没有ETF"
             }
         
-        # 计算最近的交易日（向后查找最近7天）
-        today = datetime.now()
+        # 计算最近的交易日（向后查找最近7天），统一用北京时间避免部署时区错位
+        from app.utils.trading_calendar import now_cn
+        today = now_cn()
         target_dates = []
         for i in range(7):
             check_date = today - timedelta(days=i)
