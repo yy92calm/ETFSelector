@@ -113,6 +113,14 @@ def root():
     return {"message": settings.app_name, "docs": "/docs"}
 
 
+@app.get("/login")
+def login_page():
+    login = static_dir / "login.html"
+    if login.exists():
+        return FileResponse(str(login))
+    return JSONResponse(status_code=404, content={"message": "登录页不存在"})
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "env": settings.app_env}

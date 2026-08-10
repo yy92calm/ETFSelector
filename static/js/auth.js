@@ -1,13 +1,21 @@
 /**
  * 认证模块 - 密码校验 + token 管理
+ * 未登录时统一跳转到独立登录页 /login
  */
 const Auth = {
     TOKEN_KEY: 'etf_auth_token',
 
     init() {
-        if (!this.isLoggedIn()) {
-            this.showLoginOverlay();
+        if (this.isLoggedIn()) return;
+        if (this.isLoginPage()) {
+            this.bindLoginForm();
+        } else {
+            window.location.replace('/login');
         }
+    },
+
+    isLoginPage() {
+        return window.location.pathname.startsWith('/login');
     },
 
     isLoggedIn() {
@@ -26,40 +34,20 @@ const Auth = {
         localStorage.removeItem(this.TOKEN_KEY);
     },
 
-    showLoginOverlay() {
-        let overlay = document.getElementById('auth-overlay');
-        if (!overlay) {
-            overlay = document.createElement('div');
-            overlay.id = 'auth-overlay';
-            overlay.className = 'auth-overlay';
-            overlay.innerHTML = `
-                <div class="auth-box">
-                    <h2>ETF量化选择系统</h2>
-                    <p>请输入访问密码</p>
-                    <input type="password" id="auth-password" placeholder="密码" autocomplete="current-password">
-                    <button id="auth-submit" onclick="Auth.submitLogin()">进入</button>
-                    <div id="auth-error" class="auth-error"></div>
-                </div>
-            `;
-            document.body.appendChild(overlay);
-
-            const input = document.getElementById('auth-password');
-            input.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') this.submitLogin();
-            });
-            input.focus();
-        }
-        overlay.style.display = 'flex';
-    },
-
-    hideLoginOverlay() {
-        const overlay = document.getElementById('auth-overlay');
-        if (overlay) overlay.style.display = 'none';
+    bindLoginForm() {
+        const input = document.getElementById('login-password');
+        if (!input) return;
+        const btn = document.getElementById('login-submit');
+        if (btn) btn.addEventListener('click', () => this.submitLogin());
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') this.submitLogin();
+        });
+        input.focus();
     },
 
     async submitLogin() {
-        const input = document.getElementById('auth-password');
-        const errorEl = document.getElementById('auth-error');
+        const input = document.getElementById('login-password');
+        const errorEl = document.getElementById('login-error');
         const password = input.value.trim();
 
         if (!password) {
@@ -77,8 +65,7 @@ const Auth = {
 
             if (data.code === 200 && data.data && data.data.token) {
                 this.setToken(data.data.token);
-                this.hideLoginOverlay();
-                window.location.reload();
+                window.location.replace('/');
             } else {
                 errorEl.textContent = data.message || '密码错误';
                 input.value = '';
@@ -91,7 +78,7 @@ const Auth = {
 
     logout() {
         this.clearToken();
-        window.location.reload();
+        window.location.replace('/login');
     },
 
     getAuthHeaders() {
@@ -101,7 +88,7 @@ const Auth = {
 };
 
 const _origFetch = window.fetch;
-window.fetch = function(url, options = {}) {
+window.fetch = async function(url, options = {}) {
     if (typeof url === 'string' && url.startsWith('/api/') && !url.startsWith('/api/auth/')) {
         options.headers = options.headers || {};
         const token = Auth.getToken();
@@ -113,7 +100,12 @@ window.fetch = function(url, options = {}) {
             }
         }
     }
-    return _origFetch.call(this, url, options);
+    const resp = await _origFetch.call(this, url, options);
+    if (resp.status === 401 && typeof url === 'string' && url.startsWith('/api/') && !url.startsWith('/api/auth/')) {
+        Auth.clearToken();
+        if (!Auth.isLoginPage()) window.location.replace('/login');
+    }
+    return resp;
 };
 
 document.addEventListener('DOMContentLoaded', () => Auth.init());
