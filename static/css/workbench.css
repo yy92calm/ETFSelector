@@ -1077,6 +1077,7 @@ body {
 }
 .s-active { background: rgba(22, 163, 74, 0.1); color: var(--success); }
 .s-paused { background: rgba(217, 119, 6, 0.1); color: var(--warning); }
+.s-pending { background: rgba(2, 132, 199, 0.1); color: var(--accent); }
 
 .strat-alloc { display: flex; flex-direction: column; gap: 5px; }
 .alloc-row {
@@ -1621,13 +1622,63 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     gap: 16px;
     align-items: start;
 }
-.senti-rail { position: sticky; top: 0; }
+.senti-rail { position: sticky; top: 0; display: flex; flex-direction: column; gap: 16px; }
 .senti-main { min-width: 0; }
 .senti-main-panel .senti-view-list { max-height: calc(100vh - 220px); overflow-y: auto; }
 @media (max-width: 1000px) {
     .senti-layout { grid-template-columns: 1fr; }
     .senti-rail { position: static; }
 }
+
+/* ===== 舆情日历 ===== */
+.sc-nav { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; }
+.sc-nav-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.4;
+}
+.sc-nav-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+.sc-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+    text-align: center;
+    font-size: 12px;
+}
+.sc-head { padding: 4px 0; color: var(--text-secondary); font-weight: 600; }
+.sc-day {
+    padding: 5px 2px;
+    border-radius: 4px;
+    cursor: pointer;
+    line-height: 1.3;
+}
+.sc-day:hover { outline: 1px solid var(--accent); }
+.sc-score { font-size: 9px; opacity: 0.75; }
+.sc-pos-2 { background: #86efac; }
+.sc-pos-1 { background: #bbf7d0; }
+.sc-neu { background: #e5e7eb; }
+.sc-neg-1 { background: #fee2e2; }
+.sc-neg-2 { background: #fecaca; }
+.sc-today { color: var(--accent); font-weight: 700; }
+.sc-selected { background: var(--accent) !important; color: #fff; font-weight: 700; }
+.sc-selected .sc-score { display: none; }
+.sc-legend {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.sc-legend-bar { display: flex; gap: 2px; flex: 1; }
+.sc-legend-bar i { display: block; flex: 1; height: 12px; border-radius: 2px; }
 
 /* ===== 舆情面板 ===== */
 .senti-panel { max-height: 560px; overflow-y: auto; }

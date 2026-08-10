@@ -58,6 +58,8 @@ def get_strategy_list(db: Session = Depends(get_db)):
             "holding_days": holding_days,
             "latest_asset": latest.total_asset if latest else None,
             "latest_profit_pct": latest.profit_pct if latest else None,
+            "pending_allocation": s.pending_allocation,
+            "pending_set_date": s.pending_set_date.isoformat() if s.pending_set_date else None,
         })
 
     return APIResponse(data={"strategies": result})
@@ -154,6 +156,8 @@ def get_strategy_detail(strategy_id: int, db: Session = Depends(get_db)):
         "status": s.status,
         "created_at": s.created_at.isoformat() if s.created_at else None,
         "holding_start_date": s.holding_start_date.isoformat() if s.holding_start_date else None,
+        "pending_allocation": s.pending_allocation,
+        "pending_set_date": s.pending_set_date.isoformat() if s.pending_set_date else None,
     })
 
 

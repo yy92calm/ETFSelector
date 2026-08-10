@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ETF智能工作台</title>
-    <link rel="stylesheet" href="/static/css/workbench.css?v=15">
+    <link rel="stylesheet" href="/static/css/workbench.css?v=17">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
 </head>
 <body>
@@ -131,6 +131,30 @@
             <div class="senti-layout">
                 <div class="senti-rail">
                     <div class="panel">
+                        <div class="panel-header">
+                            📅 舆情日历
+                            <span class="sc-nav">
+                                <button class="sc-nav-btn" onclick="Workbench.sentiCalPrev()" title="上月">&lt;</button>
+                                <span id="senti-cal-title"></span>
+                                <button class="sc-nav-btn" onclick="Workbench.sentiCalNext()" title="下月">&gt;</button>
+                            </span>
+                        </div>
+                        <div class="panel-body">
+                            <div id="senti-calendar" class="sc-grid"></div>
+                            <div class="sc-legend">
+                                <span>负面</span>
+                                <span class="sc-legend-bar">
+                                    <i style="background:#fee2e2"></i>
+                                    <i style="background:#fecaca"></i>
+                                    <i style="background:#e5e7eb"></i>
+                                    <i style="background:#bbf7d0"></i>
+                                    <i style="background:#86efac"></i>
+                                </span>
+                                <span>正面</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="panel">
                         <div class="panel-header">🌡️ 情绪总览 <span class="panel-sub" id="senti-view-date"></span></div>
                         <div class="panel-body" id="senti-view-summary">
                             <div class="empty-hint">加载中...</div>
@@ -221,7 +245,7 @@
 </footer>
 
 <script src="/static/js/auth.js"></script>
-<script src="/static/js/workbench.js?v=17"></script>
+<script src="/static/js/workbench.js?v=18"></script>
 <script src="/static/js/chat.js?v=17"></script>
 <script>
 // 更新时间

@@ -50,6 +50,10 @@ class Strategy(Base):
     # 持仓起始日期（首次建仓日，用于跟踪实际收益）
     holding_start_date = Column(Date, nullable=True, comment="持仓起始日期（首次建仓日）")
 
+    # 待生效配置（t+1）：调仓提交后先写入此处，下一交易日执行时才更新 allocation_config
+    pending_allocation = Column(JSON, nullable=True, comment="待生效配置（下一交易日生效）")
+    pending_set_date = Column(Date, nullable=True, comment="待生效配置提交日期")
+
     # 风控暂停记录
     paused_reason = Column(String(200), nullable=True, comment="策略暂停原因")
     paused_date = Column(Date, nullable=True, comment="策略暂停日期")

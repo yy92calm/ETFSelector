@@ -124,7 +124,7 @@ class RotationService:
         if not rotations:
             return {"status": "skip", "reason": "无轮换计划"}
 
-        old_config = dict(strategy.allocation_config)
+        old_config = dict(strategy.pending_allocation or strategy.allocation_config)
         new_config = dict(old_config)
         executed = []
 
@@ -154,25 +154,23 @@ class RotationService:
             factor = 1.0 / total
             new_config = {k: round(v * factor, 4) for k, v in new_config.items()}
 
-        strategy.allocation_config = new_config
-        strategy.last_auto_analysis_date = date.today()
-
+        # t+1 生效：写入待生效配置，下一交易日按新配置执行交易
+        from app.services.strategy_service import get_strategy_service
         try:
-            from app.services.portfolio_service import get_portfolio_service
-            svc = get_portfolio_service()
-            svc.run_strategy_for_date(strategy, date.today(), db)
+            mode = get_strategy_service().stage_allocation_change(strategy, new_config, db)
+            strategy.last_auto_analysis_date = date.today()
             db.commit()
         except Exception as e:
             db.rollback()
-            strategy.allocation_config = old_config
-            logger.error(f"[Rotation] 策略{strategy_id}交易执行失败: {e}")
+            logger.error(f"[Rotation] 策略{strategy_id}轮换提交失败: {e}")
             return {"status": "failed", "reason": str(e)}
 
-        logger.info(f"[Rotation] 策略{strategy_id}轮换完成: {len(executed)}只替换")
+        logger.info(f"[Rotation] 策略{strategy_id}轮换已提交: {len(executed)}只替换, 生效方式={mode}")
         return {
             "status": "ok",
             "executed": executed,
             "new_allocation": new_config,
+            "effective": mode,
         }
 
     def _run_debate(self, holdings: List[Dict], candidates: List[Dict]) -> Dict:

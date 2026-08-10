@@ -24,22 +24,34 @@ class PortfolioRebalanceStrategy(AllocationStrategy):
         判断是否需要再平衡
         触发条件：
         1. 持仓为空（初始买入）
-        2. 时间触发（季度末/月末）
-        3. 偏离触发（配置偏离超过阈值）
+        2. 存在遗留持仓（持有但不在配置中的ETF，需卖出）
+        3. 时间触发（季度末/月末）
+        4. 偏离触发（配置偏离超过阈值）
         """
         # 条件1：持仓为空，需要初始买入
         if not ctx.holdings or sum(ctx.holdings.values()) == 0:
             return True
         
-        # 条件2：时间触发
+        # 条件2：存在遗留持仓（调仓后被移出的ETF），需要卖出
+        if self._leftover_codes(ctx):
+            return True
+        
+        # 条件3：时间触发
         if self.should_trigger_time_rebalance(ctx):
             return True
         
-        # 条件3：偏离触发
+        # 条件4：偏离触发
         if self.should_trigger_threshold_rebalance(ctx):
             return True
         
         return False
+    
+    def _leftover_codes(self, ctx: PortfolioContext) -> List[str]:
+        """持有但不在目标配置中的ETF（调仓遗留），需全部卖出"""
+        return [
+            code for code, qty in ctx.holdings.items()
+            if qty > 0 and code not in self.allocation_config
+        ]
     
     def should_trigger_threshold_rebalance(self, ctx: PortfolioContext) -> bool:
         """
@@ -73,7 +85,9 @@ class PortfolioRebalanceStrategy(AllocationStrategy):
         
         if ctx.holdings and sum(ctx.holdings.values()) > 0:
             # 已有持仓
-            if self.should_trigger_time_rebalance(ctx):
+            if self._leftover_codes(ctx):
+                trigger_type = RebalanceTrigger.ALLOCATION_CHANGE
+            elif self.should_trigger_time_rebalance(ctx):
                 trigger_type = RebalanceTrigger.TIME_BASED
             elif self.should_trigger_threshold_rebalance(ctx):
                 trigger_type = RebalanceTrigger.THRESHOLD_BASED
@@ -128,12 +142,33 @@ class PortfolioRebalanceStrategy(AllocationStrategy):
                     "deviation": abs(current_ratio - target_ratio)
                 })
         
+        # 遗留持仓（不在目标配置中）全部卖出
+        for etf_code in self._leftover_codes(ctx):
+            price = ctx.current_prices.get(etf_code, 0)
+            if price <= 0:
+                continue
+            adjustments.append({
+                "etf_code": etf_code,
+                "action": "sell",
+                "amount": ctx.holdings[etf_code] * price,
+                "target_ratio": 0,
+                "current_ratio": current_allocation.get(etf_code, 0),
+                "deviation": current_allocation.get(etf_code, 0),
+            })
+        
+        # 先卖后买，确保卖出回笼的现金可用于买入
+        adjustments.sort(key=lambda a: 0 if a["action"] == "sell" else 1)
+        
         return adjustments
     
     def _get_reason(self, trigger_type: RebalanceTrigger, ctx: PortfolioContext) -> str:
         """生成再平衡原因说明"""
         if trigger_type == RebalanceTrigger.INITIAL:
             return "初始买入：按配置比例建立持仓"
+        
+        elif trigger_type == RebalanceTrigger.ALLOCATION_CHANGE:
+            leftovers = self._leftover_codes(ctx)
+            return f"配置变更：清理遗留持仓 {','.join(leftovers)} 并按新配置调整"
         
         elif trigger_type == RebalanceTrigger.TIME_BASED:
             freq_text = {

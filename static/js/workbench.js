@@ -602,6 +602,101 @@ const Workbench = {
     },
 
     async loadSentimentView() {
+        if (!this._sentiCalDate) this._sentiCalDate = new Date();
+        await this.renderSentiCalendar();
+        if (!this._sentiSelectedDate) {
+            this._sentiSelectedDate = this._sentiLatestDate || this._dateStr(new Date());
+        }
+        await this.loadSentimentForDate(this._sentiSelectedDate);
+    },
+
+    _dateStr(d) {
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    },
+
+    async renderSentiCalendar() {
+        const calDate = this._sentiCalDate || new Date();
+        const year = calDate.getFullYear();
+        const month = calDate.getMonth();
+
+        const titleEl = document.getElementById('senti-cal-title');
+        const calEl = document.getElementById('senti-calendar');
+        if (!calEl) return;
+        if (titleEl) titleEl.textContent = `${year}年${month + 1}月`;
+
+        const startDate = this._dateStr(new Date(year, month - 1, 1));
+        const endDate = this._dateStr(new Date(year, month + 2, 0));
+
+        try {
+            const resp = await fetch(`/api/auto-strategy/sentiments/calendar?start_date=${startDate}&end_date=${endDate}`).then(r => r.json());
+            const days = resp.code === 200 ? (resp.data.days || []) : [];
+            const dayMap = {};
+            days.forEach(d => { dayMap[d.date] = d; });
+
+            const latest = days.map(d => d.date).sort().pop();
+            if (latest) this._sentiLatestDate = latest;
+
+            const startWeekday = new Date(year, month, 1).getDay();
+            const daysInMonth = new Date(year, month + 1, 0).getDate();
+            const today = this._dateStr(new Date());
+            const selected = this._sentiSelectedDate;
+
+            let html = ['日', '一', '二', '三', '四', '五', '六']
+                .map(w => `<div class="sc-head">${w}</div>`).join('');
+            for (let i = 0; i < startWeekday; i++) html += '<div></div>';
+
+            for (let d = 1; d <= daysInMonth; d++) {
+                const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+                const dayData = dayMap[dateStr];
+                const isSelected = dateStr === selected;
+                const isToday = dateStr === today;
+
+                let cls = 'sc-day';
+                let scoreHtml = '';
+                if (dayData && dayData.avg_score != null) {
+                    const score = dayData.avg_score;
+                    if (score > 0.3) cls += ' sc-pos-2';
+                    else if (score > 0) cls += ' sc-pos-1';
+                    else if (score < -0.3) cls += ' sc-neg-2';
+                    else if (score < 0) cls += ' sc-neg-1';
+                    else cls += ' sc-neu';
+                    if (!isSelected) scoreHtml = `<div class="sc-score">${score.toFixed(1)}</div>`;
+                }
+                if (isSelected) cls += ' sc-selected';
+                else if (isToday) cls += ' sc-today';
+
+                const tip = dayData ? `${dateStr} | 均分:${dayData.avg_score != null ? dayData.avg_score.toFixed(2) : '-'} | 共${dayData.total}条` : dateStr;
+                html += `<div class="${cls}" title="${tip}" onclick="Workbench.selectSentimentDate('${dateStr}')">
+                    <div>${d}</div>${scoreHtml}
+                </div>`;
+            }
+            calEl.innerHTML = html;
+        } catch (e) {
+            calEl.innerHTML = '<div class="empty-hint" style="color:var(--danger)">日历加载失败</div>';
+        }
+    },
+
+    sentiCalPrev() {
+        const d = this._sentiCalDate || new Date();
+        d.setMonth(d.getMonth() - 1);
+        this._sentiCalDate = d;
+        this.renderSentiCalendar();
+    },
+
+    sentiCalNext() {
+        const d = this._sentiCalDate || new Date();
+        d.setMonth(d.getMonth() + 1);
+        this._sentiCalDate = d;
+        this.renderSentiCalendar();
+    },
+
+    async selectSentimentDate(dateStr) {
+        this._sentiSelectedDate = dateStr;
+        await this.renderSentiCalendar();
+        await this.loadSentimentForDate(dateStr);
+    },
+
+    async loadSentimentForDate(dateStr) {
         const sumEl = document.getElementById('senti-view-summary');
         const listEl = document.getElementById('senti-view-list');
         if (!sumEl || !listEl) return;
@@ -610,17 +705,17 @@ const Workbench = {
 
         try {
             const [sumResp, listResp] = await Promise.all([
-                fetch('/api/auto-strategy/sentiments/summary').then(r => r.json()).catch(() => ({code: 500})),
-                fetch('/api/auto-strategy/sentiments?days=7').then(r => r.json()).catch(() => ({code: 500})),
+                fetch(`/api/auto-strategy/sentiments/summary?target_date=${dateStr}`).then(r => r.json()).catch(() => ({code: 500})),
+                fetch(`/api/auto-strategy/sentiments/by-date?target_date=${dateStr}`).then(r => r.json()).catch(() => ({code: 500})),
             ]);
 
             const summary = sumResp.code === 200 ? sumResp.data : null;
             const sentiments = listResp.code === 200 ? (listResp.data.sentiments || []) : [];
 
             const dateEl = document.getElementById('senti-view-date');
-            if (dateEl && summary && summary.date) dateEl.textContent = summary.date;
+            if (dateEl) dateEl.textContent = dateStr;
             const countEl = document.getElementById('senti-view-count');
-            if (countEl) countEl.textContent = sentiments.length ? `近7日 ${sentiments.length} 条` : '';
+            if (countEl) countEl.textContent = `${dateStr} · ${sentiments.length} 条`;
 
             if (summary && summary.total > 0) {
                 const score = summary.avg_score || 0;
@@ -654,7 +749,7 @@ const Workbench = {
                         <div class="sv-stat"><div class="sv-stat-val">${summary.related_etf_count || '-'}</div><div class="sv-stat-label">关联ETF</div></div>
                     </div>`;
             } else {
-                sumEl.innerHTML = '<div class="empty-hint">暂无舆情数据，等待采集任务执行</div>';
+                sumEl.innerHTML = '<div class="empty-hint">该日期暂无舆情数据</div>';
             }
 
             if (sentiments.length > 0) {
@@ -685,7 +780,7 @@ const Workbench = {
                     </div>`;
                 }).join('');
             } else {
-                listEl.innerHTML = '<div class="empty-hint">暂无舆情记录</div>';
+                listEl.innerHTML = '<div class="empty-hint">该日期暂无舆情记录</div>';
             }
         } catch (e) {
             if (sumEl) sumEl.innerHTML = '<div class="empty-hint" style="color:var(--danger)">加载失败</div>';
@@ -1091,10 +1186,14 @@ const Workbench = {
             }
 
             el.innerHTML = list.map(s => {
-                const alloc = s.allocation_config ? Object.entries(s.allocation_config).slice(0,3).map(([k,v]) => `${this.etfLabel(k)} ${(v*100).toFixed(0)}%`).join(' · ') : '-';
+                const allocSrc = s.pending_allocation || s.allocation_config;
+                const alloc = allocSrc ? Object.entries(allocSrc).slice(0,3).map(([k,v]) => `${this.etfLabel(k)} ${(v*100).toFixed(0)}%`).join(' · ') : '-';
                 const statusBadge = s.status === 'active'
                     ? '<span class="s-badge s-active">活跃</span>'
                     : '<span class="s-badge s-paused">已暂停</span>';
+                const pendingBadge = s.pending_allocation
+                    ? `<span class="s-badge s-pending" title="提交于 ${s.pending_set_date || '-'}，下一交易日生效">调仓待生效</span>`
+                    : '';
                 return `
                 <div class="strat-block expanded" id="strat-block-${s.id}">
                     <div class="strat-block-head" onclick="Workbench.toggleBacktest(${s.id})">
@@ -1102,6 +1201,7 @@ const Workbench = {
                             <span class="strat-expand-icon" id="strat-icon-${s.id}">▾</span>
                             <span class="strat-block-name">${this.esc(s.name)}</span>
                             ${statusBadge}
+                            ${pendingBadge}
                             <span class="strat-block-type">${s.strategy_type || '-'}</span>
                             ${s.holding_start_date ? `<span class="strat-hold-date" title="持仓起始日，用于跟踪实际收益">建仓 ${s.holding_start_date}</span>` : ''}
                         </div>

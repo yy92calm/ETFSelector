@@ -3,6 +3,7 @@
 """
 
 import logging
+from datetime import date
 from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
 
@@ -116,15 +117,57 @@ class StrategyService:
             if abs(total - 1.0) > 0.01:
                 raise ValueError(f"配置比例总和应为1.0，当前为 {total:.2f}")
         
-        # 更新字段
+        # 配置比例变更走 t+1 待生效，其余字段直接更新
+        allocation_config = data.pop("allocation_config", None)
+
         for field, value in data.items():
             if hasattr(strategy, field) and value is not None:
                 setattr(strategy, field, value)
-        
+
+        mode = None
+        if allocation_config:
+            mode = self.stage_allocation_change(strategy, allocation_config, db)
+
         db.commit()
         db.refresh(strategy)
-        logger.info(f"更新策略 {strategy_id}: {data.keys()}")
+        logger.info(f"更新策略 {strategy_id}: {list(data.keys()) + (['allocation_config'] if mode else [])}")
         return strategy
+
+    def stage_allocation_change(self, strategy: Strategy, new_allocation: Dict[str, float], db: Session) -> str:
+        """提交配置变更（t+1 生效，不 commit，由调用方提交事务）
+
+        已有持仓记录（运行中）的策略：写入待生效配置，下一交易日执行；
+        尚无持仓记录的新策略：立即生效（首次建仓按新配置执行）。
+
+        Returns:
+            "pending" 或 "immediate"
+        """
+        total = sum(new_allocation.values())
+        if abs(total - 1.0) > 0.01:
+            raise ValueError(f"配置比例总和应为1.0，当前为 {total:.4f}")
+
+        from app.models.portfolio import PortfolioSnapshot
+        has_history = (
+            db.query(PortfolioSnapshot.id)
+            .filter(PortfolioSnapshot.strategy_id == strategy.id)
+            .first()
+            is not None
+        )
+
+        if has_history:
+            strategy.pending_allocation = dict(new_allocation)
+            strategy.pending_set_date = date.today()
+            logger.info(f"策略 {strategy.id} 配置变更已提交，待下一交易日生效: {new_allocation}")
+            return "pending"
+
+        strategy.allocation_config = dict(new_allocation)
+        strategy.pending_allocation = None
+        strategy.pending_set_date = None
+        return "immediate"
+
+    def get_effective_target_allocation(self, strategy: Strategy) -> Dict[str, float]:
+        """当前有效目标配置：有待生效配置时返回待生效配置，否则返回现行配置"""
+        return dict(strategy.pending_allocation or strategy.allocation_config or {})
 
 
 _service: Optional[StrategyService] = None

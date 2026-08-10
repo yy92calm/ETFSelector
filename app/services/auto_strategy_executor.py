@@ -111,7 +111,7 @@ class AutoStrategyExecutor:
             return pipeline
 
         # ---------- 阶段 6：配置变化检查 ----------
-        old_allocation = strategy.allocation_config.copy()
+        old_allocation = dict(strategy.pending_allocation or strategy.allocation_config)
         change_pct = self._calculate_max_change(old_allocation, suggested)
 
         if change_pct > self.SAFETY_LIMITS["max_allocation_change"] or (
@@ -128,20 +128,20 @@ class AutoStrategyExecutor:
 
         pipeline["stages"].append({"stage": "check_change", "status": "passed", "change_pct": round(change_pct, 4)})
 
-        # ---------- 阶段 7：写入配置 + 交易执行（事务保护）----------
+        # ---------- 阶段 7：写入待生效配置（t+1 生效，事务保护）----------
+        # 当日快照与持仓不受影响，下一交易日按新配置执行交易
         old_allocation_copy = strategy.allocation_config.copy()
+        old_pending_copy = strategy.pending_allocation
+        old_pending_date = strategy.pending_set_date
         old_adjustment_count = strategy.auto_adjustment_count
 
-        strategy.allocation_config = suggested
-        strategy.auto_adjustment_count += 1
-        strategy.last_auto_analysis_date = execution_date
-
         try:
-            trade_result = self._execute_trades(strategy, execution_date, db)
-            pipeline["stages"].append(trade_result)
+            from app.services.strategy_service import get_strategy_service
+            mode = get_strategy_service().stage_allocation_change(strategy, suggested, db)
+            strategy.auto_adjustment_count += 1
+            strategy.last_auto_analysis_date = execution_date
 
-            if trade_result.get("status") == "failed":
-                raise RuntimeError(trade_result.get("reason", "交易执行失败"))
+            pipeline["stages"].append({"stage": "trade_execution", "status": "passed", "effective": mode})
 
             db.commit()
 
@@ -159,7 +159,8 @@ class AutoStrategyExecutor:
             self._record_experience_usage(strategy_id, analysis, db)
 
             pipeline["status"] = "adjusted"
-            pipeline["overall_message"] = f"策略调整完成，变化幅度{change_pct:.2%}"
+            effective_note = "下一交易日生效" if mode == "pending" else "立即生效"
+            pipeline["overall_message"] = f"策略调整已提交（{effective_note}），变化幅度{change_pct:.2%}"
             pipeline["old_allocation"] = old_allocation
             pipeline["new_allocation"] = suggested
             pipeline["change_pct"] = round(change_pct, 4)
@@ -167,6 +168,8 @@ class AutoStrategyExecutor:
             logger.info(f"全管道执行完成 策略{strategy_id}: {pipeline['overall_message']}")
         except Exception as e:
             strategy.allocation_config = old_allocation_copy
+            strategy.pending_allocation = old_pending_copy
+            strategy.pending_set_date = old_pending_date
             strategy.auto_adjustment_count = old_adjustment_count
             strategy.last_auto_analysis_date = None
 
@@ -178,7 +181,7 @@ class AutoStrategyExecutor:
 
             pipeline["stages"].append({"stage": "commit", "status": "rolled_back", "reason": str(e)})
             pipeline["status"] = "failed"
-            pipeline["overall_message"] = f"交易执行失败: {str(e)}"
+            pipeline["overall_message"] = f"策略调整提交失败: {str(e)}"
 
             logger.error(f"全管道执行失败 策略{strategy_id}: {e}")
             return pipeline
@@ -301,18 +304,6 @@ class AutoStrategyExecutor:
             }
 
         return {"passed": True, "stage": {"stage": "validate_etf", "status": "passed"}}
-
-    def _execute_trades(self, strategy: Strategy, execution_date: date, db: Session) -> Dict:
-        """执行再平衡交易（不处理回滚，由外层事务管理）"""
-        from app.services.portfolio_service import get_portfolio_service
-
-        try:
-            svc = get_portfolio_service()
-            svc.run_strategy_for_date(strategy, execution_date, db)
-            return {"stage": "trade_execution", "status": "passed"}
-        except Exception as e:
-            logger.error(f"策略{strategy.id} 交易执行失败: {e}")
-            return {"stage": "trade_execution", "status": "failed", "reason": str(e)}
 
     # ---------- 下方保留原有方法，供外部 API 兼容使用 ----------
 

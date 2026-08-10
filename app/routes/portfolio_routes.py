@@ -19,9 +19,25 @@ def get_portfolio_history(
     start_date: Optional[date] = Query(None, description="起始日期，过滤该日期之后的快照"),
     db: Session = Depends(get_db)
 ):
-    """获取策略的每日资产快照"""
+    """获取策略的每日资产快照（含每日持仓记录）"""
+    from app.models.portfolio import HoldingSnapshot
+
     svc = get_portfolio_service()
     snapshots = svc.get_portfolio_history(strategy_id, db, start_date)
+
+    # 每日持仓记录按日期分组
+    hs_query = db.query(HoldingSnapshot).filter(HoldingSnapshot.strategy_id == strategy_id)
+    if start_date:
+        hs_query = hs_query.filter(HoldingSnapshot.trade_date >= start_date)
+    holdings_by_date = {}
+    for h in hs_query.all():
+        holdings_by_date.setdefault(h.trade_date, []).append({
+            "etf_code": h.etf_code,
+            "quantity": h.quantity,
+            "price": h.price,
+            "market_value": h.market_value,
+        })
+
     return APIResponse(data={
         "snapshots": [{
             "trade_date": s.trade_date.isoformat(),
@@ -30,6 +46,7 @@ def get_portfolio_history(
             "market_value": s.market_value,
             "profit": s.profit,
             "profit_pct": s.profit_pct,
+            "holdings": holdings_by_date.get(s.trade_date, []),
         } for s in snapshots],
     })
 

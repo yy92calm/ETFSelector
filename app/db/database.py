@@ -60,6 +60,8 @@ def init_db():
                 ("paused_reason", "VARCHAR(200)"),
                 ("paused_date", "DATE"),
                 ("holding_start_date", "DATE"),
+                ("pending_allocation", "JSON"),
+                ("pending_set_date", "DATE"),
                 ("failure_signature", "VARCHAR(200)"),
                 ("occurrence_count", "INTEGER DEFAULT 1"),
                 ("last_triggered_date", "DATE"),

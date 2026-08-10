@@ -17,6 +17,7 @@ class RebalanceTrigger(Enum):
     TIME_BASED = "time_based"       # 时间触发（季度末/月末）
     THRESHOLD_BASED = "threshold"   # 偏离阈值触发
     INITIAL = "initial"             # 初始买入
+    ALLOCATION_CHANGE = "allocation_change"  # 配置变更（调仓，含遗留持仓清理）
 
 
 @dataclass

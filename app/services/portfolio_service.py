@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models.etf import ETFQuotation
 from app.models.strategy import Strategy
-from app.models.portfolio import PortfolioSnapshot, TradeRecord, Holding
+from app.models.portfolio import PortfolioSnapshot, TradeRecord, Holding, HoldingSnapshot
 from app.services.strategy_service import get_strategy_service
 from app.strategies.base import PortfolioContext, compute_adjustment
 
@@ -20,12 +20,23 @@ logger = logging.getLogger(__name__)
 
 class PortfolioService:
 
-    def run_strategy_for_date(self, strategy: Strategy, trade_date: date, db: Session):
-        """为指定策略在指定日期执行再平衡检查和交易"""
-        etf_codes = strategy.get_etf_codes()
-        if not etf_codes:
-            return
+    def _activate_pending_allocation(self, strategy: Strategy, trade_date: date):
+        """待生效配置（t+1）：提交日之后的交易日才激活"""
+        if strategy.pending_allocation and strategy.pending_set_date and trade_date > strategy.pending_set_date:
+            logger.info(
+                f"策略 {strategy.id} 待生效配置于 {trade_date} 激活: "
+                f"{strategy.allocation_config} -> {strategy.pending_allocation}"
+            )
+            strategy.allocation_config = strategy.pending_allocation
+            strategy.pending_allocation = None
+            strategy.pending_set_date = None
 
+    def run_strategy_for_date(self, strategy: Strategy, trade_date: date, db: Session):
+        """为指定策略在指定日期执行再平衡检查和交易
+
+        按实际日期如实记录：当日快照反映当日实际持仓与当日行情。
+        调仓采用 t+1 生效：提交日当日仍按旧持仓记录，下一交易日才执行新配置。
+        """
         # 检查是否已处理过该日期
         existing = (
             db.query(PortfolioSnapshot)
@@ -34,6 +45,13 @@ class PortfolioService:
             .first()
         )
         if existing:
+            return
+
+        # t+1：激活提交日在 trade_date 之前的待生效配置
+        self._activate_pending_allocation(strategy, trade_date)
+
+        etf_codes = strategy.get_etf_codes()
+        if not etf_codes:
             return
 
         # 获取上一个快照来确定当前持仓和现金
@@ -60,9 +78,9 @@ class PortfolioService:
         ).all()
         holdings: Dict[str, int] = {h.etf_code: h.quantity for h in holdings_records}
 
-        # 获取当日各ETF价格
+        # 获取当日各ETF价格：配置内ETF + 全部实际持仓（遗留持仓也要估值和卖出）
         current_prices = {}
-        for code in etf_codes:
+        for code in set(etf_codes) | set(holdings.keys()):
             quote = (
                 db.query(ETFQuotation)
                 .filter(ETFQuotation.etf_code == code,
@@ -72,6 +90,11 @@ class PortfolioService:
             )
             if quote and quote.close_price > 0:
                 current_prices[code] = quote.close_price
+
+        # 无行情的持仓用持仓价兜底，保证市值完整、可卖出
+        for h in holdings_records:
+            if h.quantity > 0 and h.etf_code not in current_prices and h.current_price and h.current_price > 0:
+                current_prices[h.etf_code] = h.current_price
 
         if not current_prices:
             return
@@ -155,8 +178,8 @@ class PortfolioService:
         profit = total_asset - initial
         profit_pct = profit / initial * 100 if initial > 0 else 0
 
-        # 更新持仓记录
-        for code in etf_codes:
+        # 更新持仓记录（配置内ETF + 遗留持仓，卖空的删除）
+        for code in set(etf_codes) | set(holdings.keys()):
             qty = holdings.get(code, 0)
             price = current_prices.get(code, 0)
 
@@ -191,6 +214,24 @@ class PortfolioService:
             profit=round(profit, 2),
             profit_pct=round(profit_pct, 4),
         ))
+
+        # 写入当日持仓快照（按实际日期保留历史持仓记录）
+        db.query(HoldingSnapshot).filter(
+            HoldingSnapshot.strategy_id == strategy.id,
+            HoldingSnapshot.trade_date == trade_date,
+        ).delete()
+        for code, qty in holdings.items():
+            if qty <= 0:
+                continue
+            price = current_prices.get(code, 0)
+            db.add(HoldingSnapshot(
+                strategy_id=strategy.id,
+                trade_date=trade_date,
+                etf_code=code,
+                quantity=qty,
+                price=price,
+                market_value=round(qty * price, 2),
+            ))
 
         db.commit()
         logger.info(f"策略 {strategy.id} 在 {trade_date} 执行完成, 总资产={total_asset:.2f}")

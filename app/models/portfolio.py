@@ -41,6 +41,22 @@ class TradeRecord(Base):
         return f"<Trade {self.direction} {self.etf_code} qty={self.quantity}>"
 
 
+class HoldingSnapshot(Base):
+    """每日持仓快照（按实际日期保留的历史持仓记录）"""
+    __tablename__ = "holding_snapshot"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_id = Column(Integer, ForeignKey("strategy.id"), nullable=False, index=True)
+    trade_date = Column(Date, nullable=False, index=True)
+    etf_code = Column(String(10), nullable=False)
+    quantity = Column(Integer, nullable=False, default=0, comment="持仓数量")
+    price = Column(Float, nullable=False, default=0, comment="当日估值价格")
+    market_value = Column(Float, nullable=False, default=0, comment="市值")
+
+    def __repr__(self):
+        return f"<HoldingSnapshot strategy={self.strategy_id} {self.trade_date} {self.etf_code} qty={self.quantity}>"
+
+
 class Holding(Base):
     """当前持仓"""
     __tablename__ = "holding"
