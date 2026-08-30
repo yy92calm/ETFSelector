@@ -2739,3 +2739,11 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .mt-badge.mt-ontrack { background: rgba(220, 38, 38, 0.1); color: var(--danger); }
 .mt-badge.mt-above { background: rgba(217, 119, 6, 0.1); color: #b45309; }
 .mt-range { color: var(--text-muted); font-size: 12px; margin-left: auto; }
+
+
+.rule-section-note {
+    font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.6;
+    margin-bottom: 6px;
+}

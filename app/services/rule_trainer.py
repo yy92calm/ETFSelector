@@ -52,88 +52,105 @@ class RuleTrainer:
             规则表字典
         """
         cutoff = date.today() - timedelta(days=days)
-        
-        logs = (
+
+        def _parse_records(logs):
+            """将日志解析为统一记录结构"""
+            recs = []
+            for log in logs:
+                ar = log.analysis_result
+                if isinstance(ar, str):
+                    try:
+                        ar = json.loads(ar)
+                    except Exception:
+                        continue
+                if not isinstance(ar, dict):
+                    continue
+
+                ta = ar.get("technical_report") or {}
+                sr = ar.get("sentiment_report") or {}
+                recs.append({
+                    "date": log.log_date.isoformat(),
+                    "regime": ar.get("market_regime", "unknown"),
+                    "action": ar.get("suggested_action", "hold"),
+                    "allocation": ar.get("suggested_allocation") or {},
+                    "tech_trend": ta.get("overall_trend", "unknown"),
+                    "sentiment": sr.get("market_sentiment", "unknown"),
+                    "sentiment_score": sr.get("sentiment_score", 0),
+                })
+            return recs
+
+        def _load(action_type, since):
+            return (
+                db.query(AutoStrategyLog)
+                .filter(
+                    AutoStrategyLog.action_type == action_type,
+                    AutoStrategyLog.log_date >= since,
+                    AutoStrategyLog.analysis_result.isnot(None),
+                )
+                .order_by(AutoStrategyLog.log_date.asc())
+                .all()
+            )
+
+        records = _parse_records(_load("analyzed", cutoff))
+
+        # 回放记录（全量，不受days限制）
+        replay_logs = (
             db.query(AutoStrategyLog)
             .filter(
-                AutoStrategyLog.action_type == "analyzed",
-                AutoStrategyLog.log_date >= cutoff,
+                AutoStrategyLog.action_type == "replayed",
                 AutoStrategyLog.analysis_result.isnot(None),
             )
             .order_by(AutoStrategyLog.log_date.asc())
             .all()
         )
+        replay_records = _parse_records(replay_logs)
 
-        if not logs:
+        if not records and not replay_records:
             logger.warning("[RuleTrainer] 无可用分析记录")
-            return {"regime_rules": {}, "regime_transitions": [], "etf_frequency": {}, "training_period": None}
+            return {"regime_rules": {}, "regime_transitions": [], "etf_frequency": {},
+                    "training_period": None, "replay_rules": {}, "replay_period": None}
 
-        # 解析所有记录
-        records = []
-        for log in logs:
-            ar = log.analysis_result
-            if isinstance(ar, str):
-                try:
-                    ar = json.loads(ar)
-                except Exception:
-                    continue
-            if not isinstance(ar, dict):
-                continue
-            
-            regime = ar.get("market_regime", "unknown")
-            action = ar.get("suggested_action", "hold")
-            allocation = ar.get("suggested_allocation") or {}
-            ta = ar.get("technical_report") or {}
-            sr = ar.get("sentiment_report") or {}
-            
-            records.append({
-                "date": log.log_date.isoformat(),
-                "regime": regime,
-                "action": action,
-                "allocation": allocation,
-                "tech_trend": ta.get("overall_trend", "unknown"),
-                "sentiment": sr.get("market_sentiment", "unknown"),
-                "sentiment_score": sr.get("sentiment_score", 0),
-            })
+        def _build_regime_rules(recs):
+            """regime → allocation 映射"""
+            regime_alloc = defaultdict(lambda: {"allocations": [], "actions": [], "count": 0})
+            for r in recs:
+                regime = r["regime"]
+                regime_alloc[regime]["allocations"].append(r["allocation"])
+                regime_alloc[regime]["actions"].append(r["action"])
+                regime_alloc[regime]["count"] += 1
 
-        # 1. regime → allocation 映射（核心规则）
-        regime_alloc = defaultdict(lambda: {"allocations": [], "actions": [], "count": 0})
-        for r in records:
-            regime = r["regime"]
-            regime_alloc[regime]["allocations"].append(r["allocation"])
-            regime_alloc[regime]["actions"].append(r["action"])
-            regime_alloc[regime]["count"] += 1
+            rules = {}
+            for regime, data in regime_alloc.items():
+                all_etfs = set()
+                for alloc in data["allocations"]:
+                    all_etfs.update(alloc.keys())
 
-        regime_rules = {}
-        for regime, data in regime_alloc.items():
-            # 计算平均分配比例
-            all_etfs = set()
-            for alloc in data["allocations"]:
-                all_etfs.update(alloc.keys())
-            
-            avg_alloc = {}
-            for etf in all_etfs:
-                values = [a.get(etf, 0) for a in data["allocations"]]
-                avg_alloc[etf] = round(sum(values) / len(values), 4) if values else 0
-            
-            # 归一化
-            total = sum(avg_alloc.values())
-            if total > 0:
-                avg_alloc = {k: round(v / total, 4) for k, v in avg_alloc.items()}
-            
-            # 最常见的action
-            from collections import Counter
-            action_counter = Counter(data["actions"])
-            typical_action = action_counter.most_common(1)[0][0] if action_counter else "hold"
-            
-            regime_rules[regime] = {
-                "avg_allocation": avg_alloc,
-                "sample_count": data["count"],
-                "typical_action": typical_action,
-                "etf_list": sorted(all_etfs),
-            }
+                avg_alloc = {}
+                for etf in all_etfs:
+                    values = [a.get(etf, 0) for a in data["allocations"]]
+                    avg_alloc[etf] = round(sum(values) / len(values), 4) if values else 0
 
-        # 2. regime 转换序列
+                total = sum(avg_alloc.values())
+                if total > 0:
+                    avg_alloc = {k: round(v / total, 4) for k, v in avg_alloc.items()}
+
+                from collections import Counter
+                action_counter = Counter(data["actions"])
+                typical_action = action_counter.most_common(1)[0][0] if action_counter else "hold"
+
+                rules[regime] = {
+                    "avg_allocation": avg_alloc,
+                    "sample_count": data["count"],
+                    "typical_action": typical_action,
+                    "etf_list": sorted(all_etfs),
+                }
+            return rules
+
+        # 1. regime → allocation 映射
+        regime_rules = _build_regime_rules(records) if records else {}
+        replay_rules = _build_regime_rules(replay_records) if replay_records else {}
+
+        # 2. regime 转换序列（真实记录）
         transitions = []
         for i in range(1, len(records)):
             if records[i]["regime"] != records[i-1]["regime"]:
@@ -143,7 +160,7 @@ class RuleTrainer:
                     "date": records[i]["date"],
                 })
 
-        # 3. ETF 出现频率
+        # 3. ETF 出现频率（真实记录）
         etf_freq = defaultdict(int)
         for r in records:
             for etf in r["allocation"]:
@@ -154,17 +171,25 @@ class RuleTrainer:
             "start": records[0]["date"],
             "end": records[-1]["date"],
             "days": len(records),
-        }
+        } if records else None
+
+        replay_period = {
+            "start": replay_records[0]["date"],
+            "end": replay_records[-1]["date"],
+            "days": len(replay_records),
+        } if replay_records else None
 
         result = {
             "regime_rules": regime_rules,
             "regime_transitions": transitions,
             "etf_frequency": dict(sorted(etf_freq.items(), key=lambda x: -x[1])),
             "training_period": training_period,
+            "replay_rules": replay_rules,
+            "replay_period": replay_period,
         }
 
-        logger.info("[RuleTrainer] 训练完成: %d天数据, %d种regime, %d个ETF" % (
-            len(records), len(regime_rules), len(etf_freq)
+        logger.info("[RuleTrainer] 训练完成: 真实%d天/%d种regime, 回放%d天/%d种regime" % (
+            len(records), len(regime_rules), len(replay_records), len(replay_rules)
         ))
 
         return result
@@ -184,6 +209,19 @@ class RuleTrainer:
         rule = regime_rules.get(regime)
         if rule:
             return rule.get("avg_allocation", {})
+        # 真实规则缺失该状态时，回退到回放规则（补足熊市等未覆盖状态）
+        # 规则引擎与AI裁决的状态枚举不同，需别名映射
+        aliases = {
+            "bull_strong": ["bull_quiet", "bull_volatile"],
+            "bull_weak": ["bull_volatile", "bull_quiet"],
+            "bear_weak": ["bear_quiet", "bear_panic"],
+            "bear_strong": ["bear_panic", "crisis", "bear_quiet"],
+        }
+        replay_rules = rules.get("replay_rules") or {}
+        for candidate in [regime] + aliases.get(regime, []):
+            rule = replay_rules.get(candidate)
+            if rule:
+                return rule.get("avg_allocation", {})
         return {}
 
     def explain_regime(self, regime: str, rules: dict) -> str:

@@ -2320,7 +2320,9 @@ const Workbench = {
 
     renderTrainedRules(rules, el) {
         const tp = rules.training_period;
+        const rp = rules.replay_period;
         const regimeRules = rules.regime_rules || {};
+        const replayRules = rules.replay_rules || {};
         const transitions = rules.regime_transitions || [];
         const etfFreq = rules.etf_frequency || {};
 
@@ -2328,79 +2330,95 @@ const Workbench = {
             bull_strong: "#dc2626", bull_weak: "#f97316",
             bull_volatile: "#f97316", bull_quiet: "#fb923c",
             neutral: "#6b7280", bear_weak: "#22c55e", bear_strong: "#16a34a",
+            bear_quiet: "#22c55e", bear_panic: "#16a34a", crisis: "#7f1d1d",
         };
         const regimeLabels = {
             bull_strong: "强势牛市", bull_weak: "弱牛市",
             bull_volatile: "震荡牛市", bull_quiet: "温和牛市",
             neutral: "震荡市", bear_weak: "弱熊市", bear_strong: "强势熊市",
+            bear_quiet: "温和熊市", bear_panic: "熊市恐慌", crisis: "危机",
         };
 
-        let html = "";
-
-        if (tp) {
-            html += "<div class=\"rule-section\">";
-            html += "<div class=\"rule-section-title\">训练数据</div>";
-            html += "<div class=\"rule-metrics\">";
-            html += "<span class=\"rule-metric\"><strong>" + tp.days + "</strong> 天样本</span>";
-            html += "<span class=\"rule-metric\">" + tp.start + " ~ " + tp.end + "</span>";
-            html += "<span class=\"rule-metric\"><strong>" + Object.keys(regimeRules).length + "</strong> 种市场状态</span>";
-            html += "</div></div>";
-        }
-
-        html += "<div class=\"rule-section\"><div class=\"rule-section-title\">市场状态规则</div>";
-        html += "<div class=\"rule-regime-cards\">";
-        for (const [regime, rule] of Object.entries(regimeRules)) {
+        const regimeCard = (regime, rule) => {
             const color = regimeColors[regime] || "#6b7280";
             const label = regimeLabels[regime] || regime;
-            const alloc = rule.avg_allocation || {};
-            const top3 = Object.entries(alloc).sort((a, b) => b[1] - a[1]).slice(0, 4);
+            const top4 = Object.entries(rule.avg_allocation || {}).sort((a, b) => b[1] - a[1]).slice(0, 4);
+            return '<div class="rule-regime-card">' +
+                '<div class="rule-regime-header">' +
+                '<span class="rule-regime-label" style="color:' + color + '">' + label + '</span>' +
+                '<span class="rule-regime-count">' + rule.sample_count + '天</span>' +
+                '</div>' +
+                '<div class="rule-regime-allocation">' +
+                top4.map(([etf, w]) => {
+                    const pct = (w * 100).toFixed(1);
+                    return '<div class="rule-alloc-item">' +
+                        '<span class="rule-alloc-etf">' + this.etfLabel(etf) + '</span>' +
+                        '<div class="rule-alloc-bar"><div class="rule-alloc-fill" style="width:' + pct + '%;background:' + color + '"></div></div>' +
+                        '<span class="rule-alloc-pct">' + pct + '%</span></div>';
+                }).join('') +
+                '</div></div>';
+        };
 
-            html += "<div class=\"rule-regime-card\">";
-            html += "<div class=\"rule-regime-header\">";
-            html += "<span class=\"rule-regime-label\" style=\"color:" + color + "\">" + label + "</span>";
-            html += "<span class=\"rule-regime-count\">" + rule.sample_count + "天</span>";
-            html += "</div>";
-            html += "<div class=\"rule-regime-allocation\">";
-            for (const [etf, weight] of top3) {
-                const pct = (weight * 100).toFixed(1);
-                html += "<div class=\"rule-alloc-item\">";
-                html += "<span class=\"rule-alloc-etf\">" + etf + "</span>";
-                html += "<div class=\"rule-alloc-bar\"><div class=\"rule-alloc-fill\" style=\"width:" + pct + "%;background:" + color + "\"></div></div>";
-                html += "<span class=\"rule-alloc-pct\">" + pct + "%</span>";
-                html += "</div>";
+        const regimeSection = (title, map, note) => {
+            const entries = Object.entries(map || {});
+            if (!entries.length) return '';
+            return '<div class="rule-section"><div class="rule-section-title">' + title + '</div>' +
+                (note ? '<div class="rule-section-note">' + note + '</div>' : '') +
+                '<div class="rule-regime-cards">' +
+                entries.map(([r, rule]) => regimeCard(r, rule)).join('') +
+                '</div></div>';
+        };
+
+        let html = '';
+
+        if (tp || rp) {
+            html += '<div class="rule-section">';
+            html += '<div class="rule-section-title">样本构成</div>';
+            html += '<div class="rule-metrics">';
+            if (tp) {
+                html += '<span class="rule-metric">真实 <strong>' + tp.days + '</strong> 天（' + tp.start + ' ~ ' + tp.end + '）</span>';
             }
-            html += "</div></div>";
+            if (rp) {
+                html += '<span class="rule-metric">回放 <strong>' + rp.days + '</strong> 天（' + rp.start + ' ~ ' + rp.end + '）</span>';
+            }
+            html += '</div></div>';
         }
-        html += "</div></div>";
 
-        html += "<div class=\"rule-section\"><div class=\"rule-section-title\">ETF 使用频率</div>";
-        html += "<div class=\"rule-etf-freq\">";
-        const topEtfs = Object.entries(etfFreq).sort((a, b) => b[1] - a[1]).slice(0, 10);
-        for (const [etf, freq] of topEtfs) {
-            const pct = (freq / tp.days * 100).toFixed(0);
-            html += "<div class=\"rule-freq-item\">";
-            html += "<span class=\"rule-freq-etf\">" + etf + "</span>";
-            html += "<div class=\"rule-freq-bar\"><div class=\"rule-freq-fill\" style=\"width:" + pct + "%\"></div></div>";
-            html += "<span class=\"rule-freq-count\">" + freq + "/" + tp.days + "</span>";
-            html += "</div>";
+        html += regimeSection('市场状态规则（真实记录）', regimeRules, '');
+        html += regimeSection('回放规则（历史重放）', replayRules, '回放仅输入当日技术指标、无舆情信息；样本覆盖多个牛熊阶段，熊市配置为真实记录所缺，参考时注意输入差异。');
+
+        // ETF 使用频率（真实记录）
+        if (tp) {
+            html += '<div class="rule-section"><div class="rule-section-title">ETF 使用频率（真实）</div>';
+            html += '<div class="rule-etf-freq">';
+            const topEtfs = Object.entries(etfFreq).sort((a, b) => b[1] - a[1]).slice(0, 10);
+            for (const [etf, freq] of topEtfs) {
+                const pct = (freq / tp.days * 100).toFixed(0);
+                html += '<div class="rule-freq-item">';
+                html += '<span class="rule-freq-etf">' + this.etfLabel(etf) + '</span>';
+                html += '<div class="rule-freq-bar"><div class="rule-freq-fill" style="width:' + pct + '%"></div></div>';
+                html += '<span class="rule-freq-count">' + freq + '/' + tp.days + '</span>';
+                html += '</div>';
+            }
+            html += '</div></div>';
         }
-        html += "</div></div>";
 
+        // regime转换（真实记录）
         if (transitions.length > 0) {
-            html += "<div class=\"rule-section\"><div class=\"rule-section-title\">状态转换 (" + transitions.length + "次)</div>";
-            html += "<div class=\"rule-transitions\">";
+            html += '<div class="rule-section"><div class="rule-section-title">状态转换 (' + transitions.length + '次)</div>';
+            html += '<div class="rule-transitions">';
             for (const t of transitions) {
-                html += "<div class=\"rule-transition-item\">";
-                html += "<span class=\"rule-trans-date\">" + t.date + "</span>";
-                html += "<span class=\"rule-trans-arrow\">→</span>";
-                html += "<span class=\"rule-trans-regime\" style=\"color:" + (regimeColors[t.to] || "#6b7280") + "\">" + (regimeLabels[t.to] || t.to) + "</span>";
-                html += "</div>";
+                html += '<div class="rule-transition-item">';
+                html += '<span class="rule-trans-date">' + t.date + '</span>';
+                html += '<span class="rule-trans-arrow">→</span>';
+                html += '<span class="rule-trans-regime" style="color:' + (regimeColors[t.to] || "#6b7280") + '">' + (regimeLabels[t.to] || t.to) + '</span>';
+                html += '</div>';
             }
-            html += "</div></div>";
+            html += '</div></div>';
         }
 
         el.innerHTML = html;
-    }
+    },
 
 };
 
