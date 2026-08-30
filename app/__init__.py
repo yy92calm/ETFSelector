@@ -108,10 +108,10 @@ def root():
     # 优先返回工作台页面
     workbench = static_dir / "workbench.html"
     if workbench.exists():
-        return FileResponse(str(workbench))
+        return FileResponse(str(workbench), headers={"Cache-Control": "no-cache"})
     index = static_dir / "index.html"
     if index.exists():
-        return FileResponse(str(index))
+        return FileResponse(str(index), headers={"Cache-Control": "no-cache"})
     return {"message": settings.app_name, "docs": "/docs"}
 
 

@@ -2128,7 +2128,7 @@ const Workbench = {
         const el = document.getElementById("analyses-trained-rules");
         if (!el) return;
 
-        fetch("/api/rules", { headers: { "Authorization": "Bearer " + this._token } })
+        fetch("/api/rules")
             .then(r => r.json())
             .then(d => {
                 if (d.code !== 200 || !d.data) {
@@ -2138,6 +2138,21 @@ const Workbench = {
                 this.renderTrainedRules(d.data, el);
             })
             .catch(() => { el.innerHTML = "<div class=\"empty-hint\">网络错误</div>"; });
+    },
+
+    trainRulesNow() {
+        const btn = document.getElementById("btn-refresh-trained-rules");
+        if (btn) { btn.disabled = true; btn.textContent = "训练中..."; }
+        fetch("/api/rules/train", { method: "POST" })
+            .then(r => r.json())
+            .then(d => {
+                if (d.code === 200) this.loadTrainedRules();
+                else alert("训练失败: " + (d.message || ""));
+            })
+            .catch(() => alert("训练请求失败"))
+            .finally(() => {
+                if (btn) { btn.disabled = false; btn.textContent = "🔄 重新训练"; }
+            });
     },
 
     renderTrainedRules(rules, el) {

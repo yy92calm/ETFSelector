@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ETF智能工作台</title>
-    <link rel="stylesheet" href="/static/css/workbench.css?v=21">
+    <link rel="stylesheet" href="/static/css/workbench.css?v=22">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
 </head>
 <body>
@@ -231,7 +231,7 @@
                     <div class="panel">
                         <div class="panel-header">
                             📊 规则学习
-                            <button class="btn-backtest-rule" id="btn-refresh-trained-rules" title="重新训练规则" onclick="Workbench.loadRules()">🔄 重新训练</button>
+                            <button class="btn-backtest-rule" id="btn-refresh-trained-rules" title="重新训练规则" onclick="Workbench.trainRulesNow()">🔄 重新训练</button>
                         </div>
                         <div class="panel-body analyses-scroll" id="analyses-trained-rules">
                             <div class="empty-hint">加载中...</div>
@@ -296,7 +296,7 @@
 </footer>
 
 <script src="/static/js/auth.js"></script>
-    <script src="/static/js/workbench.js?v=23"></script>
+    <script src="/static/js/workbench.js?v=24"></script>
 <script src="/static/js/chat.js?v=18"></script>
 <script>
 // 更新时间
