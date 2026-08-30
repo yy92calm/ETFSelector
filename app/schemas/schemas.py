@@ -119,6 +119,8 @@ class BacktestRequest(BaseModel):
     start_date: date
     end_date: date
     initial_capital: Optional[int] = None
+    mode: str = "static"  # "static" | "rule_based"
+    strategy_profile: str = "balanced"  # "balanced" | "aggressive" | "conservative" 
 
 
 class BacktestResult(BaseModel):

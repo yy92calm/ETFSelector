@@ -2390,6 +2390,26 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .alloc-change-sample.alloc-change-down {
     background: rgba(22, 163, 74, 0.25);
 }
+.btn-backtest-rule {
+    margin-left: auto;
+    padding: 4px 12px;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+.btn-backtest-rule:hover {
+    background: var(--accent);
+    color: #fff;
+}
+.btn-backtest-rule:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
 .alloc-legend-hint {
     display: flex;
     gap: 16px;

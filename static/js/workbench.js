@@ -1769,6 +1769,9 @@ const Workbench = {
             } else {
                 rulesEl.innerHTML = '<div class="empty-hint">加载失败</div>';
             }
+
+            // 绑定回测按钮
+            this._bindBacktestRuleBtn();
         } catch (e) {
             console.error('加载分析视图失败:', e);
             if (dailyEl) dailyEl.innerHTML = '<div class="empty-hint">加载异常</div>';
@@ -2007,6 +2010,57 @@ const Workbench = {
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    },
+
+    _bindBacktestRuleBtn() {
+        const btn = document.getElementById('btn-backtest-rule');
+        if (!btn || btn._bound) return;
+        btn._bound = true;
+        btn.addEventListener('click', () => this._runRuleBasedBacktest());
+    },
+
+    async _runRuleBasedBacktest() {
+        const btn = document.getElementById('btn-backtest-rule');
+        if (!btn) return;
+        btn.disabled = true;
+        btn.textContent = '回测中...';
+
+        try {
+            // 取分析Tab的日期范围
+            const dates = this._mktDates.length ? this._mktDates : [];
+            const endDate = dates[0] || new Date().toISOString().slice(0, 10);
+            // 默认回测最近180天
+            const startDate = dates.length > 120 ? dates[Math.min(120, dates.length - 1)] : '2024-01-02';
+
+            const resp = await fetch('/api/backtest/run', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    strategy_id: 1,
+                    start_date: startDate,
+                    end_date: endDate,
+                    mode: 'rule_based',
+                }),
+            });
+            const data = await resp.json();
+            if (data.code !== 200) {
+                alert('回测失败: ' + (data.message || '未知错误'));
+                return;
+            }
+            const r = data.data;
+            alert(`规则驱动回测结果\n` +
+                `区间: ${r.start_date} ~ ${r.end_date}\n` +
+                `总收益: ${r.total_return_pct.toFixed(2)}%\n` +
+                `最大回撤: ${r.max_drawdown_pct.toFixed(2)}%\n` +
+                `Sharpe: ${(r.sharpe_ratio || 0).toFixed(2)}\n` +
+                `再平衡: ${r.rebalance_count}次`);
+        } catch (e) {
+            console.error('回测异常:', e);
+            alert('回测请求失败');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '回测此规则';
+        }
     }
 };
 

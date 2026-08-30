@@ -23,7 +23,8 @@ class BacktestEngine:
     """配置组合回测引擎"""
 
     def run(self, strategy: Strategy, start_date: date, end_date: date,
-            initial_capital: float, db: Session) -> dict:
+            initial_capital: float, db: Session, 
+            mode: str = "static", rule_engine=None) -> dict:
         """
         执行配置组合回测
         
@@ -43,6 +44,11 @@ class BacktestEngine:
         # 验证策略配置
         if not strategy.allocation_config:
             raise ValueError("策略未设置配置比例 (allocation_config)")
+        
+        if mode == "rule_based" and rule_engine:
+            logger.info(f"[Backtest] 规则驱动模式，区间 {start_date} ~ {end_date}")
+        else:
+            logger.info(f"[Backtest] 静态配置模式，区间 {start_date} ~ {end_date}")
         
         etf_codes = strategy.get_etf_codes()
         if not etf_codes:
@@ -98,13 +104,21 @@ class BacktestEngine:
             
             total_asset = cash + market_value
             
+            # 获取当日配置（静态模式用固定配置，规则模式逐日计算）
+            if mode == "rule_based" and rule_engine:
+                daily_alloc = rule_engine.compute_daily_allocation(
+                    td, db, strategy.allocation_config
+                )
+            else:
+                daily_alloc = strategy.allocation_config
+            
             # 构建上下文
             ctx = PortfolioContext(
                 current_date=td,
                 total_asset=total_asset,
                 holdings=holdings.copy(),
                 current_prices=current_prices,
-                allocation_config=strategy.allocation_config,
+                allocation_config=daily_alloc,
                 rebalance_threshold=strategy.rebalance_threshold,
                 history_dates=trade_dates
             )
