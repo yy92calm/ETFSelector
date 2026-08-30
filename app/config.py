@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     # 数据库
     database_url: str = "sqlite:///./etf_selector.db"
 
+    # 交易成本
+    commission_rate: float = 0.005  # 单笔买卖金额费率 0.5%
+    commission_min: float = 10.0    # 单笔最低手续费（元）
+
     # LLM API（用于AI策略生成）
     llm_api_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = ""

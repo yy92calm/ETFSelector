@@ -164,6 +164,7 @@ class PortfolioService:
                         price=price,
                         quantity=result["quantity"],
                         amount=round(result["actual_amount"], 2),
+                        fee=result.get("fee", 0),
                         reason=signal.reason,
                     ))
 
@@ -273,6 +274,63 @@ class PortfolioService:
                 self.run_strategy_for_date(strategy, td, db)
             except Exception as e:
                 logger.error(f"补跑策略 {strategy.id} 日期 {td} 失败: {e}")
+
+    def get_monthly_progress(self, strategy_id: int, db: Session, as_of: date = None) -> Optional[Dict]:
+        """月收益目标进度检查（供AI提示词与前端展示）
+
+        Returns:
+            {"monthly_return", "target_min", "target_max", "expected_pace",
+             "status": behind/on_track/above/insufficient_data, "text"}
+        """
+        import calendar
+        as_of = as_of or date.today()
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+        if not strategy:
+            return None
+        t_min = strategy.target_monthly_min if strategy.target_monthly_min is not None else 0.05
+        t_max = strategy.target_monthly_max if strategy.target_monthly_max is not None else 0.10
+
+        month_start = as_of.replace(day=1)
+        snaps = (
+            db.query(PortfolioSnapshot)
+            .filter(
+                PortfolioSnapshot.strategy_id == strategy_id,
+                PortfolioSnapshot.trade_date >= month_start,
+                PortfolioSnapshot.trade_date <= as_of,
+            )
+            .order_by(PortfolioSnapshot.trade_date.asc())
+            .all()
+        )
+        if len(snaps) < 2:
+            return {
+                "monthly_return": None, "target_min": t_min, "target_max": t_max,
+                "expected_pace": None, "status": "insufficient_data",
+                "text": f"核心目标：月收益{t_min:.0%}-{t_max:.0%}。本月快照不足，暂无法评估进度。",
+            }
+
+        base = snaps[0].total_asset or 0
+        latest = snaps[-1].total_asset or 0
+        monthly_return = (latest - base) / base if base > 0 else 0.0
+        days_in_month = calendar.monthrange(as_of.year, as_of.month)[1]
+        pace = t_min * as_of.day / days_in_month
+
+        if monthly_return > t_max:
+            status = "above"
+        elif monthly_return >= pace:
+            status = "on_track"
+        else:
+            status = "behind"
+        status_zh = {"above": "超额", "on_track": "达标", "behind": "落后"}[status]
+        text = (
+            f"核心目标：月收益{t_min:.0%}-{t_max:.0%}。"
+            f"本月收益{monthly_return:.2%}，目标节奏{pace:.2%}，状态：{status_zh}。"
+        )
+        return {
+            "monthly_return": round(monthly_return, 4),
+            "target_min": t_min, "target_max": t_max,
+            "expected_pace": round(pace, 4),
+            "status": status, "text": text,
+        }
 
     def get_portfolio_history(self, strategy_id: int, db: Session, start_date: date = None) -> List[PortfolioSnapshot]:
         query = db.query(PortfolioSnapshot).filter(PortfolioSnapshot.strategy_id == strategy_id)

@@ -47,39 +47,54 @@ def compute_adjustment(
     price: float,
     current_qty: int,
     cash: float,
+    commission_rate: Optional[float] = None,
+    commission_min: Optional[float] = None,
 ) -> Optional[Dict]:
-    """计算单笔再平衡调整的买卖结果（100股整数倍取整）
+    """计算单笔再平衡调整的买卖结果（100股整数倍取整，含手续费）
 
     回测与实盘共用，确保两边行为一致。
+    手续费 = max(成交金额 x commission_rate, commission_min)，
+    买入现金流出含费，卖入现金流入扣费。
 
     Returns:
-        {"quantity", "actual_amount", "cash_delta", "new_qty", "direction"} 或 None
+        {"quantity", "actual_amount", "fee", "cash_delta", "new_qty", "direction"} 或 None
     """
     if price <= 0:
         return None
 
-    if action == "buy" and cash >= amount:
+    if commission_rate is None or commission_min is None:
+        from app.config import get_settings
+        _s = get_settings()
+        commission_rate = _s.commission_rate if commission_rate is None else commission_rate
+        commission_min = _s.commission_min if commission_min is None else commission_min
+
+    if action == "buy":
         quantity = int(amount / price / 100) * 100
         if quantity > 0:
             actual_amount = quantity * price
-            return {
-                "quantity": quantity,
-                "actual_amount": actual_amount,
-                "cash_delta": -actual_amount,
-                "new_qty": current_qty + quantity,
-                "direction": "buy",
-            }
+            fee = max(actual_amount * commission_rate, commission_min)
+            if cash >= actual_amount + fee:
+                return {
+                    "quantity": quantity,
+                    "actual_amount": actual_amount,
+                    "fee": round(fee, 2),
+                    "cash_delta": -(actual_amount + fee),
+                    "new_qty": current_qty + quantity,
+                    "direction": "buy",
+                }
     elif action == "sell" and current_qty > 0:
         sell_qty = min(int(amount / price / 100) * 100, current_qty)
         if sell_qty > 0:
             actual_amount = sell_qty * price
+            fee = max(actual_amount * commission_rate, commission_min)
             new_qty = current_qty - sell_qty
             if new_qty <= 0:
                 new_qty = 0
             return {
                 "quantity": sell_qty,
                 "actual_amount": actual_amount,
-                "cash_delta": actual_amount,
+                "fee": round(fee, 2),
+                "cash_delta": actual_amount - fee,
                 "new_qty": new_qty,
                 "direction": "sell",
             }

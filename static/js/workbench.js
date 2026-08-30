@@ -72,6 +72,16 @@ const Workbench = {
     zhText(s) {
         if (!s) return s;
         return String(s)
+            .replace(/bull_quiet/g, '温和牛市')
+            .replace(/bull_volatile/g, '牛市震荡')
+            .replace(/bear_quiet/g, '温和熊市')
+            .replace(/bear_panic/g, '熊市恐慌')
+            .replace(/emergency_stop/g, '紧急停止')
+            .replace(/\brebalance\b/g, '调仓')
+            .replace(/\bhold\b/g, '持有')
+            .replace(/\bskipped\b/g, '跳过')
+            .replace(/\banalyzed\b/g, '已分析')
+            .replace(/\badjusted\b/g, '已调整')
             .replace(/strong_bullish/g, '强势看多')
             .replace(/strong_bearish/g, '强势看空')
             .replace(/overall_trend/g, '技术趋势')
@@ -106,7 +116,7 @@ const Workbench = {
 
         if (view === 'overview') this.loadOverview();
         if (view === 'market') { this.initMarketToolbar(); this.loadMarket(); }
-        if (view === 'strategies') { this.loadStrategies(); this.loadStrategiesExtras(); }
+        if (view === 'strategies') { this.loadStrategies(); this.loadStrategiesExtras(); this.loadMonthlyTarget(); }
         if (view === 'sentiment') this.loadSentimentView();
         if (view === 'tasks') this.loadTasksView();
         if (view === 'analyses') this.loadAnalysesView();
@@ -550,6 +560,26 @@ const Workbench = {
         }
 
         el.innerHTML = html || '<div class="ov-detail-loading">暂无数据</div>';
+    },
+
+    async loadMonthlyTarget() {
+        const el = document.getElementById('monthly-target-bar');
+        if (!el) return;
+        try {
+            const resp = await fetch('/api/workbench/monthly-target?strategy_id=1').then(r => r.json());
+            if (resp.code !== 200 || !resp.data) { el.style.display = 'none'; return; }
+            const d = resp.data;
+            const statusCls = { behind: 'mt-behind', on_track: 'mt-ontrack', above: 'mt-above' }[d.status] || '';
+            const retTxt = d.monthly_return != null ? (d.monthly_return * 100).toFixed(2) + '%' : '-';
+            const paceTxt = d.expected_pace != null ? (d.expected_pace * 100).toFixed(2) + '%' : '-';
+            el.innerHTML = `<span class="mt-label">月目标进度</span>` +
+                `<span class="mt-val">本月 ${retTxt}</span>` +
+                `<span class="mt-sep">/</span>` +
+                `<span class="mt-pace">节奏 ${paceTxt}</span>` +
+                `<span class="mt-badge ${statusCls}">${{ behind: '落后', on_track: '达标', above: '超额', insufficient_data: '数据不足' }[d.status] || d.status}</span>` +
+                `<span class="mt-range">目标 ${(d.target_min * 100).toFixed(0)}%-${(d.target_max * 100).toFixed(0)}%</span>`;
+            el.style.display = 'flex';
+        } catch (e) { el.style.display = 'none'; }
     },
 
     async loadStrategiesExtras() {
@@ -1038,10 +1068,10 @@ const Workbench = {
                             <span class="tl-time" title="${timeStr}">${relStr || timeStr}</span>
                             ${hasDetail ? '<span class="tl-arrow">▾</span>' : ''}
                         </div>
-                        <div class="tl-summary">${this.esc(reasoning.split('\n')[0].substring(0, 50)) || '<span class="tl-empty">无推理记录</span>'}${reasoning.length > 50 ? '…' : ''}</div>
+                        <div class="tl-summary">${this.esc(this.zhText(reasoning.split('\n')[0]).substring(0, 50)) || '<span class="tl-empty">无推理记录</span>'}${reasoning.length > 50 ? '…' : ''}</div>
                         <div class="tl-detail">
-                            <div class="tl-reasoning">${this.esc(reasoning)}</div>
-                            ${chips.length ? `<div class="tl-chips">${chips.map(c => `<span class="tl-chip">${this.esc(c)}</span>`).join('')}</div>` : ''}
+                            <div class="tl-reasoning">${this.esc(this.zhText(reasoning))}</div>
+                            ${chips.length ? `<div class="tl-chips">${chips.map(c => `<span class="tl-chip">${this.esc(this.zhText(c))}</span>`).join('')}</div>` : ''}
                         </div>
                     </div>
                 </div>`;
@@ -1685,6 +1715,7 @@ const Workbench = {
                 ['Calmar', d.calmar_ratio != null ? Number(d.calmar_ratio).toFixed(2) : '-', ''],
                 ['胜率', d.win_rate != null ? d.win_rate.toFixed(1) + '%' : '-', ''],
                 ['交易次数', d.trade_count || 0, ''],
+                ['总手续费', d.total_commission != null ? '¥' + Number(d.total_commission).toLocaleString() : '-', ''],
             ].map(([l, v, c]) => `<div class="bt-stat"><div class="bt-stat-label">${l}</div><div class="bt-stat-value ${c}">${v}</div></div>`).join('');
         }
         this.renderBacktestChart(d.daily_data || [], id);
@@ -1725,7 +1756,8 @@ const Workbench = {
             if (hasRebal) {
                 changesHtml = reb.adjustments.slice(0, 4).map(adj => {
                     const cls = adj.action === '买入' ? 'btc-up' : 'btc-down';
-                    return `<span class="btc-change ${cls}">${adj.action} ${this.etfLabel(adj.etf_code)} ${adj.quantity}股</span>`;
+                    const feeTxt = adj.fee ? ` 费${adj.fee}` : '';
+                    return `<span class="btc-change ${cls}">${adj.action} ${this.etfLabel(adj.etf_code)} ${adj.quantity}股${feeTxt}</span>`;
                 }).join('');
             }
 

@@ -34,6 +34,7 @@ class TradeRecord(Base):
     price = Column(Float, nullable=False)
     quantity = Column(Integer, nullable=False, comment="交易数量(股)")
     amount = Column(Float, nullable=False, comment="交易金额")
+    fee = Column(Float, default=0.0, comment="单笔手续费")
     reason = Column(String(200), nullable=True, comment="交易原因")
     created_at = Column(DateTime, default=datetime.utcnow)
 

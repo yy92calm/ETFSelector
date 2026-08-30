@@ -78,6 +78,7 @@ class BacktestEngine:
         holdings: Dict[str, int] = {}      # etf_code -> quantity
         daily_data = []
         rebalance_records = []
+        total_commission = 0.0
         last_prices: Dict[str, float] = {}  # 前值填充用
 
         for td in trade_dates:
@@ -152,12 +153,14 @@ class BacktestEngine:
                         holdings[etf_code] = result["new_qty"]
                         cash += result["cash_delta"]
 
+                        total_commission += result.get("fee", 0)
                         rebalance_record["adjustments"].append({
                             "etf_code": etf_code,
                             "action": "买入" if result["direction"] == "buy" else "卖出",
                             "quantity": result["quantity"],
                             "price": price,
-                            "amount": round(result["actual_amount"], 2)
+                            "amount": round(result["actual_amount"], 2),
+                            "fee": result.get("fee", 0),
                         })
                     
                     if rebalance_record["adjustments"]:
@@ -283,6 +286,7 @@ class BacktestEngine:
             "annualized_volatility": round(ann_volatility, 4) if ann_volatility else None,
             "rebalance_count": len(rebalance_records),
             "trade_count": trade_count,
+            "total_commission": round(total_commission, 2),
             "win_count": win_count,
             "win_rate": round(win_rate, 2) if win_rate else None,
             "period_returns": period_returns,

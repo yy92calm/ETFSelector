@@ -286,6 +286,19 @@ def get_daily_analysis(
     return APIResponse(data={"analyses": analyses, "total": len(analyses)})
 
 
+@router.get("/monthly-target", response_model=APIResponse)
+def get_monthly_target(
+    strategy_id: int = 1,
+    db: Session = Depends(get_db),
+):
+    """月收益目标进度"""
+    from app.services.portfolio_service import get_portfolio_service
+    progress = get_portfolio_service().get_monthly_progress(strategy_id, db)
+    if progress is None:
+        return APIResponse(code=404, message="策略不存在", data=None)
+    return APIResponse(data=progress)
+
+
 @router.get("/rules", response_model=APIResponse)
 def get_extracted_rules(
     strategy_id: int = 1,

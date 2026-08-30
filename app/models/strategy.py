@@ -17,6 +17,8 @@ class Strategy(Base):
     # 配置组合核心字段
     allocation_config = Column(JSON, nullable=False, comment="ETF配置比例，如 {'510300': 0.5, '511010': 0.4, '518880': 0.1}")
     rebalance_freq = Column(String(20), nullable=False, default="monthly", comment="再平衡检查频率：daily/weekly/monthly/quarterly/yearly/none")
+    target_monthly_min = Column(Float, default=0.05, comment="核心目标月收益下限")
+    target_monthly_max = Column(Float, default=0.10, comment="核心目标月收益上限")
     rebalance_threshold = Column(Float, nullable=False, default=0.05, comment="偏离阈值触发再平衡（默认5%）")
     
     # AI生成相关（保留）

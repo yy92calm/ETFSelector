@@ -45,6 +45,13 @@ class MarketAnalystAgent(BaseAgent):
 ## ⚠️ 可用ETF列表（仅限从中选择）
 {available_etfs}
 
+## 【策略核心目标与交易成本】
+{monthly_target}
+- 每次买卖收取手续费（{commission_note}），调仓前须权衡预期收益改善是否覆盖交易成本；
+- 目标进度落后时：优先提高权益暴露的进攻性，但不得突破风控上限；
+- 达标时：维持当前配置，减少无谓调仓；
+- 超额时：逐步兑现收益、增配防御资产，保护既有收益。
+
 ## 决策要求
 综合多空双方论证和多维度数据，做出最终决策。输出JSON格式（不要包含其他文字）：
 {{
@@ -103,7 +110,8 @@ class MarketAnalystAgent(BaseAgent):
 
     def analyze(self, strategy_id: int, analysis_date: date,
                 technical_report: Dict, sentiment_report: Dict, db: Session,
-                bull_report: Dict = None, bear_report: Dict = None) -> Dict:
+                bull_report: Dict = None, bear_report: Dict = None,
+                monthly_target: str = "") -> Dict:
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy:
             return {"error": "策略不存在"}
@@ -114,7 +122,13 @@ class MarketAnalystAgent(BaseAgent):
         experiences = self._get_relevant_experiences(strategy_id, analysis_date, db)
         available_etfs = self._get_available_etfs(db)
 
+        from app.config import get_settings
+        _s = get_settings()
+        commission_note = f"费率{_s.commission_rate:.1%}、最低{_s.commission_min:.0f}元"
+
         prompt = self.PROMPT.format(
+            monthly_target=monthly_target or "（未设定月收益目标）",
+            commission_note=commission_note,
             bull_report=json.dumps(bull_report or {}, ensure_ascii=False, indent=2),
             bear_report=json.dumps(bear_report or {}, ensure_ascii=False, indent=2),
             technical_report=json.dumps(technical_report, ensure_ascii=False, indent=2),

@@ -92,6 +92,16 @@ class Orchestrator:
         if "error" in bear_report:
             logger.warning(f"[Orchestrator] 空头研究员失败: {bear_report.get('error')}")
 
+        # 月收益目标进度（供裁决Agent提示词使用）
+        monthly_status = None
+        try:
+            from app.services.portfolio_service import get_portfolio_service
+            monthly_status = get_portfolio_service().get_monthly_progress(
+                strategy_id, db, analysis_date
+            )
+        except Exception as e:
+            logger.warning(f"[Orchestrator] 月目标进度计算失败: {e}")
+
         # 阶段3: 研究主管裁决
         final_decision = self.market_analyst.analyze(
             strategy_id=strategy_id,
@@ -101,6 +111,7 @@ class Orchestrator:
             db=db,
             bull_report=bull_report,
             bear_report=bear_report,
+            monthly_target=(monthly_status or {}).get("text", ""),
         )
 
         # 阶段4: 辅助决策（主题发现 + 再平衡时机）
@@ -125,6 +136,7 @@ class Orchestrator:
             "bear_report": bear_report,
             "theme_report": theme_report,
             "rebalance_timing": rebalance_report,
+            "monthly_target_status": monthly_status,
             **final_decision,
         }
 

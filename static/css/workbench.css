@@ -2711,3 +2711,31 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     line-height: 1.75;
     color: var(--text-primary);
 }
+
+
+/* 月目标进度条 */
+.monthly-target-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 16px;
+    margin-bottom: 14px;
+    font-size: 13px;
+}
+.mt-label { font-weight: 600; color: var(--text-primary); }
+.mt-val { font-variant-numeric: tabular-nums; color: var(--text-primary); font-weight: 600; }
+.mt-sep { color: var(--text-muted); }
+.mt-pace { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.mt-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 10px;
+}
+.mt-badge.mt-behind { background: rgba(22, 163, 74, 0.1); color: var(--success); }
+.mt-badge.mt-ontrack { background: rgba(220, 38, 38, 0.1); color: var(--danger); }
+.mt-badge.mt-above { background: rgba(217, 119, 6, 0.1); color: #b45309; }
+.mt-range { color: var(--text-muted); font-size: 12px; margin-left: auto; }

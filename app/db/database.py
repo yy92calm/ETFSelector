@@ -65,6 +65,8 @@ def init_db():
                 ("failure_signature", "VARCHAR(200)"),
                 ("occurrence_count", "INTEGER DEFAULT 1"),
                 ("last_triggered_date", "DATE"),
+                ("target_monthly_min", "FLOAT DEFAULT 0.05"),
+                ("target_monthly_max", "FLOAT DEFAULT 0.10"),
             ]
 
             for col_name, col_type in migrations:
@@ -96,6 +98,18 @@ def init_db():
 
     except Exception as e:
         print(f"experience 表迁移警告: {e}")
+
+    # 兼容旧数据库：trade_record 表新增字段
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("PRAGMA table_info(trade_record)"))
+            columns = [row[1] for row in result.fetchall()]
+            if "fee" not in columns:
+                conn.execute(text("ALTER TABLE trade_record ADD COLUMN fee FLOAT DEFAULT 0.0"))
+                conn.commit()
+                print("✓ 已添加 trade_record.fee 字段")
+    except Exception as e:
+        print(f"trade_record 表迁移警告: {e}")
 
     # 兼容旧数据库：chat_session 表新增字段
     try:
