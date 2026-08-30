@@ -1013,6 +1013,8 @@ const Workbench = {
     _mktQuery: '',
     _mktPage: 1,
     _mktPageSize: 50,
+    _mktDate: '',
+    _mktDates: [],
 
     async loadMarket() {
         const el = document.getElementById('market-content');
@@ -1027,14 +1029,19 @@ const Workbench = {
                 page: this._mktPage,
                 page_size: this._mktPageSize,
             });
+            if (this._mktDate) params.set('date', this._mktDate);
             const resp = await fetch(`/api/workbench/market-indicators?${params}`);
             const data = await resp.json();
             if (data.code !== 200) { el.innerHTML = '<div>加载失败</div>'; return; }
 
             const rows = data.data.rows || [];
             const total = data.data.total || 0;
-            const dateEl = document.getElementById('mkt-date');
-            if (dateEl) dateEl.textContent = data.data.date || '';
+            // 同步日期显示
+            if (data.data.date) {
+                this._mktDate = data.data.date;
+                const picker = document.getElementById('mkt-date-picker');
+                if (picker && picker.value !== data.data.date) picker.value = data.data.date;
+            }
 
             this.renderMarketTable(el, rows);
             this.renderMarketPagination(total);
@@ -1228,6 +1235,61 @@ const Workbench = {
                 this.loadMarket();
             });
         });
+
+        // 日期选择器
+        this._initDatePicker();
+    },
+
+    async _initDatePicker() {
+        const picker = document.getElementById('mkt-date-picker');
+        const prevBtn = document.getElementById('mkt-date-prev');
+        const nextBtn = document.getElementById('mkt-date-next');
+        if (!picker) return;
+
+        // 加载可用日期列表
+        try {
+            const resp = await fetch('/api/workbench/market-dates');
+            const data = await resp.json();
+            if (data.code === 200) this._mktDates = data.data.dates || [];
+        } catch (e) { /* ignore */ }
+
+        // 设置 picker 的 min/max
+        if (this._mktDates.length > 0) {
+            picker.max = this._mktDates[0];
+            picker.min = this._mktDates[this._mktDates.length - 1];
+        }
+
+        // 初始值：默认最新日期
+        if (!this._mktDate && this._mktDates.length > 0) {
+            this._mktDate = this._mktDates[0];
+        }
+        if (this._mktDate) picker.value = this._mktDate;
+
+        // 绑定事件（只绑一次）
+        if (picker._bound) return;
+        picker._bound = true;
+
+        picker.addEventListener('change', () => {
+            this._mktDate = picker.value;
+            this._mktPage = 1;
+            this.loadMarket();
+        });
+
+        if (prevBtn) prevBtn.addEventListener('click', () => this._mktNavDate(1));
+        if (nextBtn) nextBtn.addEventListener('click', () => this._mktNavDate(-1));
+    },
+
+    _mktNavDate(offset) {
+        if (this._mktDates.length === 0) return;
+        const cur = this._mktDate || this._mktDates[0];
+        const idx = this._mktDates.indexOf(cur);
+        const newIdx = idx + offset;
+        if (newIdx < 0 || newIdx >= this._mktDates.length) return;
+        this._mktDate = this._mktDates[newIdx];
+        const picker = document.getElementById('mkt-date-picker');
+        if (picker) picker.value = this._mktDate;
+        this._mktPage = 1;
+        this.loadMarket();
     },
 
     async loadStrategies() {
@@ -1676,6 +1738,14 @@ const Workbench = {
         const allocEl = document.getElementById('analyses-allocation-timeline');
         if (dailyEl) dailyEl.innerHTML = '<div class="empty-hint">加载中...</div>';
 
+        // 确保 ETF 名称映射已加载
+        if (Object.keys(this._etfNameMap).length === 0) {
+            try {
+                const etfResp = await fetch('/api/etf/list').then(r => r.json());
+                if (etfResp.code === 200) this.buildNameMap(etfResp.data.etfs || []);
+            } catch (e) { /* ignore */ }
+        }
+
         try {
             const [dailyResp, rulesResp] = await Promise.all([
                 fetch('/api/workbench/daily-analysis?days=60').then(r => r.json()).catch(() => ({ code: 500 })),
@@ -1736,7 +1806,7 @@ const Workbench = {
             const allocStr = Object.entries(alloc)
                 .sort((x, y) => y[1] - x[1])
                 .slice(0, 4)
-                .map(([k, v]) => `${k} ${(v * 100).toFixed(0)}%`)
+                .map(([k, v]) => `${this.etfLabel(k)} ${(v * 100).toFixed(0)}%`)
                 .join(' · ');
             const signals = (a.key_signals || []).slice(0, 3);
 
