@@ -84,6 +84,8 @@ app.include_router(workbench_routes.router)
 app.include_router(task_routes.router)
 app.include_router(factor_routes.router)
 app.include_router(auth_routes.router)
+from app.routes import rules_routes
+app.include_router(rules_routes.router)
 
 
 @app.middleware("http")

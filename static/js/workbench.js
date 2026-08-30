@@ -1827,6 +1827,9 @@ const Workbench = {
                 rulesEl.innerHTML = '<div class="empty-hint">加载失败</div>';
             }
 
+            // 加载训练后的规则
+            this.loadTrainedRules();
+
             // 绑定回测按钮
             this._bindBacktestRuleBtn();
         } catch (e) {
@@ -2130,3 +2133,104 @@ document.addEventListener('DOMContentLoaded', () => {
         if (Workbench._btDdChart) Workbench._btDdChart.resize();
     });
 });
+
+    // === 规则学习面板 ===
+    loadTrainedRules() {
+        const el = document.getElementById("analyses-trained-rules");
+        if (!el) return;
+
+        fetch("/api/rules", { headers: { "Authorization": "Bearer " + this._token } })
+            .then(r => r.json())
+            .then(d => {
+                if (d.code !== 200 || !d.data) {
+                    el.innerHTML = "<div class=\"empty-hint\">规则加载失败</div>";
+                    return;
+                }
+                this.renderTrainedRules(d.data, el);
+            })
+            .catch(() => { el.innerHTML = "<div class=\"empty-hint\">网络错误</div>"; });
+    },
+
+    renderTrainedRules(rules, el) {
+        const tp = rules.training_period;
+        const regimeRules = rules.regime_rules || {};
+        const transitions = rules.regime_transitions || [];
+        const etfFreq = rules.etf_frequency || {};
+
+        const regimeColors = {
+            bull_strong: "#dc2626", bull_weak: "#f97316",
+            bull_volatile: "#f97316", bull_quiet: "#fb923c",
+            neutral: "#6b7280", bear_weak: "#22c55e", bear_strong: "#16a34a",
+        };
+        const regimeLabels = {
+            bull_strong: "强势牛市", bull_weak: "弱牛市",
+            bull_volatile: "震荡牛市", bull_quiet: "温和牛市",
+            neutral: "震荡市", bear_weak: "弱熊市", bear_strong: "强势熊市",
+        };
+
+        let html = "";
+
+        if (tp) {
+            html += "<div class=\"rule-section\">";
+            html += "<div class=\"rule-section-title\">训练数据</div>";
+            html += "<div class=\"rule-metrics\">";
+            html += "<span class=\"rule-metric\"><strong>" + tp.days + "</strong> 天样本</span>";
+            html += "<span class=\"rule-metric\">" + tp.start + " ~ " + tp.end + "</span>";
+            html += "<span class=\"rule-metric\"><strong>" + Object.keys(regimeRules).length + "</strong> 种市场状态</span>";
+            html += "</div></div>";
+        }
+
+        html += "<div class=\"rule-section\"><div class=\"rule-section-title\">市场状态规则</div>";
+        html += "<div class=\"rule-regime-cards\">";
+        for (const [regime, rule] of Object.entries(regimeRules)) {
+            const color = regimeColors[regime] || "#6b7280";
+            const label = regimeLabels[regime] || regime;
+            const alloc = rule.avg_allocation || {};
+            const top3 = Object.entries(alloc).sort((a, b) => b[1] - a[1]).slice(0, 4);
+
+            html += "<div class=\"rule-regime-card\">";
+            html += "<div class=\"rule-regime-header\">";
+            html += "<span class=\"rule-regime-label\" style=\"color:" + color + "\">" + label + "</span>";
+            html += "<span class=\"rule-regime-count\">" + rule.sample_count + "天</span>";
+            html += "</div>";
+            html += "<div class=\"rule-regime-allocation\">";
+            for (const [etf, weight] of top3) {
+                const pct = (weight * 100).toFixed(1);
+                html += "<div class=\"rule-alloc-item\">";
+                html += "<span class=\"rule-alloc-etf\">" + etf + "</span>";
+                html += "<div class=\"rule-alloc-bar\"><div class=\"rule-alloc-fill\" style=\"width:" + pct + "%;background:" + color + "\"></div></div>";
+                html += "<span class=\"rule-alloc-pct\">" + pct + "%</span>";
+                html += "</div>";
+            }
+            html += "</div></div>";
+        }
+        html += "</div></div>";
+
+        html += "<div class=\"rule-section\"><div class=\"rule-section-title\">ETF 使用频率</div>";
+        html += "<div class=\"rule-etf-freq\">";
+        const topEtfs = Object.entries(etfFreq).sort((a, b) => b[1] - a[1]).slice(0, 10);
+        for (const [etf, freq] of topEtfs) {
+            const pct = (freq / tp.days * 100).toFixed(0);
+            html += "<div class=\"rule-freq-item\">";
+            html += "<span class=\"rule-freq-etf\">" + etf + "</span>";
+            html += "<div class=\"rule-freq-bar\"><div class=\"rule-freq-fill\" style=\"width:" + pct + "%\"></div></div>";
+            html += "<span class=\"rule-freq-count\">" + freq + "/" + tp.days + "</span>";
+            html += "</div>";
+        }
+        html += "</div></div>";
+
+        if (transitions.length > 0) {
+            html += "<div class=\"rule-section\"><div class=\"rule-section-title\">状态转换 (" + transitions.length + "次)</div>";
+            html += "<div class=\"rule-transitions\">";
+            for (const t of transitions) {
+                html += "<div class=\"rule-transition-item\">";
+                html += "<span class=\"rule-trans-date\">" + t.date + "</span>";
+                html += "<span class=\"rule-trans-arrow\">→</span>";
+                html += "<span class=\"rule-trans-regime\" style=\"color:" + (regimeColors[t.to] || "#6b7280") + "\">" + (regimeLabels[t.to] || t.to) + "</span>";
+                html += "</div>";
+            }
+            html += "</div></div>";
+        }
+
+        el.innerHTML = html;
+    },

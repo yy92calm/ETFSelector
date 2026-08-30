@@ -2532,3 +2532,151 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     color: var(--success);
     background: rgba(22, 163, 74, 0.08);
 }
+
+
+/* 规则学习面板 */
+.rule-section {
+    margin-bottom: 12px;
+}
+.rule-section-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+.rule-metrics {
+    display: flex;
+    gap: 16px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+.rule-metric {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.rule-metric strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+.rule-regime-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.rule-regime-card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    background: var(--bg-primary);
+}
+.rule-regime-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 6px;
+}
+.rule-regime-label {
+    font-size: 13px;
+    font-weight: 600;
+}
+.rule-regime-count {
+    font-size: 11px;
+    color: var(--text-muted);
+}
+.rule-regime-allocation {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.rule-alloc-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.rule-alloc-etf {
+    font-size: 11px;
+    color: var(--text-secondary);
+    width: 48px;
+    font-variant-numeric: tabular-nums;
+}
+.rule-alloc-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--bg-secondary);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.rule-alloc-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+.rule-alloc-pct {
+    font-size: 11px;
+    color: var(--text-secondary);
+    width: 36px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+.rule-etf-freq {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+.rule-freq-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.rule-freq-etf {
+    font-size: 11px;
+    color: var(--text-secondary);
+    width: 48px;
+    font-variant-numeric: tabular-nums;
+}
+.rule-freq-bar {
+    flex: 1;
+    height: 6px;
+    background: var(--bg-secondary);
+    border-radius: 3px;
+    overflow: hidden;
+}
+.rule-freq-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: var(--accent);
+}
+.rule-freq-count {
+    font-size: 11px;
+    color: var(--text-secondary);
+    width: 36px;
+    text-align: right;
+}
+.rule-transitions {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.rule-timeline {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.rule-transition-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+}
+.rule-trans-date {
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    width: 72px;
+}
+.rule-trans-arrow {
+    color: var(--text-muted);
+}
+.rule-trans-regime {
+    font-weight: 600;
+}
