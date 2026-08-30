@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ETF智能工作台</title>
-    <link rel="stylesheet" href="/static/css/workbench.css?v=23">
+    <link rel="stylesheet" href="/static/css/workbench.css?v=24">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
 </head>
 <body>
@@ -35,6 +35,7 @@
             <button class="view-tab" data-view="sentiment">舆情</button>
             <button class="view-tab" data-view="tasks">任务</button>
             <button class="view-tab" data-view="analyses">分析</button>
+            <button class="view-tab" data-view="rules">规则</button>
         </div>
 
         <!-- 总览视图 -->
@@ -214,12 +215,6 @@
                 </div>
                 <div class="analyses-rail">
                     <div class="panel">
-                        <div class="panel-header">📐 提取的轮动规则 <span class="panel-sub" id="rules-count-sub"></span></div>
-                        <div class="panel-body analyses-scroll" id="analyses-rules-list">
-                            <div class="empty-hint">加载中...</div>
-                        </div>
-                    </div>
-                    <div class="panel">
                         <div class="panel-header">
                             🔀 配置变化轨迹
                             <button class="btn-backtest-rule" id="btn-backtest-rule" title="用规则驱动模式回测此配置轨迹">回测此规则</button>
@@ -228,6 +223,20 @@
                             <div class="empty-hint">加载中...</div>
                         </div>
                     </div>
+                </div>
+            </div>
+        </div>
+        <div id="view-rules" class="view-panel" style="display:none">
+            <div class="analyses-layout">
+                <div class="analyses-main">
+                    <div class="panel">
+                        <div class="panel-header">📐 提取的轮动规则 <span class="panel-sub" id="rules-count-sub"></span></div>
+                        <div class="panel-body analyses-scroll" id="analyses-rules-list">
+                            <div class="empty-hint">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="analyses-rail">
                     <div class="panel">
                         <div class="panel-header">
                             📊 规则学习
@@ -296,7 +305,7 @@
 </footer>
 
 <script src="/static/js/auth.js"></script>
-    <script src="/static/js/workbench.js?v=26"></script>
+    <script src="/static/js/workbench.js?v=27"></script>
 <script src="/static/js/chat.js?v=18"></script>
 <script>
 // 更新时间

@@ -59,6 +59,7 @@ const Workbench = {
         if (view === 'sentiment') this.loadSentimentView();
         if (view === 'tasks') this.loadTasksView();
         if (view === 'analyses') this.loadAnalysesView();
+        if (view === 'rules') this.loadRulesView();
     },
 
     async loadOverview() {
@@ -1785,13 +1786,13 @@ const Workbench = {
     refresh() {
         if (this.currentView === 'overview') this.loadOverview();
         if (this.currentView === 'analyses') this.loadAnalysesView();
+        if (this.currentView === 'rules') this.loadRulesView();
     },
 
     // === 分析视图 ===
 
     async loadAnalysesView() {
         const dailyEl = document.getElementById('analyses-daily-list');
-        const rulesEl = document.getElementById('analyses-rules-list');
         const allocEl = document.getElementById('analyses-allocation-timeline');
         if (dailyEl) dailyEl.innerHTML = '<div class="empty-hint">加载中...</div>';
 
@@ -1818,17 +1819,9 @@ const Workbench = {
             }
 
             if (rulesResp.code === 200) {
-                const rules = rulesResp.data.rules || [];
                 const allocHist = rulesResp.data.allocation_history || [];
-                document.getElementById('rules-count-sub').textContent = `${rules.length}条规则`;
-                this.renderRules(rules);
                 this.renderAllocationTimeline(allocHist);
-            } else {
-                rulesEl.innerHTML = '<div class="empty-hint">加载失败</div>';
             }
-
-            // 加载训练后的规则
-            this.loadTrainedRules();
 
             // 绑定回测按钮
             this._bindBacktestRuleBtn();
@@ -2120,6 +2113,27 @@ const Workbench = {
         } finally {
             btn.disabled = false;
             btn.textContent = '回测此规则';
+        }
+    },
+
+    // === 规则视图 ===
+    async loadRulesView() {
+        const el = document.getElementById('analyses-rules-list');
+        if (el) el.innerHTML = '<div class="empty-hint">加载中...</div>';
+        this.loadTrainedRules();
+
+        try {
+            const resp = await fetch('/api/workbench/rules?days=60').then(r => r.json());
+            if (resp.code === 200) {
+                const rules = resp.data.rules || [];
+                const sub = document.getElementById('rules-count-sub');
+                if (sub) sub.textContent = `${rules.length}条规则`;
+                this.renderRules(rules);
+            } else if (el) {
+                el.innerHTML = '<div class="empty-hint">加载失败</div>';
+            }
+        } catch (e) {
+            if (el) el.innerHTML = '<div class="empty-hint">网络错误</div>';
         }
     },
 
