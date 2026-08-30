@@ -1,7 +1,7 @@
 import json
 import logging
 from datetime import date
-from typing import Dict, List
+from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app.agents.base import BaseAgent

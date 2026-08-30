@@ -10,6 +10,7 @@ import numpy as np
 from app.models.etf import ETFQuotation, ETFBasic
 from app.models.sentiment import SentimentData
 from app.models.portfolio import PortfolioSnapshot
+from app.models.strategy import Strategy
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +202,7 @@ class MarketEnvironmentService:
     ) -> List[Dict]:
         """查找相似的历史市场环境"""
         current_env = self._get_market_environment(target_date, db)
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         
         snapshots = db.query(PortfolioSnapshot).filter(
             PortfolioSnapshot.strategy_id == strategy_id,
@@ -229,7 +231,7 @@ class MarketEnvironmentService:
             similar_environments.append({
                 "date": snapshot.trade_date.isoformat(),
                 "similarity": round(similarity, 3),
-                "allocation": snapshot.allocation_config,
+                "allocation": strategy.allocation_config if strategy else None,
                 "future_return": round(future_return, 2) if future_return else None,
                 "environment": historical_env,
             })

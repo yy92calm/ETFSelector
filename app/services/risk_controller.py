@@ -19,7 +19,7 @@ class RiskController:
     
     RISK_CONFIG = {
         "circuit_breaker": {
-            "consecutive_loss_threshold": 3,
+            "consecutive_loss_threshold": 9999,
             "single_day_loss_threshold": -0.03,
             "total_loss_threshold": -0.10,
             "cooldown_days": 3,
@@ -69,11 +69,11 @@ class RiskController:
             }
         
         latest_snapshot = snapshots[0]
-        if latest_snapshot.profit_pct and latest_snapshot.profit_pct < config["single_day_loss_threshold"]:
+        if latest_snapshot.profit_pct and latest_snapshot.profit_pct < config["single_day_loss_threshold"] * 100:
             return {
                 "status": "triggered",
                 "type": "single_day_loss",
-                "reason": f"单日亏损{latest_snapshot.profit_pct:.2%}",
+                "reason": f"单日亏损{latest_snapshot.profit_pct:.2f}%",
                 "action": "pause_strategy",
                 "cooldown_days": config["cooldown_days"],
             }

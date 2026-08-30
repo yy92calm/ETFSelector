@@ -15,9 +15,13 @@ import json
 import logging
 from typing import Any, Dict, List, Optional
 
-from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
-from mcp.client.streamable_http import streamablehttp_client
+try:
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    from mcp.client.streamable_http import streamablehttp_client
+    _MCP_AVAILABLE = True
+except ImportError:
+    _MCP_AVAILABLE = False
 
 from app.config import get_settings
 from app.tools.registry import ToolDef
@@ -174,8 +178,11 @@ class McpBridge:
 _bridge: Optional[McpBridge] = None
 
 
-def get_mcp_bridge() -> McpBridge:
+def get_mcp_bridge() -> "McpBridge":
     global _bridge
+    if not _MCP_AVAILABLE:
+        logger.warning("MCP SDK 未安装，MCP 桥接降级为不可用")
+        return None
     if _bridge is None:
         _bridge = McpBridge()
     return _bridge

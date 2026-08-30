@@ -76,7 +76,7 @@ def get_technical_indicators(db: Session, etf_code: str) -> dict:
     from app.services.technical_indicator_service import TechnicalIndicatorService
 
     svc = TechnicalIndicatorService()
-    result = svc.analyze_etf(etf_code, db)
+    result = svc.calculate_all_indicators(etf_code, db)
     return result
 
 

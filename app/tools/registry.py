@@ -237,9 +237,14 @@ def get_tool_registry() -> ToolRegistry:
         # 注册 load_skill 工具（skill 文档动态加载）
         _register_load_skill()
 
-        # 注册 MCP 桥接工具（未配置 MCP server 时自动跳过）
-        from app.agent_core.mcp_bridge import get_mcp_bridge
-        get_mcp_bridge().register_all(_TOOL_REGISTRY)
+        # 注册 MCP 桥接工具（MCP SDK 未安装或 server 未配置时自动跳过）
+        try:
+            from app.agent_core.mcp_bridge import get_mcp_bridge
+            bridge = get_mcp_bridge()
+            if bridge is not None:
+                bridge.register_all(_TOOL_REGISTRY)
+        except Exception as e:
+            logger.warning(f"MCP 工具注册跳过: {e}")
 
         logger.info(f"Tool Registry 初始化完成，共 {len(_TOOL_REGISTRY)} 个工具")
     return _registry

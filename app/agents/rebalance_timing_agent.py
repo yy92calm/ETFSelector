@@ -95,7 +95,7 @@ class RebalanceTimingAgent(BaseAgent):
 
         return {
             "total_drift_pct": round(total_drift, 2),
-            "rebalance_frequency": strategy.rebalance_frequency,
+            "rebalance_frequency": strategy.rebalance_freq,
             "days_since_last_adjustment": self._days_since_last(strategy),
             "etf_drift_details": drift_info,
         }

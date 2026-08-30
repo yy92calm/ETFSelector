@@ -79,7 +79,6 @@ class RiskDebateOrchestrator:
             }
 
         if action == "reduce":
-            allocation = db.query(type("M", (), {"allocation_config": {}})).first()
             return {
                 "stage": "risk_check",
                 "status": "critical",
