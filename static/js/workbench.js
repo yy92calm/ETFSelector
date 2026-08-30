@@ -2142,16 +2142,16 @@ const Workbench = {
 
     trainRulesNow() {
         const btn = document.getElementById("btn-refresh-trained-rules");
-        if (btn) { btn.disabled = true; btn.textContent = "训练中..."; }
+        if (btn) { btn.disabled = true; btn.textContent = "提取中..."; }
         fetch("/api/rules/train", { method: "POST" })
             .then(r => r.json())
             .then(d => {
                 if (d.code === 200) this.loadTrainedRules();
-                else alert("训练失败: " + (d.message || ""));
+                else alert("提取失败: " + (d.message || ""));
             })
-            .catch(() => alert("训练请求失败"))
+            .catch(() => alert("提取请求失败"))
             .finally(() => {
-                if (btn) { btn.disabled = false; btn.textContent = "🔄 重新训练"; }
+                if (btn) { btn.disabled = false; btn.textContent = "🔄 重新提取"; }
             });
     },
 
