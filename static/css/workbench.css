@@ -2352,6 +2352,44 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     flex-shrink: 0;
     text-align: left;
 }
+.alloc-changes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-width: 180px;
+    max-width: 260px;
+}
+.alloc-change {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+.alloc-change-up {
+    color: var(--danger);
+    background: rgba(220, 38, 38, 0.08);
+}
+.alloc-change-down {
+    color: var(--success);
+    background: rgba(22, 163, 74, 0.08);
+}
+.alloc-row--changed {
+    background: rgba(2, 132, 199, 0.04);
+    border-radius: 4px;
+}
+.alloc-change-sample {
+    width: 10px;
+    height: 10px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+.alloc-change-sample.alloc-change-up {
+    background: rgba(220, 38, 38, 0.25);
+}
+.alloc-change-sample.alloc-change-down {
+    background: rgba(22, 163, 74, 0.25);
+}
 .alloc-legend-hint {
     display: flex;
     gap: 16px;

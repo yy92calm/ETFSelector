@@ -1924,6 +1924,30 @@ const Workbench = {
         codes.forEach((c, i) => { colorMap[c] = colors[i % colors.length]; });
 
         const fmtPct = (v) => (v * 100).toFixed(0) + '%';
+        const fmtDelta = (v) => (v > 0 ? '+' : '') + (v * 100).toFixed(1) + '%';
+
+        // 逐日计算变化
+        let prevAlloc = {};
+        const rows = history.map(h => {
+            const alloc = h.allocation || {};
+            const holdings = h.holdings || {};
+
+            // 计算与前一天的变化
+            const changes = [];
+            const allKeys = new Set([...Object.keys(alloc), ...Object.keys(prevAlloc)]);
+            for (const c of allKeys) {
+                const cur = alloc[c] || 0;
+                const prev = prevAlloc[c] || 0;
+                const delta = cur - prev;
+                if (Math.abs(delta) > 0.005) { // 变化超过0.5%才显示
+                    changes.push({ code: c, delta, from: prev, to: cur });
+                }
+            }
+            changes.sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta));
+
+            prevAlloc = alloc;
+            return { ...h, changes };
+        });
 
         el.innerHTML = `
             <div class="alloc-legend">
@@ -1932,13 +1956,16 @@ const Workbench = {
             <div class="alloc-legend-hint">
                 <span class="alloc-hint-item"><span class="alloc-bar-sample alloc-bar-sample--solid"></span>日初持仓</span>
                 <span class="alloc-hint-item"><span class="alloc-bar-sample alloc-bar-sample--stripe"></span>AI建议</span>
+                <span class="alloc-hint-item"><span class="alloc-change-sample alloc-change-up"></span>加仓</span>
+                <span class="alloc-hint-item"><span class="alloc-change-sample alloc-change-down"></span>减仓</span>
             </div>
             <div class="alloc-bars">
-                ${history.map(h => {
+                ${rows.map(h => {
                     const alloc = h.allocation || {};
                     const holdings = h.holdings || {};
                     const allocTotal = Object.values(alloc).reduce((s, v) => s + v, 0) || 1;
                     const holdTotal = Object.values(holdings).reduce((s, v) => s + v, 0) || 1;
+                    const hasChanges = h.changes.length > 0;
 
                     // 上行：日初持仓（实心条）
                     const holdBars = codes.map(c => {
@@ -1952,13 +1979,22 @@ const Workbench = {
                         return v > 0 ? `<div class="alloc-bar alloc-bar--stripe" style="width:${v}%;background:${colorMap[c]}" title="${this.etfLabel(c)} AI建议 ${fmtPct(alloc[c] || 0)}"></div>` : '';
                     }).join('');
 
+                    // 变化指示器
+                    const changesHtml = h.changes.slice(0, 4).map(ch => {
+                        const isUp = ch.delta > 0;
+                        const cls = isUp ? 'alloc-change-up' : 'alloc-change-down';
+                        const arrow = isUp ? '▲' : '▼';
+                        return `<span class="alloc-change ${cls}">${arrow}${this.etfLabel(ch.code)} ${fmtDelta(ch.delta)}</span>`;
+                    }).join('');
+
                     return `
-                        <div class="alloc-row">
+                        <div class="alloc-row ${hasChanges ? 'alloc-row--changed' : ''}">
                             <span class="alloc-date">${this.esc(h.date.slice(5))}</span>
                             <div class="alloc-pair">
                                 <div class="alloc-bar-row">${holdBars}</div>
                                 <div class="alloc-bar-row">${allocBars}</div>
                             </div>
+                            <div class="alloc-changes">${changesHtml}</div>
                             <span class="alloc-action">${this.esc(h.action || '-')}</span>
                         </div>
                     `;
