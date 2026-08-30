@@ -2121,7 +2121,7 @@ const Workbench = {
             btn.disabled = false;
             btn.textContent = '回测此规则';
         }
-    }
+    },
 
     // === 规则学习面板 ===
     loadTrainedRules() {
