@@ -2680,3 +2680,34 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .rule-trans-regime {
     font-weight: 600;
 }
+
+
+/* 规则解读富文本 */
+.rule-intro {
+    background: var(--bg-secondary);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin-bottom: 14px;
+    font-size: 12px;
+    line-height: 1.7;
+    color: var(--text-secondary);
+}
+.rule-intro-title {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-bottom: 4px;
+}
+.rule-intro p { margin: 0 0 6px; }
+.rule-intro p:last-child { margin-bottom: 0; }
+.rule-intro b { color: var(--text-primary); }
+.rule-intro-caveat { color: var(--warning, #b45309); }
+.rule-explain {
+    background: rgba(2, 132, 199, 0.05);
+    border-radius: 5px;
+    padding: 8px 10px;
+    margin: 6px 0;
+    font-size: 12px;
+    line-height: 1.75;
+    color: var(--text-primary);
+}

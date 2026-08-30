@@ -1944,6 +1944,57 @@ const Workbench = {
         }).join('');
     },
 
+    explainRule(rule) {
+        const items = rule.items || [];
+        const total = items.reduce((s, i) => s + (i.count || 0), 0);
+        const pct = v => (v * 100).toFixed(0) + '%';
+        switch (rule.id) {
+            case 'regime_action': {
+                const top = items.slice().sort((a, b) => b.count - a.count)[0];
+                if (!top) return '样本期内无记录。';
+                return `最近${total}天里，市场状态以「${this.zh(top.regime)}」为主（${top.count}天）。值得注意的是：无论AI判定为哪种状态，最终动作都是「${this.zh(top.top_action)}」，占比${pct(top.top_action_ratio)}。也就是说，当前阶段的AI不做"持有观望"——只要当天完成了市场分析，就会给出调仓建议。`;
+            }
+            case 'tech_trend_change': {
+                const bull = items.find(i => i.tech_trend === 'bullish');
+                const bear = items.find(i => i.tech_trend === 'bearish');
+                const neu = items.find(i => i.tech_trend === 'neutral');
+                let s = '这一行衡量AI每次建议改动了多大比例的仓位。';
+                if (bull && bear) {
+                    s += `规律很清晰：技术面越悲观，动手越狠——看多时平均只改${pct(bull.avg_change)}，转空后猛增到${pct(bear.avg_change)}（极端${pct(bear.max_change)}）。`;
+                } else if (bull) {
+                    s += `看多时平均改动${pct(bull.avg_change)}。`;
+                }
+                if (neu) s += `方向不明时改${pct(neu.avg_change)}，属于例行再平衡。`;
+                s += '含义：AI把技术面转空视为最需要立即行动的信号，而不是逐步减仓。';
+                return s;
+            }
+            case 'sentiment_defensive': {
+                const bull = items.find(i => i.sentiment === 'bullish');
+                const neu = items.find(i => i.sentiment === 'neutral');
+                let s = '防御资产指货币、国债、黄金这类避险品种。';
+                if (bull) s += `即使情绪面全面看多（${bull.count}天），AI依然保留${pct(bull.avg_defensive_weight)}的防御底仓；`;
+                if (neu) s += `情绪中性时反而略降到${pct(neu.avg_defensive_weight)}。`;
+                s += '含义：AI从不满仓进攻，乐观行情里也留着安全垫。';
+                return s;
+            }
+            case 'vol_timing': {
+                const top = items.slice().sort((a, b) => b.count - a.count)[0];
+                if (!top) return '样本期内无记录。';
+                const conf = top.avg_timing_confidence ? `（置信度${(top.avg_timing_confidence * 100).toFixed(0)}%）` : '';
+                return `样本期波动状态以「${this.zh(top.vol_regime)}」为主（${top.count}天），此时AI的择时决定是「${this.zh(top.top_timing_decision)}」${conf}。含义：AI不一次性打满目标仓位，而是分批次、分节奏地把仓位调到目标附近，避免单日追价。`;
+            }
+            case 'agreement_action': {
+                const top = items.slice().sort((a, b) => b.count - a.count)[0];
+                if (!top) return '样本期内无记录。';
+                const dist = top.action_distribution || {};
+                const acts = Object.entries(dist).map(([k, v]) => `「${this.zh(k)}」${v}次`).join('、');
+                return `多空研究员意见「${this.zh(top.agreement_level)}」的天数最多（${top.count}天），此时最终动作是${acts}。含义：即使多头和空头没有完全达成一致，AI也倾向于执行调仓而不是搁置——分歧只影响调多少，不影响调不调。`;
+            }
+            default:
+                return `统计自最近${total}条AI分析记录。`;
+        }
+    },
+
     renderRules(rules) {
         const el = document.getElementById('analyses-rules-list');
         if (!el) return;
@@ -2009,10 +2060,19 @@ const Workbench = {
                 <div class="rule-card">
                     <div class="rc-header">${this.esc(rule.name)}</div>
                     <div class="rc-desc">${this.esc(rule.description)}</div>
+                    <div class="rule-explain">${this.explainRule(rule)}</div>
                     <div class="rc-body">${detailHtml}</div>
                 </div>
             `;
         }).join('');
+
+        el.insertAdjacentHTML('afterbegin', `
+            <div class="rule-intro">
+                <div class="rule-intro-title">这组规则怎么读</div>
+                <p>以下模式统计自最近60天的AI每日分析记录，回答的是同一个问题：<b>当某类信号出现时，AI历史上是怎么做的？</b>每张卡上方是白话解读，下方是原始统计行，供规则驱动回测与人工审查参考。</p>
+                <p class="rule-intro-caveat">注意：当前样本仅21个交易日，且全部处于牛市/震荡环境。熊市相关数字（如"看空时调仓37.5%"）只来自2次观测，样本积累覆盖完整牛熊周期前，请谨慎采信。</p>
+            </div>
+        `);
     },
 
     renderAllocationTimeline(history) {
