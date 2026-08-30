@@ -2241,4 +2241,12 @@ const Workbench = {
 
 };
 
-document.addEventListener
+document.addEventListener('DOMContentLoaded', () => {
+    Workbench.init();
+    window.addEventListener('resize', () => {
+        if (Workbench._distChart) Workbench._distChart.resize();
+        if (Workbench._trendChart) Workbench._trendChart.resize();
+        if (Workbench._btChart) Workbench._btChart.resize();
+        if (Workbench._btDdChart) Workbench._btDdChart.resize();
+    });
+});
