@@ -526,13 +526,41 @@ def get_extracted_rules(
             "items": items,
         })
 
-    # 规则7: 逐日配置变化轨迹
+    # 规则7: 逐日配置变化轨迹（含日初持仓）
+    from app.models.portfolio import HoldingSnapshot as HS
+    from sqlalchemy import func as sa_func
+
+    # 批量查询所有日期的持仓快照
+    analysis_dates = [r["date"] for r in records]
+    snapshot_map = {}  # {date_str: {etf_code: {qty, price, value}}}
+    if analysis_dates:
+        snapshots = db.query(HS).filter(
+            HS.trade_date.in_([__import__('datetime').date.fromisoformat(d) for d in analysis_dates])
+        ).all()
+        for s in snapshots:
+            ds = s.trade_date.isoformat()
+            if ds not in snapshot_map:
+                snapshot_map[ds] = {}
+            snapshot_map[ds][s.etf_code] = {
+                "qty": s.quantity,
+                "price": s.price,
+                "value": s.market_value,
+            }
+
     allocation_history = []
     for r in records:
         alloc = r.get("allocation") or {}
+        holdings = snapshot_map.get(r["date"], {})
+        # 将持仓转为比例形式（与 allocation 对齐）
+        total_value = sum(h["value"] for h in holdings.values()) if holdings else 0
+        holdings_alloc = {}
+        if total_value > 0:
+            for code, h in holdings.items():
+                holdings_alloc[code] = round(h["value"] / total_value, 4)
         allocation_history.append({
             "date": r["date"],
             "allocation": alloc,
+            "holdings": holdings_alloc,
             "regime": r["regime"],
             "action": r["action"],
         })
@@ -553,14 +581,19 @@ def get_market_indicators(
     q: str = "",
     page: int = 1,
     page_size: int = 50,
+    date: str = "",
     db: Session = Depends(get_db),
 ):
     """行情+量化指标联合查询（行情页用），支持分页与跨表排序"""
     from app.models.etf import ETFBasic, ETFQuotation, ETFDailyIndicator
     from app.utils.trading_calendar import get_display_date
+    from datetime import date as _date
 
-    # 使用交易日历获取显示日期（交易时段显示T-1，闭市后显示T日）
-    display_date = get_display_date()
+    # 优先使用指定日期，否则自动判断
+    if date:
+        display_date = _date.fromisoformat(date)
+    else:
+        display_date = get_display_date()
     if not display_date:
         return APIResponse(data={"rows": [], "date": None, "total": 0, "page": page, "page_size": page_size})
 
@@ -623,3 +656,16 @@ def get_market_indicators(
         "page": page,
         "page_size": page_size,
     })
+
+
+
+@router.get("/market-dates", response_model=APIResponse)
+def get_market_dates(db: Session = Depends(get_db)):
+    """获取有指标数据的交易日列表（供日期选择器使用）"""
+    from app.models.etf import ETFDailyIndicator
+    from sqlalchemy import func
+    rows = db.query(func.distinct(ETFDailyIndicator.trade_date)).order_by(
+        ETFDailyIndicator.trade_date.desc()
+    ).limit(365).all()
+    dates = [str(r[0]) for r in rows]
+    return APIResponse(data={"dates": dates})

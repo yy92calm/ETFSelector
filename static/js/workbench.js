@@ -1912,7 +1912,10 @@ const Workbench = {
 
         // 收集所有出现过的 ETF 代码
         const allCodes = new Set();
-        history.forEach(h => Object.keys(h.allocation || {}).forEach(c => allCodes.add(c)));
+        history.forEach(h => {
+            Object.keys(h.allocation || {}).forEach(c => allCodes.add(c));
+            Object.keys(h.holdings || {}).forEach(c => allCodes.add(c));
+        });
         const codes = [...allCodes].sort();
 
         // 颜色映射
@@ -1920,22 +1923,42 @@ const Workbench = {
         const colorMap = {};
         codes.forEach((c, i) => { colorMap[c] = colors[i % colors.length]; });
 
+        const fmtPct = (v) => (v * 100).toFixed(0) + '%';
+
         el.innerHTML = `
             <div class="alloc-legend">
-                ${codes.map(c => `<span class="alloc-legend-item"><span class="alloc-dot" style="background:${colorMap[c]}"></span>${c}</span>`).join('')}
+                ${codes.map(c => `<span class="alloc-legend-item"><span class="alloc-dot" style="background:${colorMap[c]}"></span>${this.etfLabel(c)}</span>`).join('')}
+            </div>
+            <div class="alloc-legend-hint">
+                <span class="alloc-hint-item"><span class="alloc-bar-sample alloc-bar-sample--solid"></span>日初持仓</span>
+                <span class="alloc-hint-item"><span class="alloc-bar-sample alloc-bar-sample--stripe"></span>AI建议</span>
             </div>
             <div class="alloc-bars">
                 ${history.map(h => {
                     const alloc = h.allocation || {};
-                    const total = Object.values(alloc).reduce((s, v) => s + v, 0) || 1;
-                    const bars = codes.map(c => {
-                        const v = (alloc[c] || 0) / total * 100;
-                        return v > 0 ? `<div class="alloc-bar" style="width:${v}%;background:${colorMap[c]}" title="${c} ${(alloc[c] * 100).toFixed(1)}%"></div>` : '';
+                    const holdings = h.holdings || {};
+                    const allocTotal = Object.values(alloc).reduce((s, v) => s + v, 0) || 1;
+                    const holdTotal = Object.values(holdings).reduce((s, v) => s + v, 0) || 1;
+
+                    // 上行：日初持仓（实心条）
+                    const holdBars = codes.map(c => {
+                        const v = (holdings[c] || 0) / holdTotal * 100;
+                        return v > 0 ? `<div class="alloc-bar alloc-bar--solid" style="width:${v}%;background:${colorMap[c]}" title="${this.etfLabel(c)} 日初 ${fmtPct(holdings[c] || 0)}"></div>` : '';
                     }).join('');
+
+                    // 下行：AI建议（斜线条纹）
+                    const allocBars = codes.map(c => {
+                        const v = (alloc[c] || 0) / allocTotal * 100;
+                        return v > 0 ? `<div class="alloc-bar alloc-bar--stripe" style="width:${v}%;background:${colorMap[c]}" title="${this.etfLabel(c)} AI建议 ${fmtPct(alloc[c] || 0)}"></div>` : '';
+                    }).join('');
+
                     return `
                         <div class="alloc-row">
                             <span class="alloc-date">${this.esc(h.date.slice(5))}</span>
-                            <div class="alloc-bar-row">${bars}</div>
+                            <div class="alloc-pair">
+                                <div class="alloc-bar-row">${holdBars}</div>
+                                <div class="alloc-bar-row">${allocBars}</div>
+                            </div>
                             <span class="alloc-action">${this.esc(h.action || '-')}</span>
                         </div>
                     `;
