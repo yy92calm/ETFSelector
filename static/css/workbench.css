@@ -1677,11 +1677,11 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 }
 .sc-day:hover { outline: 1px solid var(--accent); }
 .sc-score { font-size: 9px; opacity: 0.75; }
-.sc-pos-2 { background: #86efac; }
-.sc-pos-1 { background: #bbf7d0; }
+.sc-pos-2 { background: #fecaca; }
+.sc-pos-1 { background: #fee2e2; }
 .sc-neu { background: #e5e7eb; }
-.sc-neg-1 { background: #fee2e2; }
-.sc-neg-2 { background: #fecaca; }
+.sc-neg-1 { background: #bbf7d0; }
+.sc-neg-2 { background: #86efac; }
 .sc-today { color: var(--accent); font-weight: 700; }
 .sc-selected { background: var(--accent) !important; color: #fff; font-weight: 700; }
 .sc-selected .sc-score { display: none; }

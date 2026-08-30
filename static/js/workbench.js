@@ -58,6 +58,7 @@ const Workbench = {
         if (view === 'strategies') { this.loadStrategies(); this.loadStrategiesExtras(); }
         if (view === 'sentiment') this.loadSentimentView();
         if (view === 'tasks') this.loadTasksView();
+        if (view === 'analyses') this.loadAnalysesView();
     },
 
     async loadOverview() {
@@ -1664,6 +1665,213 @@ const Workbench = {
 
     refresh() {
         if (this.currentView === 'overview') this.loadOverview();
+        if (this.currentView === 'analyses') this.loadAnalysesView();
+    },
+
+    // === 分析视图 ===
+
+    async loadAnalysesView() {
+        const dailyEl = document.getElementById('analyses-daily-list');
+        const rulesEl = document.getElementById('analyses-rules-list');
+        const allocEl = document.getElementById('analyses-allocation-timeline');
+        if (dailyEl) dailyEl.innerHTML = '<div class="empty-hint">加载中...</div>';
+
+        try {
+            const [dailyResp, rulesResp] = await Promise.all([
+                fetch('/api/workbench/daily-analysis?days=60').then(r => r.json()).catch(() => ({ code: 500 })),
+                fetch('/api/workbench/rules?days=60').then(r => r.json()).catch(() => ({ code: 500 })),
+            ]);
+
+            if (dailyResp.code === 200) {
+                const analyses = dailyResp.data.analyses || [];
+                document.getElementById('analyses-count-sub').textContent = `${analyses.length}天`;
+                this.renderDailyAnalyses(analyses);
+            } else {
+                dailyEl.innerHTML = '<div class="empty-hint">加载失败</div>';
+            }
+
+            if (rulesResp.code === 200) {
+                const rules = rulesResp.data.rules || [];
+                const allocHist = rulesResp.data.allocation_history || [];
+                document.getElementById('rules-count-sub').textContent = `${rules.length}条规则`;
+                this.renderRules(rules);
+                this.renderAllocationTimeline(allocHist);
+            } else {
+                rulesEl.innerHTML = '<div class="empty-hint">加载失败</div>';
+            }
+        } catch (e) {
+            console.error('加载分析视图失败:', e);
+            if (dailyEl) dailyEl.innerHTML = '<div class="empty-hint">加载异常</div>';
+        }
+    },
+
+    renderDailyAnalyses(analyses) {
+        const el = document.getElementById('analyses-daily-list');
+        if (!el) return;
+        if (!analyses.length) {
+            el.innerHTML = '<div class="empty-hint">暂无分析数据</div>';
+            return;
+        }
+
+        const regimeMap = {
+            bull: { label: '牛市', cls: 'regime-bull' },
+            bull_volatile: { label: '牛市震荡', cls: 'regime-bull-vol' },
+            neutral: { label: '中性', cls: 'regime-neutral' },
+            bear: { label: '熊市', cls: 'regime-bear' },
+            bear_volatile: { label: '熊市震荡', cls: 'regime-bear-vol' },
+        };
+        const actionMap = {
+            rebalance: { label: '调仓', cls: 'action-rebalance' },
+            hold: { label: '持有', cls: 'action-hold' },
+            reduce: { label: '减仓', cls: 'action-reduce' },
+            increase: { label: '加仓', cls: 'action-increase' },
+        };
+        const riskMap = { low: '低风险', medium: '中风险', high: '高风险' };
+
+        el.innerHTML = analyses.map(a => {
+            const rm = regimeMap[a.market_regime] || { label: a.market_regime || '-', cls: '' };
+            const am = actionMap[a.suggested_action] || { label: a.suggested_action || '-', cls: '' };
+            const risk = riskMap[a.risk_level] || a.risk_level || '-';
+            const alloc = a.suggested_allocation || {};
+            const allocStr = Object.entries(alloc)
+                .sort((x, y) => y[1] - x[1])
+                .slice(0, 4)
+                .map(([k, v]) => `${k} ${(v * 100).toFixed(0)}%`)
+                .join(' · ');
+            const signals = (a.key_signals || []).slice(0, 3);
+
+            return `
+                <div class="analysis-card">
+                    <div class="ac-header">
+                        <span class="ac-date">${this.esc(a.log_date)}</span>
+                        <span class="ac-badge ${rm.cls}">${this.esc(rm.label)}</span>
+                        <span class="ac-badge ${am.cls}">${this.esc(am.label)}</span>
+                        <span class="ac-risk">${this.esc(risk)}</span>
+                    </div>
+                    <div class="ac-body">
+                        <div class="ac-alloc">${this.esc(allocStr)}</div>
+                        <div class="ac-reason">${this.esc(a.action_reason || '')}</div>
+                        ${signals.length ? '<div class="ac-signals">' + signals.map(s => `<div class="ac-signal">${this.esc(s)}</div>`).join('') + '</div>' : ''}
+                    </div>
+                    <div class="ac-footer">
+                        <span class="ac-meta">技术:${this.esc(a.technical_trend || '-')} 情绪:${this.esc(a.sentiment || '-')} 宏观:${this.esc(a.macro_phase || '-')}</span>
+                    </div>
+                </div>
+            `;
+        }).join('');
+    },
+
+    renderRules(rules) {
+        const el = document.getElementById('analyses-rules-list');
+        if (!el) return;
+        if (!rules.length) {
+            el.innerHTML = '<div class="empty-hint">暂无规则</div>';
+            return;
+        }
+
+        el.innerHTML = rules.map(rule => {
+            const items = rule.items || [];
+            let detailHtml = '';
+            if (rule.id === 'regime_action') {
+                detailHtml = items.map(it => `
+                    <div class="rule-row">
+                        <span class="rule-key">${this.esc(it.regime)}</span>
+                        <span class="rule-val">${this.esc(it.top_action)} (${(it.top_action_ratio * 100).toFixed(0)}%)</span>
+                        <span class="rule-count">${it.count}天</span>
+                    </div>
+                `).join('');
+            } else if (rule.id === 'tech_trend_change') {
+                detailHtml = items.map(it => `
+                    <div class="rule-row">
+                        <span class="rule-key">${this.esc(it.tech_trend)}</span>
+                        <span class="rule-val">均变 ${(it.avg_change * 100).toFixed(1)}% 极值 ${(it.max_change * 100).toFixed(1)}%</span>
+                        <span class="rule-count">${it.count}次</span>
+                    </div>
+                `).join('');
+            } else if (rule.id === 'sentiment_defensive') {
+                detailHtml = items.map(it => `
+                    <div class="rule-row">
+                        <span class="rule-key">${this.esc(it.sentiment)}</span>
+                        <span class="rule-val">防御 ${(it.avg_defensive_weight * 100).toFixed(0)}%</span>
+                        <span class="rule-count">${it.count}天</span>
+                    </div>
+                `).join('');
+            } else if (rule.id === 'vol_timing') {
+                detailHtml = items.map(it => `
+                    <div class="rule-row">
+                        <span class="rule-key">${this.esc(it.vol_regime)}</span>
+                        <span class="rule-val">${this.esc(it.top_timing_decision)}</span>
+                        <span class="rule-count">${it.count}次</span>
+                    </div>
+                `).join('');
+            } else if (rule.id === 'agreement_action') {
+                detailHtml = items.map(it => {
+                    const dist = it.action_distribution || {};
+                    const parts = Object.entries(dist).map(([k, v]) => `${k}:${v}`).join(' ');
+                    return `
+                        <div class="rule-row">
+                            <span class="rule-key">${this.esc(it.agreement_level)}</span>
+                            <span class="rule-val">${this.esc(parts)}</span>
+                            <span class="rule-count">${it.count}天</span>
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                detailHtml = items.map(it => `
+                    <div class="rule-row"><pre class="rule-raw">${this.esc(JSON.stringify(it, null, 1))}</pre></div>
+                `).join('');
+            }
+
+            return `
+                <div class="rule-card">
+                    <div class="rc-header">${this.esc(rule.name)}</div>
+                    <div class="rc-desc">${this.esc(rule.description)}</div>
+                    <div class="rc-body">${detailHtml}</div>
+                </div>
+            `;
+        }).join('');
+    },
+
+    renderAllocationTimeline(history) {
+        const el = document.getElementById('analyses-allocation-timeline');
+        if (!el) return;
+        if (!history.length) {
+            el.innerHTML = '<div class="empty-hint">暂无数据</div>';
+            return;
+        }
+
+        // 收集所有出现过的 ETF 代码
+        const allCodes = new Set();
+        history.forEach(h => Object.keys(h.allocation || {}).forEach(c => allCodes.add(c)));
+        const codes = [...allCodes].sort();
+
+        // 颜色映射
+        const colors = ['#0284c7', '#dc2626', '#16a34a', '#d97706', '#7c3aed', '#059669', '#db2777', '#2563eb'];
+        const colorMap = {};
+        codes.forEach((c, i) => { colorMap[c] = colors[i % colors.length]; });
+
+        el.innerHTML = `
+            <div class="alloc-legend">
+                ${codes.map(c => `<span class="alloc-legend-item"><span class="alloc-dot" style="background:${colorMap[c]}"></span>${c}</span>`).join('')}
+            </div>
+            <div class="alloc-bars">
+                ${history.map(h => {
+                    const alloc = h.allocation || {};
+                    const total = Object.values(alloc).reduce((s, v) => s + v, 0) || 1;
+                    const bars = codes.map(c => {
+                        const v = (alloc[c] || 0) / total * 100;
+                        return v > 0 ? `<div class="alloc-bar" style="width:${v}%;background:${colorMap[c]}" title="${c} ${(alloc[c] * 100).toFixed(1)}%"></div>` : '';
+                    }).join('');
+                    return `
+                        <div class="alloc-row">
+                            <span class="alloc-date">${this.esc(h.date.slice(5))}</span>
+                            <div class="alloc-bar-row">${bars}</div>
+                            <span class="alloc-action">${this.esc(h.action || '-')}</span>
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `;
     },
 
     esc(text) {

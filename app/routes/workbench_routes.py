@@ -222,6 +222,329 @@ def approve_action(request: ApproveRequest, db: Session = Depends(get_db)):
     })
 
 
+@router.get("/daily-analysis", response_model=APIResponse)
+def get_daily_analysis(
+    strategy_id: int = 1,
+    days: int = 60,
+    db: Session = Depends(get_db),
+):
+    """每日AI分析详情：从 auto_strategy_log 取完整 analysis_result"""
+    import json
+    from app.models.auto_strategy_log import AutoStrategyLog
+    from datetime import timedelta
+
+    cutoff = date.today() - timedelta(days=days)
+    logs = (
+        db.query(AutoStrategyLog)
+        .filter(
+            AutoStrategyLog.strategy_id == strategy_id,
+            AutoStrategyLog.log_date >= cutoff,
+            AutoStrategyLog.action_type == "analyzed",
+        )
+        .order_by(AutoStrategyLog.log_date.desc())
+        .all()
+    )
+
+    analyses = []
+    for log in logs:
+        ar = log.analysis_result or {}
+        if isinstance(ar, str):
+            try:
+                ar = json.loads(ar)
+            except Exception:
+                ar = {}
+        if not isinstance(ar, dict):
+            ar = {}
+        analyses.append({
+            "log_date": log.log_date.isoformat() if log.log_date else None,
+            "status": log.status,
+            "market_regime": ar.get("market_regime"),
+            "regime_confidence": ar.get("regime_confidence"),
+            "bull_case_weight": ar.get("bull_case_weight"),
+            "bear_case_weight": ar.get("bear_case_weight"),
+            "suggested_action": ar.get("suggested_action"),
+            "suggested_allocation": ar.get("suggested_allocation"),
+            "action_reason": ar.get("action_reason"),
+            "risk_level": (ar.get("risk_alert") or {}).get("level"),
+            "risk_factors": (ar.get("risk_alert") or {}).get("factors", []),
+            "technical_trend": (ar.get("technical_report") or {}).get("overall_trend"),
+            "technical_confidence": (ar.get("technical_report") or {}).get("trend_confidence"),
+            "sentiment": (ar.get("sentiment_report") or {}).get("market_sentiment"),
+            "sentiment_score": (ar.get("sentiment_report") or {}).get("sentiment_score"),
+            "macro_phase": (ar.get("macro_report") or {}).get("cycle_phase"),
+            "volatility_regime": (ar.get("volatility_report") or {}).get("regime"),
+            "agreement_level": ar.get("agreement_level"),
+            "key_signals": ar.get("key_signals_summary", []),
+            "rebalance_timing": ar.get("rebalance_timing"),
+            "technical_report": ar.get("technical_report"),
+            "sentiment_report": ar.get("sentiment_report"),
+            "macro_report": ar.get("macro_report"),
+            "cross_asset_report": ar.get("cross_asset_report"),
+            "volatility_report": ar.get("volatility_report"),
+        })
+
+    return APIResponse(data={"analyses": analyses, "total": len(analyses)})
+
+
+@router.get("/rules", response_model=APIResponse)
+def get_extracted_rules(
+    strategy_id: int = 1,
+    days: int = 60,
+    db: Session = Depends(get_db),
+):
+    """从历史分析中提取轮动规则模式"""
+    import json
+    from app.models.auto_strategy_log import AutoStrategyLog
+    from datetime import timedelta
+    from collections import Counter
+
+    cutoff = date.today() - timedelta(days=days)
+    logs = (
+        db.query(AutoStrategyLog)
+        .filter(
+            AutoStrategyLog.strategy_id == strategy_id,
+            AutoStrategyLog.log_date >= cutoff,
+            AutoStrategyLog.action_type == "analyzed",
+        )
+        .order_by(AutoStrategyLog.log_date.asc())
+        .all()
+    )
+
+    if not logs:
+        return APIResponse(data={"rules": [], "summary": "无分析数据"})
+
+    # 提取每条分析的核心字段
+    records = []
+    for log in logs:
+        ar = log.analysis_result or {}
+        if isinstance(ar, str):
+            try:
+                ar = json.loads(ar)
+            except Exception:
+                ar = {}
+        if not isinstance(ar, dict):
+            ar = {}
+
+        ta = ar.get("technical_report") or {}
+        sr = ar.get("sentiment_report") or {}
+        mr = ar.get("macro_report") or {}
+        vr = ar.get("volatility_report") or {}
+        rr = ar.get("risk_alert") or {}
+
+        records.append({
+            "date": log.log_date.isoformat(),
+            "regime": ar.get("market_regime"),
+            "regime_conf": ar.get("regime_confidence"),
+            "action": ar.get("suggested_action"),
+            "allocation": ar.get("suggested_allocation") or {},
+            "tech_trend": ta.get("overall_trend"),
+            "tech_conf": ta.get("trend_confidence"),
+            "sentiment": sr.get("market_sentiment"),
+            "sentiment_score": sr.get("sentiment_score"),
+            "macro_phase": mr.get("cycle_phase"),
+            "vol_regime": vr.get("regime"),
+            "vol_pct": vr.get("vol_percentile"),
+            "risk_level": rr.get("level"),
+            "agreement": ar.get("agreement_level"),
+            "bull_weight": ar.get("bull_case_weight"),
+            "bear_weight": ar.get("bear_case_weight"),
+        })
+
+    rules = []
+
+    # 规则1: market_regime → suggested_action 映射
+    regime_action_map = {}
+    for r in records:
+        k = r.get("regime", "unknown")
+        if k not in regime_action_map:
+            regime_action_map[k] = {"actions": Counter(), "count": 0}
+        regime_action_map[k]["actions"][r.get("action")] += 1
+        regime_action_map[k]["count"] += 1
+    if regime_action_map:
+        items = []
+        for regime, v in regime_action_map.items():
+            top_action = v["actions"].most_common(1)[0] if v["actions"] else ("无", 0)
+            items.append({
+                "regime": regime,
+                "count": v["count"],
+                "top_action": top_action[0],
+                "top_action_ratio": round(top_action[1] / v["count"], 2) if v["count"] else 0,
+                "action_distribution": dict(v["actions"]),
+            })
+        rules.append({
+            "id": "regime_action",
+            "name": "市场状态→调仓动作",
+            "description": "不同市场状态下AI倾向执行的动作",
+            "items": items,
+        })
+
+    # 规则2: 技术趋势 → 调仓幅度
+    tech_alloc_changes = []
+    prev_alloc = {}
+    for r in records:
+        alloc = r.get("allocation") or {}
+        if prev_alloc:
+            max_change = 0
+            for code in set(list(alloc.keys()) + list(prev_alloc.keys())):
+                diff = abs(alloc.get(code, 0) - prev_alloc.get(code, 0))
+                max_change = max(max_change, diff)
+            tech_alloc_changes.append({
+                "date": r["date"],
+                "tech_trend": r["tech_trend"],
+                "max_change": round(max_change, 3),
+            })
+        prev_alloc = alloc
+
+    if tech_alloc_changes:
+        trend_changes = {}
+        for tc in tech_alloc_changes:
+            t = tc["tech_trend"] or "unknown"
+            if t not in trend_changes:
+                trend_changes[t] = []
+            trend_changes[t].append(tc["max_change"])
+        items = []
+        for trend, changes in trend_changes.items():
+            items.append({
+                "tech_trend": trend,
+                "avg_change": round(np.mean(changes), 3),
+                "max_change": round(max(changes), 3),
+                "count": len(changes),
+            })
+        rules.append({
+            "id": "tech_trend_change",
+            "name": "技术趋势→调仓幅度",
+            "description": "不同技术趋势下AI的调仓激进程度",
+            "items": items,
+        })
+
+    # 规则3: 情绪极端 → 配置调整方向
+    sentiment_alloc = []
+    for r in records:
+        sent = r.get("sentiment")
+        sent_score = r.get("sentiment_score", 0)
+        alloc = r.get("allocation") or {}
+        # 取防御性资产（货币ETF、黄金ETF）的总权重
+        defensive = sum(v for k, v in alloc.items() if k in ("511650", "518850"))
+        sentiment_alloc.append({
+            "date": r["date"],
+            "sentiment": sent,
+            "sentiment_score": sent_score,
+            "defensive_weight": round(defensive, 2),
+        })
+
+    if sentiment_alloc:
+        sent_groups = {}
+        for sa in sentiment_alloc:
+            s = sa["sentiment"] or "unknown"
+            if s not in sent_groups:
+                sent_groups[s] = []
+            sent_groups[s].append(sa["defensive_weight"])
+        items = []
+        for sent, weights in sent_groups.items():
+            items.append({
+                "sentiment": sent,
+                "avg_defensive_weight": round(np.mean(weights), 2),
+                "count": len(weights),
+            })
+        rules.append({
+            "id": "sentiment_defensive",
+            "name": "情绪面→防御配置",
+            "description": "不同情绪状态下AI配置防御性资产的倾向",
+            "items": items,
+        })
+
+    # 规则4: 波动率区间 → 调仓节奏
+    vol_timing = []
+    for r in records:
+        vr = r.get("vol_regime")
+        vt = r.get("rebalance_timing") or {}
+        timing_decision = vt.get("decision")
+        timing_conf = vt.get("confidence")
+        vol_timing.append({
+            "date": r["date"],
+            "vol_regime": vr,
+            "timing_decision": timing_decision,
+            "timing_confidence": timing_conf,
+        })
+
+    if vol_timing:
+        vol_groups = {}
+        for vt in vol_timing:
+            v = vt["vol_regime"] or "unknown"
+            if v not in vol_groups:
+                vol_groups[v] = {"decisions": Counter(), "confs": [], "count": 0}
+            vol_groups[v]["count"] += 1
+            if vt["timing_decision"]:
+                vol_groups[v]["decisions"][vt["timing_decision"]] += 1
+            if vt["timing_confidence"]:
+                vol_groups[v]["confs"].append(vt["timing_confidence"])
+        items = []
+        for vol, data in vol_groups.items():
+            top_decision = data["decisions"].most_common(1)[0] if data["decisions"] else ("无", 0)
+            items.append({
+                "vol_regime": vol,
+                "top_timing_decision": top_decision[0],
+                "avg_timing_confidence": round(np.mean(data["confs"]), 2) if data["confs"] else None,
+                "count": data["count"],
+            })
+        rules.append({
+            "id": "vol_timing",
+            "name": "波动率→调仓节奏",
+            "description": "不同波动率区间下的调仓时机选择",
+            "items": items,
+        })
+
+    # 规则5: 多空权重演变
+    weight_evolution = [{
+        "date": r["date"],
+        "regime": r["regime"],
+        "bull_weight": r.get("bull_weight"),
+        "bear_weight": r.get("bear_weight"),
+        "action": r["action"],
+    } for r in records]
+
+    # 规则6: 共识度→行动确定性
+    agreement_action = {}
+    for r in records:
+        a = r.get("agreement") or "unknown"
+        if a not in agreement_action:
+            agreement_action[a] = {"actions": Counter(), "count": 0}
+        agreement_action[a]["actions"][r.get("action")] += 1
+        agreement_action[a]["count"] += 1
+    if agreement_action:
+        items = []
+        for agr, v in agreement_action.items():
+            items.append({
+                "agreement_level": agr,
+                "count": v["count"],
+                "action_distribution": dict(v["actions"]),
+            })
+        rules.append({
+            "id": "agreement_action",
+            "name": "共识度→行动确定性",
+            "description": "多空共识程度对AI行动选择的影响",
+            "items": items,
+        })
+
+    # 规则7: 逐日配置变化轨迹
+    allocation_history = []
+    for r in records:
+        alloc = r.get("allocation") or {}
+        allocation_history.append({
+            "date": r["date"],
+            "allocation": alloc,
+            "regime": r["regime"],
+            "action": r["action"],
+        })
+
+    return APIResponse(data={
+        "rules": rules,
+        "weight_evolution": weight_evolution,
+        "allocation_history": allocation_history,
+        "total_days": len(records),
+    })
+
+
 @router.get("/market-indicators", response_model=APIResponse)
 def get_market_indicators(
     sort_by: str = "composite_score",

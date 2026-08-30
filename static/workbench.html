@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ETF智能工作台</title>
-    <link rel="stylesheet" href="/static/css/workbench.css?v=18">
+    <link rel="stylesheet" href="/static/css/workbench.css?v=19">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
 </head>
 <body>
@@ -34,6 +34,7 @@
             <button class="view-tab" data-view="strategies">策略</button>
             <button class="view-tab" data-view="sentiment">舆情</button>
             <button class="view-tab" data-view="tasks">任务</button>
+            <button class="view-tab" data-view="analyses">分析</button>
         </div>
 
         <!-- 总览视图 -->
@@ -144,11 +145,11 @@
                             <div class="sc-legend">
                                 <span>负面</span>
                                 <span class="sc-legend-bar">
+                                    <i style="background:#86efac"></i>
+                                    <i style="background:#bbf7d0"></i>
+                                    <i style="background:#e5e7eb"></i>
                                     <i style="background:#fee2e2"></i>
                                     <i style="background:#fecaca"></i>
-                                    <i style="background:#e5e7eb"></i>
-                                    <i style="background:#bbf7d0"></i>
-                                    <i style="background:#86efac"></i>
                                 </span>
                                 <span>正面</span>
                             </div>
@@ -191,6 +192,34 @@
                     <div class="panel-header">📋 执行历史 <span class="panel-sub" id="tasks-history-sub"></span></div>
                     <div class="panel-body tasks-list" id="tasks-history">
                         <div class="empty-hint">加载中...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 分析视图 -->
+        <div id="view-analyses" class="view-panel" style="display:none">
+            <div class="analyses-layout">
+                <div class="analyses-main">
+                    <div class="panel">
+                        <div class="panel-header">📅 每日AI分析 <span class="panel-sub" id="analyses-count-sub"></span></div>
+                        <div class="panel-body analyses-scroll" id="analyses-daily-list">
+                            <div class="empty-hint">加载中...</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="analyses-rail">
+                    <div class="panel">
+                        <div class="panel-header">📐 提取的轮动规则 <span class="panel-sub" id="rules-count-sub"></span></div>
+                        <div class="panel-body analyses-scroll" id="analyses-rules-list">
+                            <div class="empty-hint">加载中...</div>
+                        </div>
+                    </div>
+                    <div class="panel">
+                        <div class="panel-header">🔀 配置变化轨迹</div>
+                        <div class="panel-body analyses-scroll" id="analyses-allocation-timeline">
+                            <div class="empty-hint">加载中...</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -251,7 +280,7 @@
 </footer>
 
 <script src="/static/js/auth.js"></script>
-<script src="/static/js/workbench.js?v=20"></script>
+    <script src="/static/js/workbench.js?v=21"></script>
 <script src="/static/js/chat.js?v=18"></script>
 <script>
 // 更新时间
