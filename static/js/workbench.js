@@ -37,6 +37,57 @@ const Workbench = {
         return name ? `${code} ${name}` : code;
     },
 
+    zh(v) {
+        const map = {
+            // 市场状态
+            bull: '牛市', bull_volatile: '牛市震荡', bull_quiet: '温和牛市',
+            bull_strong: '强势牛市', bull_weak: '弱牛市',
+            neutral: '中性', bear: '熊市', bear_volatile: '熊市震荡', bear_quiet: '温和熊市',
+            bear_strong: '强势熊市', bear_weak: '弱熊市',
+            // 动作
+            rebalance: '调仓', hold: '持有', reduce: '减仓', increase: '加仓',
+            buy: '买入', sell: '卖出',
+            // 趋势/情绪
+            bullish: '看多', bearish: '看空', positive: '正面', negative: '负面',
+            // 波动率状态
+            high_volatility: '高波动', low_volatility: '低波动',
+            high_trend: '高波动趋势', low_trend: '低波动趋势',
+            high_accumulation: '高波动蓄势', low_accumulation: '低波动蓄势',
+            elevated: '波动升高', normal: '波动正常',
+            // 择时决策
+            immediate: '立即执行', execute_now: '立即执行', staged: '分批执行',
+            wait: '观望等待', delay: '推迟', defer: '推迟', skip: '跳过',
+            // 共识度
+            full: '完全共识', complete: '完全共识', partial: '部分共识',
+            disagreement: '存在分歧', consensus: '高度共识',
+            // 宏观周期
+            stagflation: '滞胀', reflation: '再通胀', disinflation: '反通胀',
+            deflation: '通缩', inflation: '通胀', recession: '衰退',
+            recovery: '复苏', expansion: '扩张', slowdown: '放缓',
+            early_cycle: '周期早期', mid_cycle: '周期中期', late_cycle: '周期晚期',
+        };
+        return map[v] || v || '-';
+    },
+
+    zhText(s) {
+        if (!s) return s;
+        return String(s)
+            .replace(/strong_bullish/g, '强势看多')
+            .replace(/strong_bearish/g, '强势看空')
+            .replace(/overall_trend/g, '技术趋势')
+            .replace(/\bbullish\b/g, '看多')
+            .replace(/\bbearish\b/g, '看空')
+            .replace(/\bneutral\b/g, '中性')
+            .replace(/disinflation/g, '反通胀')
+            .replace(/stagflation/g, '滞胀')
+            .replace(/reflation/g, '再通胀')
+            .replace(/deflation/g, '通缩')
+            .replace(/inflation/g, '通胀')
+            .replace(/recession/g, '衰退')
+            .replace(/recovery/g, '复苏')
+            .replace(/slowdown/g, '放缓');
+    },
+
     bindViewTabs() {
         document.querySelectorAll('.view-tab').forEach(tab => {
             tab.addEventListener('click', () => {
@@ -1842,9 +1893,15 @@ const Workbench = {
         const regimeMap = {
             bull: { label: '牛市', cls: 'regime-bull' },
             bull_volatile: { label: '牛市震荡', cls: 'regime-bull-vol' },
+            bull_quiet: { label: '温和牛市', cls: 'regime-bull' },
+            bull_strong: { label: '强势牛市', cls: 'regime-bull' },
+            bull_weak: { label: '弱牛市', cls: 'regime-bull' },
             neutral: { label: '中性', cls: 'regime-neutral' },
             bear: { label: '熊市', cls: 'regime-bear' },
             bear_volatile: { label: '熊市震荡', cls: 'regime-bear-vol' },
+            bear_quiet: { label: '温和熊市', cls: 'regime-bear' },
+            bear_strong: { label: '强势熊市', cls: 'regime-bear' },
+            bear_weak: { label: '弱熊市', cls: 'regime-bear' },
         };
         const actionMap = {
             rebalance: { label: '调仓', cls: 'action-rebalance' },
@@ -1876,11 +1933,11 @@ const Workbench = {
                     </div>
                     <div class="ac-body">
                         <div class="ac-alloc">${this.esc(allocStr)}</div>
-                        <div class="ac-reason">${this.esc(a.action_reason || '')}</div>
-                        ${signals.length ? '<div class="ac-signals">' + signals.map(s => `<div class="ac-signal">${this.esc(s)}</div>`).join('') + '</div>' : ''}
+                        <div class="ac-reason">${this.esc(this.zhText(a.action_reason || ''))}</div>
+                        ${signals.length ? '<div class="ac-signals">' + signals.map(s => `<div class="ac-signal">${this.esc(this.zhText(s))}</div>`).join('') + '</div>' : ''}
                     </div>
                     <div class="ac-footer">
-                        <span class="ac-meta">技术:${this.esc(a.technical_trend || '-')} 情绪:${this.esc(a.sentiment || '-')} 宏观:${this.esc(a.macro_phase || '-')}</span>
+                        <span class="ac-meta">技术:${this.esc(this.zh(a.technical_trend))} 情绪:${this.esc(this.zh(a.sentiment))} 宏观:${this.esc(this.zh(a.macro_phase))}</span>
                     </div>
                 </div>
             `;
@@ -1901,15 +1958,15 @@ const Workbench = {
             if (rule.id === 'regime_action') {
                 detailHtml = items.map(it => `
                     <div class="rule-row">
-                        <span class="rule-key">${this.esc(it.regime)}</span>
-                        <span class="rule-val">${this.esc(it.top_action)} (${(it.top_action_ratio * 100).toFixed(0)}%)</span>
+                        <span class="rule-key">${this.esc(this.zh(it.regime))}</span>
+                        <span class="rule-val">${this.esc(this.zh(it.top_action))} (${(it.top_action_ratio * 100).toFixed(0)}%)</span>
                         <span class="rule-count">${it.count}天</span>
                     </div>
                 `).join('');
             } else if (rule.id === 'tech_trend_change') {
                 detailHtml = items.map(it => `
                     <div class="rule-row">
-                        <span class="rule-key">${this.esc(it.tech_trend)}</span>
+                        <span class="rule-key">${this.esc(this.zh(it.tech_trend))}</span>
                         <span class="rule-val">均变 ${(it.avg_change * 100).toFixed(1)}% 极值 ${(it.max_change * 100).toFixed(1)}%</span>
                         <span class="rule-count">${it.count}次</span>
                     </div>
@@ -1917,7 +1974,7 @@ const Workbench = {
             } else if (rule.id === 'sentiment_defensive') {
                 detailHtml = items.map(it => `
                     <div class="rule-row">
-                        <span class="rule-key">${this.esc(it.sentiment)}</span>
+                        <span class="rule-key">${this.esc(this.zh(it.sentiment))}</span>
                         <span class="rule-val">防御 ${(it.avg_defensive_weight * 100).toFixed(0)}%</span>
                         <span class="rule-count">${it.count}天</span>
                     </div>
@@ -1925,18 +1982,18 @@ const Workbench = {
             } else if (rule.id === 'vol_timing') {
                 detailHtml = items.map(it => `
                     <div class="rule-row">
-                        <span class="rule-key">${this.esc(it.vol_regime)}</span>
-                        <span class="rule-val">${this.esc(it.top_timing_decision)}</span>
+                        <span class="rule-key">${this.esc(this.zh(it.vol_regime))}</span>
+                        <span class="rule-val">${this.esc(this.zh(it.top_timing_decision))}</span>
                         <span class="rule-count">${it.count}次</span>
                     </div>
                 `).join('');
             } else if (rule.id === 'agreement_action') {
                 detailHtml = items.map(it => {
                     const dist = it.action_distribution || {};
-                    const parts = Object.entries(dist).map(([k, v]) => `${k}:${v}`).join(' ');
+                    const parts = Object.entries(dist).map(([k, v]) => `${this.zh(k)}:${v}`).join(' ');
                     return `
                         <div class="rule-row">
-                            <span class="rule-key">${this.esc(it.agreement_level)}</span>
+                            <span class="rule-key">${this.esc(this.zh(it.agreement_level))}</span>
                             <span class="rule-val">${this.esc(parts)}</span>
                             <span class="rule-count">${it.count}天</span>
                         </div>
@@ -2051,7 +2108,7 @@ const Workbench = {
                                 <div class="alloc-bar-row">${allocBars}</div>
                             </div>
                             <div class="alloc-changes">${changesHtml}</div>
-                            <span class="alloc-action">${this.esc(h.action || '-')}</span>
+                            <span class="alloc-action">${this.esc(this.zh(h.action))}</span>
                         </div>
                     `;
                 }).join('')}

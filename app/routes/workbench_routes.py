@@ -344,6 +344,7 @@ def get_extracted_rules(
             "macro_phase": mr.get("cycle_phase"),
             "vol_regime": vr.get("regime"),
             "vol_pct": vr.get("vol_percentile"),
+            "rebalance_timing": ar.get("rebalance_timing") or {},
             "risk_level": rr.get("level"),
             "agreement": ar.get("agreement_level"),
             "bull_weight": ar.get("bull_case_weight"),
