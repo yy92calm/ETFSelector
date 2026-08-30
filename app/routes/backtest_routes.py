@@ -23,12 +23,20 @@ def run_backtest(req: BacktestRequest, db: Session = Depends(get_db)):
     initial = req.initial_capital or strategy.initial_capital
 
     try:
+        # 规则驱动模式：注入 rule_engine
+        rule_engine = None
+        if req.mode == "rule_based":
+            from app.services.rule_engine import get_rule_engine
+            rule_engine = get_rule_engine()
+
         result = engine.run(
             strategy=strategy,
             start_date=req.start_date,
             end_date=req.end_date,
             initial_capital=float(initial),
             db=db,
+            mode=req.mode,
+            rule_engine=rule_engine
         )
         return APIResponse(message="回测完成", data=result)
     except ValueError as e:

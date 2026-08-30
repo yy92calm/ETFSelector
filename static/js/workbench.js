@@ -1638,6 +1638,63 @@ const Workbench = {
         this.renderBacktestChart(d.daily_data || [], id);
         this.renderDrawdownChart(d.drawdown_curve || [], d.daily_data || [], id);
         this.renderMonthlyReturns(d.period_returns || [], id);
+        this.renderDailyCards(d.daily_data || [], id);
+    },
+
+    renderDailyCards(daily, id) {
+        const wrap = document.getElementById(`bt-daily-cards-wrap-${id}`);
+        const el = document.getElementById(`bt-daily-cards-${id}`);
+        if (!wrap || !el) return;
+
+        // 只有规则驱动模式才有 analysis 数据
+        const hasAnalysis = daily.some(d => d.analysis && Object.keys(d.analysis).length > 0);
+        if (!hasAnalysis) { wrap.style.display = 'none'; return; }
+        wrap.style.display = 'block';
+
+        const regimeColors = {
+            bull_strong: '#dc2626', bull_weak: '#f97316',
+            neutral: '#6b7280', bear_weak: '#22c55e', bear_strong: '#16a34a',
+        };
+        const regimeLabels = {
+            bull_strong: '强势牛市', bull_weak: '弱牛市',
+            neutral: '震荡市', bear_weak: '弱熊市', bear_strong: '强势熊市',
+        };
+
+        el.innerHTML = daily.filter(d => d.analysis && Object.keys(d.analysis).length > 0).map(d => {
+            const a = d.analysis;
+            const regime = a.regime || 'neutral';
+            const color = regimeColors[regime] || '#6b7280';
+            const label = a.regime_label || regimeLabels[regime] || regime;
+            const reb = d.rebalance;
+            const hasRebal = reb && reb.adjustments && reb.adjustments.length > 0 && reb.trigger_type !== 'initial';
+
+            // 持仓变化摘要
+            let changesHtml = '';
+            if (hasRebal) {
+                changesHtml = reb.adjustments.slice(0, 4).map(adj => {
+                    const cls = adj.action === '买入' ? 'btc-up' : 'btc-down';
+                    return `<span class="btc-change ${cls}">${adj.action} ${this.etfLabel(adj.etf_code)} ${adj.quantity}股</span>`;
+                }).join('');
+            }
+
+            return `
+                <div class="btc-card">
+                    <div class="btc-header">
+                        <span class="btc-date">${d.date}</span>
+                        <span class="btc-regime" style="color:${color};border-color:${color}">${label}</span>
+                        <span class="btc-profit ${(d.profit_pct || 0) >= 0 ? 'btc-up' : 'btc-down'}">${(d.profit_pct || 0) >= 0 ? '+' : ''}${(d.profit_pct || 0).toFixed(2)}%</span>
+                    </div>
+                    <div class="btc-body">
+                        <div class="btc-metrics">
+                            <span>综合得分 ${a.avg_score || '-'}</span>
+                            <span>波动率 ${(a.avg_volatility || 0).toFixed(1)}%</span>
+                            <span>5日动量 ${(a.avg_momentum_5d || 0) >= 0 ? '+' : ''}${(a.avg_momentum_5d || 0).toFixed(2)}%</span>
+                        </div>
+                        ${changesHtml ? `<div class="btc-changes">${changesHtml}</div>` : ''}
+                    </div>
+                </div>
+            `;
+        }).join('');
     },
 
     renderBacktestChart(daily, id) {

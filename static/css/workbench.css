@@ -2461,3 +2461,74 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     );
     background-size: auto;
 }
+
+
+/* 逐日分析卡片 */
+.bt-daily-cards {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 400px;
+    overflow-y: auto;
+    padding: 4px 0;
+}
+.btc-card {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    background: var(--bg-primary);
+}
+.btc-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 4px;
+}
+.btc-date {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+.btc-regime {
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border: 1px solid;
+    border-radius: 3px;
+}
+.btc-profit {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+.btc-body {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.btc-metrics {
+    display: flex;
+    gap: 12px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.btc-changes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+}
+.btc-change {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+}
+.btc-up {
+    color: var(--danger);
+    background: rgba(220, 38, 38, 0.08);
+}
+.btc-down {
+    color: var(--success);
+    background: rgba(22, 163, 74, 0.08);
+}

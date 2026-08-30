@@ -172,13 +172,38 @@ class BacktestEngine:
             total_asset = cash + market_value
             profit_pct = (total_asset - initial_capital) / initial_capital * 100
             
+            # 逐日分析记录（规则模式下生成）
+            day_analysis = {}
+            if mode == "rule_based" and rule_engine:
+                try:
+                    regime_info = rule_engine.get_regime_info(td, db)
+                    day_analysis = {
+                        "regime": regime_info.get("regime", ""),
+                        "regime_label": regime_info.get("regime_label", ""),
+                        "avg_score": regime_info.get("avg_score", 0),
+                        "avg_volatility": regime_info.get("avg_volatility", 0),
+                        "avg_momentum_5d": regime_info.get("avg_momentum_5d", 0),
+                        "avg_momentum_20d": regime_info.get("avg_momentum_20d", 0),
+                        "target_weights": regime_info.get("target_weights", {}),
+                    }
+                except Exception as e:
+                    logger.warning(f"[Backtest] regime计算失败 {td}: {e}")
+
+            # 本次调仓记录
+            day_rebalance = None
+            if rebalance_records and rebalance_records[-1]["date"] == td.isoformat():
+                day_rebalance = rebalance_records[-1]
+
             daily_data.append({
                 "date": td.isoformat(),
                 "total_asset": round(total_asset, 2),
                 "cash": round(cash, 2),
                 "market_value": round(market_value, 2),
                 "profit_pct": round(profit_pct, 4),
-                "holdings": {code: qty for code, qty in holdings.items() if qty > 0}
+                "holdings": {code: qty for code, qty in holdings.items() if qty > 0},
+                "allocation": {code: round(w, 4) for code, w in daily_alloc.items()},
+                "analysis": day_analysis,
+                "rebalance": day_rebalance,
             })
         
         # 统计指标
