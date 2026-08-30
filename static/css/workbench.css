@@ -2308,13 +2308,13 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .alloc-legend-item {
     display: flex;
     align-items: center;
-    gap: 4px;
-    font-size: 11px;
+    gap: 5px;
+    font-size: 12px;
     color: var(--text-secondary);
 }
 .alloc-dot {
-    width: 8px;
-    height: 8px;
+    width: 10px;
+    height: 10px;
     border-radius: 50%;
     flex-shrink: 0;
 }
@@ -2325,17 +2325,18 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     gap: 6px;
 }
 .alloc-date {
-    font-size: 11px;
+    font-size: 12px;
     color: var(--text-secondary);
-    width: 40px;
+    width: 46px;
     flex-shrink: 0;
     text-align: right;
+    font-variant-numeric: tabular-nums;
 }
 .alloc-bar-row {
     flex: 1;
     display: flex;
-    height: 14px;
-    border-radius: 3px;
+    height: 22px;
+    border-radius: 4px;
     overflow: hidden;
     background: var(--bg-secondary);
 }
@@ -2345,9 +2346,9 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     transition: width 0.3s ease;
 }
 .alloc-action {
-    font-size: 10px;
+    font-size: 11px;
     color: var(--text-secondary);
-    width: 28px;
+    width: 32px;
     flex-shrink: 0;
     text-align: left;
 }
@@ -2360,14 +2361,14 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .alloc-hint-item {
     display: flex;
     align-items: center;
-    gap: 5px;
-    font-size: 10px;
+    gap: 6px;
+    font-size: 11px;
     color: var(--text-secondary);
 }
 .alloc-bar-sample {
-    width: 16px;
-    height: 10px;
-    border-radius: 2px;
+    width: 22px;
+    height: 14px;
+    border-radius: 3px;
     flex-shrink: 0;
 }
 .alloc-bar-sample--solid {
@@ -2386,7 +2387,7 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 4px;
 }
 .alloc-bar--solid {
     border-radius: 2px;
