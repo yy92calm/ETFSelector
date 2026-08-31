@@ -144,9 +144,44 @@ class Orchestrator:
             strategy.last_analysis_result = combined
             strategy.last_auto_analysis_date = analysis_date
             db.commit()
+            self._persist_analysis_log(strategy_id, analysis_date, combined, db)
             logger.info(f"[Orchestrator] 策略{strategy_id} 辩论分析完成: {final_decision.get('market_regime')}")
 
         return combined
+
+    def _persist_analysis_log(self, strategy_id: int, analysis_date: date, combined: Dict, db: Session):
+        """将分析结果落库为每日 analyzed 记录（分析Tab数据源）
+
+        按策略+日期去重：同日重复运行（断点续跑/手动重触发）不产生重复记录。
+        """
+        from app.models.auto_strategy_log import AutoStrategyLog
+
+        try:
+            existing = db.query(AutoStrategyLog.id).filter(
+                AutoStrategyLog.strategy_id == strategy_id,
+                AutoStrategyLog.log_date == analysis_date,
+                AutoStrategyLog.action_type == "analyzed",
+            ).first()
+            if existing:
+                db.query(AutoStrategyLog).filter(AutoStrategyLog.id == existing).update(
+                    {"analysis_result": combined}
+                )
+                db.commit()
+                logger.info(f"[Orchestrator] {analysis_date} 已有分析记录，更新之")
+                return
+
+            db.add(AutoStrategyLog(
+                strategy_id=strategy_id,
+                log_date=analysis_date,
+                status="success",
+                action_type="analyzed",
+                analysis_result=combined,
+            ))
+            db.commit()
+            logger.info(f"[Orchestrator] {analysis_date} 分析记录已落库")
+        except Exception as e:
+            db.rollback()
+            logger.error(f"[Orchestrator] 分析记录落库失败: {e}")
 
     def _ensure_fresh_data(self, etf_codes: List[str], analysis_date: date, db: Session) -> Dict:
         """方向1: 检查数据新鲜度，过期先同步。
