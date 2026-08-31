@@ -26,6 +26,31 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("数据库初始化成功")
 
+    # 清理孤儿执行记录：进程启动时所有 running 必然来自已死进程（重启/被杀），
+    # 若不回收，任务Tab会一直显示"执行中"
+    try:
+        from datetime import datetime, timezone
+        from sqlalchemy import update as sa_update
+        from app.db.database import SessionLocal as _SL
+        from app.models.task_log import TaskExecutionLog
+        _db = _SL()
+        try:
+            stale = _db.query(TaskExecutionLog).filter(
+                TaskExecutionLog.status == "running"
+            ).all()
+            if stale:
+                now = datetime.now(timezone.utc)
+                for log_entry in stale:
+                    log_entry.status = "failed"
+                    log_entry.finished_at = log_entry.started_at or now
+                    log_entry.error_message = "进程重启导致中断（启动时自动回收）"
+                _db.commit()
+                logger.warning(f"已回收 {len(stale)} 条孤儿 running 任务记录")
+        finally:
+            _db.close()
+    except Exception as e:
+        logger.error(f"回收孤儿任务记录失败: {e}")
+
     # 从数据库加载运行时 LLM 配置到 settings 单例
     from app.db.database import SessionLocal
     from app.services.config_service import sync_llm_config_from_db
