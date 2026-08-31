@@ -74,3 +74,85 @@ def build_openai_client(base_url: str, api_key: Optional[str]):
     from openai import OpenAI
 
     return OpenAI(api_key=api_key, base_url=base_url)
+
+
+def stream_completion(client, model: str, messages: list, tools=None,
+                      temperature: float = 0.3, max_tokens: int = 2000):
+    """流式调用LLM，逐chunk产出。
+
+    参照 deepseek-harness StreamChunk 协议（types.ts:291-303），
+    简化为4种事件类型：
+
+    - thinking_delta:  思考增量（对应harness reasoning-delta）
+    - text_delta:      正文增量（对应harness text-delta）
+    - tool_calls:      完整工具调用列表（harness tool-call-delta累积后的结果）
+    - done:            流结束（对应harness finish）
+
+    Qwen的<think>标签通过状态机解析（harness用DeepSeek的reasoning_content原生字段）。
+    tool_calls延迟到流结束统一发出（参照harness translate.ts延迟关闭模式）。
+    """
+    response = client.chat.completions.create(
+        model=model, messages=messages, tools=tools,
+        temperature=temperature, max_tokens=max_tokens,
+        stream=True,
+    )
+    in_thinking = False
+    tool_calls_buf = {}
+
+    try:
+        for chunk in response:
+            if not chunk.choices:
+                continue
+            delta = chunk.choices[0].delta
+            if not delta:
+                continue
+
+            content = getattr(delta, "content", None) or ""
+            if content:
+                # Qwen <think>标签解析（状态机，处理跨chunk拆分）
+                if "<think>" in content:
+                    in_thinking = True
+                    tag_stripped = content.replace("<think>", "", 1)
+                    if tag_stripped:
+                        yield {"type": "thinking_delta", "content": tag_stripped}
+                elif in_thinking and "</think>" in content:
+                    before, after = content.split("</think>", 1)
+                    if before:
+                        yield {"type": "thinking_delta", "content": before}
+                    in_thinking = False
+                    yield {"type": "thinking_done", "content": ""}
+                    if after:
+                        yield {"type": "text_delta", "content": after}
+                elif in_thinking:
+                    yield {"type": "thinking_delta", "content": content}
+                else:
+                    yield {"type": "text_delta", "content": content}
+
+            # tool_calls增量累积（参照harness assembler.ts index稀疏数组模式）
+            if delta.tool_calls:
+                for tc in delta.tool_calls:
+                    idx = tc.index
+                    if idx not in tool_calls_buf:
+                        tool_calls_buf[idx] = {
+                            "id": "", "type": "function",
+                            "function": {"name": "", "arguments": ""},
+                        }
+                    if tc.id:
+                        tool_calls_buf[idx]["id"] = tc.id
+                    if tc.function:
+                        if tc.function.name:
+                            tool_calls_buf[idx]["function"]["name"] = tc.function.name
+                        if tc.function.arguments:
+                            tool_calls_buf[idx]["function"]["arguments"] += tc.function.arguments
+
+            if chunk.choices[0].finish_reason:
+                break
+    except Exception as e:
+        logger.error(f"LLM流式调用异常: {e}")
+        yield {"type": "error", "error": str(e)}
+        return
+
+    # 延迟发送tool_calls和finish（参照harness translate.ts延迟关闭模式）
+    if tool_calls_buf:
+        yield {"type": "tool_calls", "tool_calls": list(tool_calls_buf.values())}
+    yield {"type": "done"}

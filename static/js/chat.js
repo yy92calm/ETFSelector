@@ -9,6 +9,7 @@ const Chat = {
     inputEl: null,
     _toolSeq: 0,
     _toolBubbles: null,
+    _streamState: null,   // {thinkingEl, thinkingPre, textEl, indicatorEl, pendingDeltas, rafScheduled}
 
     init() {
         this.messagesEl = document.getElementById('chat-messages');
@@ -264,13 +265,22 @@ const Chat = {
         const d = ev.data || {};
         if (t === 'turn_start') {
             if (d.session_id) this.sessionId = d.session_id;
+            this._initStreamState();
             this.showStopButton();
+        } else if (t === 'text_delta') {
+            this._onTextDelta(d.content);
+        } else if (t === 'thinking_delta') {
+            this._onThinkingDelta(d.content);
+        } else if (t === 'thinking_done') {
+            this._onThinkingDone();
         } else if (t === 'tool_started') {
             this.setLoading(false);
+            this._finalizeThinkingIfActive();
             this.addToolBubble(d.seq, d.tool, d.arguments);
         } else if (t === 'tool_finished') {
             this.updateToolBubble(d.seq, d.status, d.preview);
         } else if (t === 'thinking') {
+            // 兼容非流式fallback
             this.setLoading(false);
             this.addThinkingBubble(d.content);
         } else if (t === 'permission_required') {
@@ -280,16 +290,19 @@ const Chat = {
             if (d.content) this.addMessage('assistant', d.content);
         } else if (t === 'turn_end') {
             if (d.session_id) this.sessionId = d.session_id;
+            this._finalizeStreamState();
             this.setLoading(false);
             this.hideStopButton();
             this.refreshWorkbench(d.tool_calls);
         } else if (t === 'compacted') {
             this.addToolInfo('已整理上下文（历史摘要）');
         } else if (t === 'interrupted') {
+            this._finalizeStreamState();
             this.setLoading(false);
             this.hideStopButton();
             this.addMessage('assistant', '已停止本次执行。');
         } else if (t === 'error') {
+            this._finalizeStreamState();
             this.setLoading(false);
             this.hideStopButton();
             this.addMessage('assistant', d.error || 'AI服务调用失败');
@@ -429,6 +442,16 @@ const Chat = {
         if (resEl && preview != null) resEl.textContent = preview;
     },
 
+    _finalizeStreamState() {
+        const st = this._streamState;
+        if (!st) return;
+        this._removeThinkingIndicator();
+        this._finalizeThinkingIfActive();
+        // 移除textEl的streaming光标
+        if (st.textEl) st.textEl.classList.remove('streaming');
+        this._streamState = null;
+    },
+
     refreshWorkbench(toolCalls) {
         const mutatingTools = new Set([
             'create_strategy', 'update_allocation', 'pause_strategy', 'resume_strategy',
@@ -459,6 +482,116 @@ const Chat = {
             div.appendChild(time);
         }
         this.messagesEl.appendChild(div);
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    },
+
+    // --- 流式增量渲染（参照deepseek-harness PartialAccumulator模式） ---
+
+    _initStreamState() {
+        this.setLoading(false);
+        this._streamState = {
+            thinkingEl: null,
+            thinkingPre: null,
+            textEl: null,
+            indicatorEl: null,
+            pendingDeltas: [],
+            rafScheduled: false,
+            finalized: false,
+        };
+        // 显示首token指示器
+        this._showThinkingIndicator();
+    },
+
+    _showThinkingIndicator() {
+        const st = this._streamState;
+        if (!st || st.indicatorEl) return;
+        const div = document.createElement('div');
+        div.className = 'msg assistant';
+        div.innerHTML = '<span class="chat-thinking-indicator"></span>';
+        this.messagesEl.appendChild(div);
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+        st.indicatorEl = div;
+    },
+
+    _removeThinkingIndicator() {
+        const st = this._streamState;
+        if (!st || !st.indicatorEl) return;
+        st.indicatorEl.remove();
+        st.indicatorEl = null;
+    },
+
+    _onThinkingDelta(content) {
+        const st = this._streamState;
+        if (!st) return;
+        this._removeThinkingIndicator();
+        // 首次：创建thinking气泡
+        if (!st.thinkingEl) {
+            const div = document.createElement('div');
+            div.className = 'msg tool-info thinking streaming';
+            div.innerHTML = '<details class="tool-detail" open><summary class="thinking-summary">模型思考</summary>'
+                + '<pre class="thinking-body"></pre></details>';
+            this.messagesEl.appendChild(div);
+            st.thinkingEl = div;
+            st.thinkingPre = div.querySelector('.thinking-body');
+        }
+        st.thinkingPre.textContent += content;
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    },
+
+    _onThinkingDone() {
+        const st = this._streamState;
+        if (!st || !st.thinkingEl) return;
+        st.thinkingEl.classList.remove('streaming');
+        // 折叠：只保留首行摘要
+        const fullText = st.thinkingPre.textContent;
+        const firstLine = (fullText.split('\n')[0] || '').slice(0, 80);
+        const summaryEl = st.thinkingEl.querySelector('.thinking-summary');
+        if (summaryEl) summaryEl.textContent = firstLine ? '模型思考: ' + firstLine + '...' : '模型思考';
+        const details = st.thinkingEl.querySelector('details');
+        if (details) details.removeAttribute('open');
+    },
+
+    _finalizeThinkingIfActive() {
+        const st = this._streamState;
+        if (!st || st.finalized || !st.thinkingEl) return;
+        st.finalized = true;
+        this._onThinkingDone();
+    },
+
+    _onTextDelta(content) {
+        const st = this._streamState;
+        if (!st) return;
+        this._removeThinkingIndicator();
+        this._finalizeThinkingIfActive();
+        // 首次：创建assistant气泡
+        if (!st.textEl) {
+            const div = document.createElement('div');
+            div.className = 'msg assistant streaming';
+            div.innerHTML = '';
+            this.messagesEl.appendChild(div);
+            st.textEl = div;
+        }
+        // 帧节流：累积delta，requestAnimationFrame批量flush
+        st.pendingDeltas.push(content);
+        if (!st.rafScheduled) {
+            st.rafScheduled = true;
+            requestAnimationFrame(() => {
+                this._flushTextDeltas();
+                st.rafScheduled = false;
+            });
+        }
+    },
+
+    _flushTextDeltas() {
+        const st = this._streamState;
+        if (!st || !st.textEl || st.pendingDeltas.length === 0) return;
+        const chunk = st.pendingDeltas.join('');
+        st.pendingDeltas.length = 0;
+        // 增量追加：用textContent避免XSS，再渲染markdown
+        const current = st.textEl.getAttribute('data-raw') || '';
+        const updated = current + chunk;
+        st.textEl.setAttribute('data-raw', updated);
+        st.textEl.innerHTML = this.renderMarkdown(updated);
         this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     },
 

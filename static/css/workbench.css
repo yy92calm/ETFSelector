@@ -633,6 +633,45 @@ body {
     to { transform: rotate(360deg); }
 }
 
+/* 首token指示器：LLM思考中动态省略号 */
+.chat-thinking-indicator {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 4px 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+.chat-thinking-indicator::before {
+    content: "正在思考";
+}
+.chat-thinking-indicator::after {
+    content: "";
+    width: 1.5em;
+    text-align: left;
+    display: inline-block;
+    animation: thinking-dots 1.2s steps(4, end) infinite;
+}
+@keyframes thinking-dots {
+    0%   { content: ""; }
+    25%  { content: "."; }
+    50%  { content: ".."; }
+    75%  { content: "..."; }
+    100% { content: ""; }
+}
+
+/* 流式文本光标（打字机效果） */
+.msg.assistant.streaming::after {
+    content: "▌";
+    display: inline-block;
+    color: var(--accent);
+    animation: blink-cursor 0.8s step-end infinite;
+    margin-left: 1px;
+}
+@keyframes blink-cursor {
+    50% { opacity: 0; }
+}
+
 /* 快捷指令 */
 .quick-commands {
     padding: 8px 16px;
@@ -2789,4 +2828,27 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .msg.tool-info.thinking {
     background: transparent;
     border: 1px dashed var(--border);
+}
+.msg.tool-info.thinking.streaming {
+    border-color: rgba(2, 132, 199, 0.4);
+}
+.msg.tool-info.thinking .thinking-body {
+    max-height: 240px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    font-size: 12px;
+    line-height: 1.6;
+    color: var(--text-secondary);
+}
+.msg.tool-info.thinking .thinking-summary {
+    font-size: 11px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    user-select: none;
+}
+.msg.tool-info.thinking .thinking-summary::before {
+    content: "▸ ";
+}
+.msg.tool-info.thinking[open] .thinking-summary::before {
+    content: "▾ ";
 }

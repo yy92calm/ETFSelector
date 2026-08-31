@@ -152,6 +152,9 @@ class AgentLoop:
 
         事件类型:
             turn_start          {"session_id"}
+            thinking_delta      {"content"}         # 思考增量（流式）
+            thinking_done       {"content"}         # 思考结束（折叠）
+            text_delta          {"content"}         # 正文增量（流式）
             tool_started        {"seq", "tool", "arguments"}
             permission_required {"request_id", "seq", "tool", "arguments", "reason"}
             tool_finished       {"seq", "tool", "status", "preview", "arguments"}
@@ -231,30 +234,54 @@ class AgentLoop:
                 yield {"type": "interrupted", "data": {"session_id": session_id}}
                 return
 
-            try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    tools=tools if tools else None,
-                    temperature=0.3,
-                    max_tokens=2000,
-                )
-            except Exception as e:
-                logger.error(f"LLM调用失败: {e}")
-                yield {"type": "error", "data": {"error": str(e)}}
+            # 流式LLM调用（参照deepseek-harness translate.ts模式）
+            text_acc = ""
+            thinking_acc = ""
+            tool_calls_acc = {}
+            got_stream_error = False
+
+            for ev in provider.stream_completion(client, model, messages, tools if tools else None):
+                etype = ev["type"]
+                if etype == "thinking_delta":
+                    thinking_acc += ev["content"]
+                    yield {"type": "thinking_delta", "data": {"content": ev["content"]}}
+                elif etype == "text_delta":
+                    text_acc += ev["content"]
+                    yield {"type": "text_delta", "data": {"content": ev["content"]}}
+                elif etype == "thinking_done":
+                    yield {"type": "thinking_done", "data": {"content": thinking_acc}}
+                elif etype == "tool_calls":
+                    tool_calls_acc = {tc["id"]: tc for tc in ev["tool_calls"]}
+                elif etype == "done":
+                    break
+                elif etype == "error":
+                    yield {"type": "error", "data": {"error": ev.get("error", "流式响应异常")}}
+                    got_stream_error = True
+                    break
+
+            if got_stream_error:
                 return
 
-            choice = response.choices[0]
-            assistant_msg = choice.message
+            # 构造虚拟assistant_msg供后续工具执行逻辑复用
+            class _VirtualMsg:
+                pass
+            assistant_msg = _VirtualMsg()
+            assistant_msg.content = text_acc
+            assistant_msg.tool_calls = []
+
+            if tool_calls_acc:
+                for tc_id, tc_data in tool_calls_acc.items():
+                    tc_obj = _VirtualMsg()
+                    tc_obj.id = tc_data["id"]
+                    tc_obj.function = _VirtualMsg()
+                    tc_obj.function.name = tc_data["function"]["name"]
+                    tc_obj.function.arguments = tc_data["function"]["arguments"]
+                    assistant_msg.tool_calls.append(tc_obj)
 
             # 如果没有工具调用，结束循环
             if not assistant_msg.tool_calls:
-                final_content = assistant_msg.content or ""
+                final_content = text_acc
                 break
-
-            # 工具调用前的模型思考（前端折叠展示）
-            if assistant_msg.content:
-                yield {"type": "thinking", "data": {"content": assistant_msg.content}}
 
             # 有工具调用 -> 执行
             # 记录 assistant 消息（含 tool_calls）
