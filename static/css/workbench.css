@@ -2747,3 +2747,46 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     line-height: 1.6;
     margin-bottom: 6px;
 }
+
+
+/* 工具调用/思考折叠详情 */
+.tool-detail {
+    margin-top: 4px;
+    width: 100%;
+}
+.tool-detail summary {
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--text-muted);
+    user-select: none;
+    list-style: none;
+}
+.tool-detail summary::-webkit-details-marker { display: none; }
+.tool-detail summary::before { content: '▸ '; }
+.tool-detail[open] summary::before { content: '▾ '; }
+.tool-detail[open] summary { color: var(--text-secondary); }
+.tool-sec {
+    font-size: 10px;
+    color: var(--text-muted);
+    margin: 6px 0 2px;
+    font-weight: 600;
+}
+.tool-pre {
+    margin: 0;
+    padding: 6px 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1.5;
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    color: var(--text-secondary);
+    font-family: 'SF Mono', Menlo, Consolas, monospace;
+}
+.msg.tool-info.thinking {
+    background: transparent;
+    border: 1px dashed var(--border);
+}

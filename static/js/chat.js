@@ -156,8 +156,18 @@ const Chat = {
                     } else if (m.role === 'assistant') {
                         const isToolRound = m.tool_calls && m.tool_calls.length > 0;
                         if (isToolRound) {
-                            const names = m.tool_calls.map(tc => tc.function && tc.function.name).filter(Boolean).join(', ');
-                            if (names) this.addToolInfo(names, m.created_at);
+                            const resultsById = {};
+                            (m.tool_results || []).forEach(tr => { resultsById[tr.tool_call_id] = tr.content; });
+                            m.tool_calls.forEach(tc => {
+                                const name = tc.function && tc.function.name;
+                                if (!name) return;
+                                const div = document.createElement('div');
+                                div.className = 'msg tool-info done';
+                                div.innerHTML = this._toolBubbleHtml(name, tc.function.arguments, resultsById[tc.id] || '', false);
+                                const stateEl = div.querySelector('.tool-state');
+                                if (stateEl) stateEl.textContent = '完成';
+                                this.messagesEl.appendChild(div);
+                            });
                         }
                         if (m.content) this.addMessage('assistant', m.content, m.created_at);
                     }
@@ -257,9 +267,12 @@ const Chat = {
             this.showStopButton();
         } else if (t === 'tool_started') {
             this.setLoading(false);
-            this.addToolBubble(d.seq, d.tool);
+            this.addToolBubble(d.seq, d.tool, d.arguments);
         } else if (t === 'tool_finished') {
-            this.updateToolBubble(d.seq, d.status);
+            this.updateToolBubble(d.seq, d.status, d.preview);
+        } else if (t === 'thinking') {
+            this.setLoading(false);
+            this.addThinkingBubble(d.content);
         } else if (t === 'permission_required') {
             this.permissionRequired(d);
         } else if (t === 'assistant_message') {
@@ -364,17 +377,45 @@ const Chat = {
         }
     },
 
-    addToolBubble(seq, toolName) {
+    _toolBubbleHtml(toolName, argsStr, resultStr, running) {
+        const head = running
+            ? '<span class="tool-spinner"></span>'
+            : '';
+        const argsTxt = argsStr || '{}';
+        const resTxt = resultStr !== null && resultStr !== undefined
+            ? resultStr
+            : '（等待执行结果…）';
+        return head +
+            `<span class="tool-name">${this.escapeHtml(toolName)}</span>` +
+            `<span class="tool-state">${running ? '执行中' : ''}</span>` +
+            `<details class="tool-detail"><summary>参数与结果</summary>` +
+            `<div class="tool-sec">参数</div><pre class="tool-pre">${this.escapeHtml(argsTxt)}</pre>` +
+            `<div class="tool-sec">结果</div><pre class="tool-pre tool-result">${this.escapeHtml(resTxt)}</pre>` +
+            `</details>`;
+    },
+
+    addThinkingBubble(content) {
+        const div = document.createElement('div');
+        div.className = 'msg tool-info thinking';
+        div.innerHTML = `<details class="tool-detail"><summary>💭 模型思考</summary>` +
+            `<pre class="tool-pre">${this.escapeHtml(content)}</pre></details>`;
+        this.messagesEl.appendChild(div);
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    },
+
+    addToolBubble(seq, toolName, arguments) {
         const div = document.createElement('div');
         div.className = 'msg tool-info running';
         div.dataset.seq = seq;
-        div.innerHTML = `<span class="tool-spinner"></span><span class="tool-name">${this.escapeHtml(toolName)}</span><span class="tool-state">执行中</span>`;
+        let argsStr = '';
+        try { argsStr = JSON.stringify(arguments, null, 1); } catch (e) { argsStr = String(arguments || ''); }
+        div.innerHTML = this._toolBubbleHtml(toolName, argsStr, null, true);
         this._toolBubbles.set(seq, div);
         this.messagesEl.appendChild(div);
         this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     },
 
-    updateToolBubble(seq, status) {
+    updateToolBubble(seq, status, preview) {
         const div = this._toolBubbles.get(seq);
         if (!div) return;
         div.classList.remove('running');
@@ -384,6 +425,8 @@ const Chat = {
         if (spinner) spinner.remove();
         const stateEl = div.querySelector('.tool-state');
         if (stateEl) stateEl.textContent = isErr ? '失败' : '完成';
+        const resEl = div.querySelector('.tool-result');
+        if (resEl && preview != null) resEl.textContent = preview;
     },
 
     refreshWorkbench(toolCalls) {

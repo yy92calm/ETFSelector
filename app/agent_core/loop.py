@@ -252,6 +252,10 @@ class AgentLoop:
                 final_content = assistant_msg.content or ""
                 break
 
+            # 工具调用前的模型思考（前端折叠展示）
+            if assistant_msg.content:
+                yield {"type": "thinking", "data": {"content": assistant_msg.content}}
+
             # 有工具调用 -> 执行
             # 记录 assistant 消息（含 tool_calls）
             tc_list = []
@@ -329,7 +333,7 @@ class AgentLoop:
                         "tool": tool_name,
                         "arguments": arguments,
                         "status": status,
-                        "preview": result_str[:200],
+                        "preview": result_str[:1500],
                     },
                 }
 
