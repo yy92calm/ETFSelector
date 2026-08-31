@@ -433,8 +433,7 @@ class AgentLoop:
             return AgentResponse(content="LLM未配置", error="no_llm")
 
         context = self.context_builder.build_system_context(db)
-        skills_summary = self._build_skills_summary()
-        system_msg = SYSTEM_PROMPT.format(context=context, skills=skills_summary)
+        system_msg = SYSTEM_PROMPT.format(context=context, skills=self._build_skills_summary())
 
         autonomous_prompt = f"""[自主决策模式 - 触发类型: {trigger}]
 
