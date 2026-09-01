@@ -508,15 +508,18 @@ const Workbench = {
             const allIndicators = (indResp.code === 200 ? indResp.data.rows : []);
             const indMap = {};
             allIndicators.forEach(r => { indMap[r.etf_code] = r; });
-            this.renderStrategyDetail(detail, holdings, snapshots, indMap, allocCodes);
+            const holdSummary = holdResp.code === 200 ? (holdResp.data.summary || {}) : {};
+            this.renderStrategyDetail(detail, holdings, snapshots, indMap, allocCodes, holdSummary);
         } catch (e) {
             detail.innerHTML = '<div class="ov-detail-loading" style="color:var(--danger)">加载失败</div>';
         }
     },
 
-    renderStrategyDetail(el, holdings, snapshots, indMap, allocCodes) {
+    renderStrategyDetail(el, holdings, snapshots, indMap, allocCodes, holdSummary) {
         let html = '';
 
+        holdSummary = holdSummary || {};
+        const totalAsset = holdSummary.total_asset || 0;
         const displayCodes = holdings.length > 0 ? holdings.map(h => h.etf_code) : allocCodes;
 
         if (displayCodes.length > 0) {
@@ -527,8 +530,8 @@ const Workbench = {
                 ${displayCodes.map(code => {
                     const h = holdings.find(x => x.etf_code === code);
                     const ind = indMap[code];
-                    const totalMv = holdings.reduce((s, x) => s + (x.market_value || 0), 0);
-                    const pct = h && totalMv > 0 ? (h.market_value / totalMv * 100) : 0;
+                    const denom = totalAsset > 0 ? totalAsset : holdings.reduce((s, x) => s + (x.market_value || 0), 0);
+                    const pct = h && denom > 0 ? (h.market_value / denom * 100) : 0;
                     const pnl = h && h.current_price && h.avg_cost ? ((h.current_price / h.avg_cost - 1) * 100) : null;
                     return `<div class="ov-hold-row ov-hold-wide">
                         <span class="ov-hold-etf">${this.etfLabel(code)}${pct > 0 ? ` <em class="hold-pct">${pct.toFixed(0)}%</em>` : ''}</span>
@@ -552,10 +555,14 @@ const Workbench = {
             const first = recent[0].total_asset;
             const last = recent[recent.length - 1].total_asset;
             const chg = first > 0 ? ((last / first - 1) * 100) : 0;
+            const cashStr = holdSummary.cash != null ? `¥${Math.round(holdSummary.cash).toLocaleString()}` : '-';
+            const navStr = holdSummary.nav != null ? holdSummary.nav.toFixed(4) : '-';
             html += `<div class="ov-detail-footer">
                 <span>近${recent.length}个交易日</span>
                 <span class="${chg >= 0 ? 'text-up' : 'text-down'}">${chg >= 0 ? '+' : ''}${chg.toFixed(2)}%</span>
                 <span>最新资产 ¥${last.toLocaleString()}</span>
+                <span>现金 ${cashStr}</span>
+                <span>净值 ${navStr}</span>
             </div>`;
         }
 
@@ -1482,14 +1489,23 @@ const Workbench = {
             try {
                 const resp = await fetch(`/api/portfolio/${s.id}/holdings`).then(r => r.json());
                 const holdings = resp.code === 200 ? (resp.data.holdings || []) : [];
+                const summary = resp.code === 200 ? (resp.data.summary || {}) : {};
+                const totalAsset = summary.total_asset || 0;
+                const nav = summary.nav != null ? summary.nav.toFixed(4) : '-';
+                const asOf = summary.as_of ? ` <em class="sh-asof">${summary.as_of}</em>` : '';
+                const summaryBar = `<div class="sh-asset-bar">
+                    <span>总资产 <b>¥${Math.round(totalAsset).toLocaleString()}</b>${asOf}</span>
+                    <span>资产净值 <b>${nav}</b></span>
+                    <span>现金 <b>¥${Math.round(summary.cash || 0).toLocaleString()}</b></span>
+                    <span>持仓市值 <b>¥${Math.round(summary.market_value || 0).toLocaleString()}</b></span>
+                </div>`;
                 if (holdings.length === 0) {
-                    holdEl.innerHTML = '<div class="empty-hint">尚未建仓</div>';
+                    holdEl.innerHTML = summaryBar + '<div class="empty-hint">尚未建仓</div>';
                 } else {
-                    const total = holdings.reduce((sum, h) => sum + (h.market_value || 0), 0);
-                    holdEl.innerHTML = `<table class="wb-table sh-table">
+                    holdEl.innerHTML = summaryBar + `<table class="wb-table sh-table">
                         <thead><tr><th>代码</th><th>数量</th><th>成本</th><th>现价</th><th>市值</th><th>占比</th></tr></thead>
                         <tbody>${holdings.map(h => {
-                            const pct = total > 0 ? (h.market_value / total * 100).toFixed(1) : '0.0';
+                            const pct = totalAsset > 0 ? (h.market_value / totalAsset * 100).toFixed(1) : '0.0';
                             return `<tr>
                                 <td>${this.etfLabel(h.etf_code)}</td>
                                 <td>${h.quantity}</td>
@@ -1499,8 +1515,7 @@ const Workbench = {
                                 <td>${pct}%</td>
                             </tr>`;
                         }).join('')}</tbody>
-                    </table>
-                    <div class="sh-total">持仓市值 ¥${Math.round(total).toLocaleString()}</div>`;
+                    </table>`;
                 }
             } catch (e) {
                 holdEl.innerHTML = '<div class="empty-hint" style="color:var(--danger)">加载失败</div>';

@@ -53,10 +53,49 @@ def get_portfolio_history(
 
 @router.get("/{strategy_id}/holdings", response_model=APIResponse)
 def get_holdings(strategy_id: int, db: Session = Depends(get_db)):
-    """获取策略当前持仓"""
+    """获取策略当前持仓
+
+    响应含 summary（最新资产快照口径）：
+    - total_asset: 总资产（持仓市值+现金）
+    - nav: 资产净值（单位净值，total_asset/initial_capital，期初1.0000）
+    - cash: 现金；market_value: 持仓市值；as_of: 快照日期
+    无快照（尚未建仓）时给初始口径：总资产=现金=初始资金，净值1.0000
+    """
+    from app.models.portfolio import PortfolioSnapshot
+    from app.models.strategy import Strategy
+    from sqlalchemy import func
+
     svc = get_portfolio_service()
     holdings = svc.get_holdings(strategy_id, db)
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    initial_capital = float(strategy.initial_capital) if strategy and strategy.initial_capital else 0.0
+
+    latest = (
+        db.query(PortfolioSnapshot)
+        .filter(PortfolioSnapshot.strategy_id == strategy_id)
+        .order_by(PortfolioSnapshot.trade_date.desc())
+        .first()
+    )
+    if latest:
+        summary = {
+            "market_value": latest.market_value,
+            "cash": latest.cash,
+            "total_asset": latest.total_asset,
+            "nav": round(latest.total_asset / initial_capital, 4) if initial_capital > 0 else None,
+            "as_of": latest.trade_date.isoformat(),
+        }
+    else:
+        summary = {
+            "market_value": 0.0,
+            "cash": initial_capital,
+            "total_asset": initial_capital,
+            "nav": 1.0 if initial_capital > 0 else None,
+            "as_of": None,
+        }
+
     return APIResponse(data={
+        "summary": summary,
         "holdings": [{
             "etf_code": h.etf_code,
             "quantity": h.quantity,
