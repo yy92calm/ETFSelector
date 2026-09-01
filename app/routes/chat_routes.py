@@ -89,15 +89,25 @@ def model_options():
 
 
 @router.post("/stream")
-def chat_stream(request: ChatRequest, db: Session = Depends(get_db)):
-    """对话流式接口（SSE）- 实时推送工具调用过程与最终回复"""
+def chat_stream(request: ChatRequest):
+    """对话流式接口（SSE）- 实时推送工具调用过程与最终回复
+
+    注意：不使用Depends(get_db)注入db——StreamingResponse在路由返回后继续
+    消费generator，此时get_db的finally已关闭session，导致后续操作抛异常。
+    改为generator内部自行创建独立session。
+    """
     from app.agent_core.loop import AgentLoop
+    from app.db.database import SessionLocal
 
     agent = AgentLoop()
 
     def event_stream():
-        for ev in agent.run_streaming(request.message, request.session_id, db):
-            yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        db = SessionLocal()
+        try:
+            for ev in agent.run_streaming(request.message, request.session_id, db):
+                yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
+        finally:
+            db.close()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
