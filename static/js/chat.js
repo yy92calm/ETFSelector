@@ -287,6 +287,12 @@ const Chat = {
             this.permissionRequired(d);
         } else if (t === 'assistant_message') {
             this.setLoading(false);
+            // 正文已随 text_delta 流式渲染过则跳过，避免同一回复出现两个气泡
+            const st = this._streamState;
+            if (d.content && st && st.textEl) {
+                const streamed = st.textEl.getAttribute('data-raw') || '';
+                if (streamed.includes(d.content)) return;
+            }
             if (d.content) this.addMessage('assistant', d.content);
         } else if (t === 'turn_end') {
             if (d.session_id) this.sessionId = d.session_id;
