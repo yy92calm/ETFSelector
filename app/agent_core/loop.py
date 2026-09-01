@@ -240,7 +240,8 @@ class AgentLoop:
             tool_calls_acc = {}
             got_stream_error = False
 
-            for ev in provider.stream_completion(client, model, messages, tools if tools else None):
+            try:
+              for ev in provider.stream_completion(client, model, messages, tools if tools else None):
                 etype = ev["type"]
                 if etype == "thinking_delta":
                     thinking_acc += ev["content"]
@@ -259,6 +260,10 @@ class AgentLoop:
                     got_stream_error = True
                     break
 
+            except Exception as _stream_exc:
+                logger.error(f"流式迭代异常: {_stream_exc}")
+                yield {"type": "error", "data": {"error": f"流式响应异常: {_stream_exc}"}}
+                return
             if got_stream_error:
                 return
 

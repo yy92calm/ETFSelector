@@ -72,8 +72,12 @@ def build_openai_client(base_url: str, api_key: Optional[str]):
     if not api_key or not api_key.strip():
         return None
     from openai import OpenAI
+    import httpx
 
-    return OpenAI(api_key=api_key, base_url=base_url)
+    return OpenAI(
+        api_key=api_key, base_url=base_url,
+        timeout=httpx.Timeout(connect=30, read=900, write=30, pool=30),
+    )
 
 
 def stream_completion(client, model: str, messages: list, tools=None,
@@ -91,15 +95,15 @@ def stream_completion(client, model: str, messages: list, tools=None,
     Qwen的<think>标签通过状态机解析（harness用DeepSeek的reasoning_content原生字段）。
     tool_calls延迟到流结束统一发出（参照harness translate.ts延迟关闭模式）。
     """
-    response = client.chat.completions.create(
-        model=model, messages=messages, tools=tools,
-        temperature=temperature, max_tokens=max_tokens,
-        stream=True,
-    )
     in_thinking = False
     tool_calls_buf = {}
 
     try:
+        response = client.chat.completions.create(
+            model=model, messages=messages, tools=tools,
+            temperature=temperature, max_tokens=max_tokens,
+            stream=True,
+        )
         for chunk in response:
             if not chunk.choices:
                 continue
