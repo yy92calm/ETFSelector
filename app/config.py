@@ -56,6 +56,17 @@ class Settings(BaseSettings):
 
     # MCP servers 配置（JSON字符串，示例见 .env.example）
     mcp_servers: str = ""
+    # MCP 单次工具调用超时（毫秒）
+    mcp_tool_call_timeout_ms: int = 60000
+    # 长驻会话模式：True（默认）复用连接+失败退避重连；False 每次调用即开即关
+    mcp_persistent_session: bool = True
+
+    # LLM 流式瞬态错误重试（仅在本轮未产出任何内容时触发）
+    llm_stream_retries: int = 2
+    llm_stream_retry_base: float = 1.0  # 退避基数（秒），按 2^attempt 指数递增
+
+    # 技能额外目录（JSON 数组或 os.pathsep 分隔的路径），优先级介于项目与用户目录之间
+    skill_extra_dirs: str = ""
 
     model_config = {"env_file": ".env", "case_sensitive": False}
 

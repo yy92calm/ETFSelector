@@ -80,32 +80,68 @@ def build_openai_client(base_url: str, api_key: Optional[str]):
     )
 
 
+def _usage_to_dict(usage) -> dict:
+    """把 OpenAI usage 对象转成普通 dict（缺字段填 None，便于落库）"""
+    return {
+        "prompt_tokens": getattr(usage, "prompt_tokens", None),
+        "completion_tokens": getattr(usage, "completion_tokens", None),
+        "total_tokens": getattr(usage, "total_tokens", None),
+    }
+
+
 def stream_completion(client, model: str, messages: list, tools=None,
                       temperature: float = 0.3, max_tokens: int = 2000):
     """流式调用LLM，逐chunk产出。
 
     参照 deepseek-harness StreamChunk 协议（types.ts:291-303），
-    简化为4种事件类型：
+    简化为6种事件类型：
 
     - thinking_delta:  思考增量（对应harness reasoning-delta）
+    - thinking_done:   思考结束（流未输出</think>闭合时在收尾兜底发出）
     - text_delta:      正文增量（对应harness text-delta）
     - tool_calls:      完整工具调用列表（harness tool-call-delta累积后的结果）
+    - usage:           本轮token用量与finish_reason（对应harness usage块，done前必达区）
     - done:            流结束（对应harness finish）
 
     Qwen的<think>标签通过状态机解析（harness用DeepSeek的reasoning_content原生字段）。
     tool_calls延迟到流结束统一发出（参照harness translate.ts延迟关闭模式）。
+    finish_reason后不立即break：usage通常在尾部的空choices块中，消费到流自然结束。
     """
     in_thinking = False
     tool_calls_buf = {}
+    finish_reason = None
+    usage = None
 
-    try:
-        response = client.chat.completions.create(
+    def _create(extra_kwargs: dict):
+        return client.chat.completions.create(
             model=model, messages=messages, tools=tools,
             temperature=temperature, max_tokens=max_tokens,
             stream=True,
+            **extra_kwargs,
         )
+
+    try:
+        try:
+            # include_usage：OpenAI/DeepSeek/DashScope 兼容端支持，尾块返回用量
+            response = _create({"stream_options": {"include_usage": True}})
+        except Exception as e:
+            # 部分兼容端不认识 stream_options（400）：去掉后重试一次
+            if getattr(e, "status_code", None) == 400:
+                logger.warning("stream_options 不被支持（400），降级为不带 usage 请求")
+                response = _create({})
+            else:
+                raise
         for chunk in response:
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None:
+                usage = _usage_to_dict(chunk_usage)
             if not chunk.choices:
+                continue
+            if finish_reason:
+                # 已结束：不再处理增量，只等尾部 usage 块
+                continue
+            if chunk.choices[0].finish_reason:
+                finish_reason = chunk.choices[0].finish_reason
                 continue
             delta = chunk.choices[0].delta
             if not delta:
@@ -148,15 +184,18 @@ def stream_completion(client, model: str, messages: list, tools=None,
                             tool_calls_buf[idx]["function"]["name"] = tc.function.name
                         if tc.function.arguments:
                             tool_calls_buf[idx]["function"]["arguments"] += tc.function.arguments
-
-            if chunk.choices[0].finish_reason:
-                break
     except Exception as e:
         logger.error(f"LLM流式调用异常: {e}")
         yield {"type": "error", "error": str(e)}
         return
 
+    # 思考块兜底闭合：流结束仍处于思考态（模型未输出</think>）时补发，
+    # 否则前端思考块永远保持展开
+    if in_thinking:
+        yield {"type": "thinking_done", "content": ""}
+
     # 延迟发送tool_calls和finish（参照harness translate.ts延迟关闭模式）
     if tool_calls_buf:
         yield {"type": "tool_calls", "tool_calls": list(tool_calls_buf.values())}
+    yield {"type": "usage", "usage": usage or {}, "finish_reason": finish_reason}
     yield {"type": "done"}

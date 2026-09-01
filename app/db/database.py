@@ -130,3 +130,15 @@ def init_db():
 
     except Exception as e:
         print(f"chat_session 表迁移警告: {e}")
+
+    # 兼容旧数据库：chat_message 表新增字段
+    try:
+        with engine.connect() as conn:
+            result = conn.execute(text("PRAGMA table_info(chat_message)"))
+            columns = [row[1] for row in result.fetchall()]
+            if "usage" not in columns:
+                conn.execute(text("ALTER TABLE chat_message ADD COLUMN usage JSON"))
+                conn.commit()
+                print("✓ 已添加 chat_message.usage 字段")
+    except Exception as e:
+        print(f"chat_message 表迁移警告: {e}")

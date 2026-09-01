@@ -1,4 +1,10 @@
-"""上下文构建器 - 为LLM提供系统状态摘要"""
+"""上下文构建器 - 为LLM提供系统状态快照
+
+对齐 deepseek-harness 的上下文模式：
+- 系统身份与规则留在 system prompt（跨轮字节稳定，保 provider prompt cache）
+- 动态状态按命名 section 组装成「每轮快照」，以 user-role 消息注入（不落库）
+- 单 section 查询失败不拖垮整体，缺失部分静默跳过
+"""
 
 import logging
 from datetime import date, timedelta
@@ -6,40 +12,71 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from app.utils.trading_calendar import is_trading_day, is_market_open_now, now_cn
+
 logger = logging.getLogger(__name__)
 
 
 class ContextBuilder:
-    """构建系统状态上下文，注入到 LLM system prompt 中"""
+    """构建系统状态上下文，组装为每轮注入的快照消息"""
+
+    def build_turn_snapshot(self, db: Session, summary: str = "") -> str:
+        """组装一轮的完整快照文本（时间头 + 可选历史摘要 + 状态 section）
+
+        Args:
+            db: 数据库会话
+            summary: 上下文压缩摘要（压缩触发过时非空），置于快照头部
+
+        Returns:
+            快照文本（注入为 user-role 消息，不落库）
+        """
+        parts = [self._time_header()]
+        if summary:
+            parts.append(f"[历史对话摘要]\n{summary}")
+        sections = self.build_state_sections(db)
+        if sections:
+            parts.append(sections)
+        if len(parts) == 1 and not sections:
+            parts.append("系统刚初始化，暂无历史数据。")
+        return "\n\n".join(parts)
+
+    def _time_header(self) -> str:
+        """时间上下文头：模型获得「现在几点、是否交易日」的事实来源"""
+        now = now_cn()
+        weekday_names = ["一", "二", "三", "四", "五", "六", "日"]
+        trading = is_trading_day(now.date())
+        if trading:
+            session_state = "交易时段内" if is_market_open_now() else "非交易时段"
+        else:
+            session_state = "非交易日"
+        return (f"当前时间: {now.strftime('%Y-%m-%d %H:%M')}（北京时间，"
+                f"周{weekday_names[now.weekday()]}）| {session_state}")
+
+    def build_state_sections(self, db: Session) -> str:
+        """构建系统状态 section（压缩版，避免token过长）
+
+        单 section 独立容错：查询失败记录日志并跳过，不影响其余部分。
+        """
+        builders = [
+            ("活跃策略", self._get_strategies_summary),
+            ("市场概况", self._get_market_summary),
+            ("风控状态", self._get_risk_summary),
+            ("最近AI决策", self._get_recent_actions),
+        ]
+        parts = []
+        for title, builder in builders:
+            try:
+                content = builder(db)
+                if content:
+                    parts.append(f"【{title}】\n{content}")
+            except Exception as e:
+                logger.warning(f"上下文 section [{title}] 构建失败，跳过: {e}")
+        return "\n\n".join(parts)
 
     def build_system_context(self, db: Session) -> str:
-        """构建当前系统状态摘要（压缩版，避免token过长）"""
-        parts = []
-
-        # 1. 活跃策略概况
-        strategies_summary = self._get_strategies_summary(db)
-        if strategies_summary:
-            parts.append(f"【活跃策略】\n{strategies_summary}")
-
-        # 2. 最新市场概况（前5只涨跌幅最大的）
-        market_summary = self._get_market_summary(db)
-        if market_summary:
-            parts.append(f"【市场概况】\n{market_summary}")
-
-        # 3. 风控状态
-        risk_summary = self._get_risk_summary(db)
-        if risk_summary:
-            parts.append(f"【风控状态】\n{risk_summary}")
-
-        # 4. 最近AI决策
-        recent_actions = self._get_recent_actions(db)
-        if recent_actions:
-            parts.append(f"【最近AI决策】\n{recent_actions}")
-
-        if not parts:
-            return "系统刚初始化，暂无历史数据。"
-
-        return "\n\n".join(parts)
+        """兼容旧调用：仅返回状态 section（不含时间头与摘要）"""
+        sections = self.build_state_sections(db)
+        return sections or "系统刚初始化，暂无历史数据。"
 
     def _get_strategies_summary(self, db: Session) -> str:
         from app.models.strategy import Strategy

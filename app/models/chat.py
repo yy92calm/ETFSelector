@@ -31,6 +31,7 @@ class ChatMessage(Base):
     content = Column(Text, nullable=True, comment="消息文本内容")
     tool_calls = Column(JSON, nullable=True, comment="AI发起的工具调用列表")
     tool_results = Column(JSON, nullable=True, comment="工具执行结果列表")
+    usage = Column(JSON, nullable=True, comment="本轮LLM用量（prompt/completion/total tokens与finish_reason）")
     created_at = Column(DateTime, default=datetime.utcnow)
 
     def __repr__(self):
@@ -44,6 +45,7 @@ class ChatMessage(Base):
             "content": self.content,
             "tool_calls": self.tool_calls,
             "tool_results": self.tool_results,
+            "usage": self.usage,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

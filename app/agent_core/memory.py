@@ -32,7 +32,7 @@ class ChatMemory:
 
     def save_message(self, session_id: str, role: str, content: Optional[str],
                      tool_calls: Optional[list] = None, tool_results: Optional[list] = None,
-                     db: Session = None):
+                     usage: Optional[dict] = None, db: Session = None):
         """保存一条消息"""
         msg = ChatMessage(
             session_id=session_id,
@@ -40,17 +40,19 @@ class ChatMemory:
             content=content,
             tool_calls=tool_calls,
             tool_results=tool_results,
+            usage=usage,
         )
         db.add(msg)
         db.commit()
 
     def get_history(self, session_id: str, db: Session, limit: int = MAX_HISTORY_ROUNDS) -> List[dict]:
-        """获取对话历史（OpenAI messages 格式）
+        """获取对话历史（OpenAI messages 格式，只含真实消息）
 
-        若有压缩摘要，返回「摘要块 + 最近若干轮」的只读出站视图，canonical 历史不变。
+        压缩摘要不在此注入：由 loop 拼入每轮的「系统状态快照」user 消息，
+        避免消息列表中段出现 system role（部分 provider 不接受）。
+        有摘要时出站视图只保留最近若干轮，canonical 历史不变。
         """
-        summary = self.get_summary(session_id, db)
-        if summary:
+        if self.get_summary(session_id, db):
             # 压缩后只保留最近若干轮，避免超长
             limit = min(limit, 8)
 
@@ -64,9 +66,6 @@ class ChatMemory:
         messages.reverse()
 
         history = []
-        if summary:
-            history.append({"role": "system", "content": f"[历史对话摘要]\n{summary}"})
-
         for msg in messages:
             entry = {"role": msg.role, "content": msg.content or ""}
             if msg.tool_calls:

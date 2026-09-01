@@ -39,19 +39,31 @@ def make_loop(db):
     loop.registry = MagicMock()
     loop.registry.get_openai_tools.return_value = []
     loop.context_builder = MagicMock()
-    loop.context_builder.build_system_context.return_value = "ctx"
+    loop.context_builder.build_turn_snapshot.return_value = "状态快照"
     loop.permissions = MagicMock()
     loop.client = MagicMock()
     return loop
 
 
-def iter_events(loop, user_message, session_id, db):
-    """在 settings mock 下迭代事件流"""
+def iter_events(loop, user_message, session_id, db, stream=None):
+    """在 settings mock 下迭代事件流
+
+    stream: 可选，伪造 provider.stream_completion 的事件列表（或按轮次的列表的列表）
+    """
+    from app.agent_core import provider as provider_mod
+
     with patch("app.agent_core.loop.settings") as st:
         st.llm_model = "mock-model"
         st.context_window_tokens = 128000
         st.compaction_threshold = 0.8
         st.compaction_min_tokens = 20000
+        st.llm_stream_retries = 0  # 测试关闭流式重试，保持确定性
+        st.llm_stream_retry_base = 1.0
+        if stream is not None:
+            rounds = stream if isinstance(stream[0], list) else [stream]
+            with patch.object(provider_mod, "stream_completion",
+                              side_effect=[iter(r) for r in rounds]):
+                return list(loop._iter_events(user_message, session_id, db))
         return list(loop._iter_events(user_message, session_id, db))
 
 
@@ -60,6 +72,28 @@ def final_resp(content="ok"):
     return SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(content=content, tool_calls=[]))]
     )
+
+
+def text_stream(content="ok", usage=None, finish_reason="stop"):
+    """无工具调用的最终轮流式事件（provider.stream_completion 事件协议）"""
+    events = [{"type": "text_delta", "content": content}]
+    if usage is not None:
+        events.append({"type": "usage", "usage": usage, "finish_reason": finish_reason})
+    events.append({"type": "done"})
+    return events
+
+
+def tool_calls_stream(tcs, text=""):
+    """带工具调用的轮次流式事件"""
+    events = []
+    if text:
+        events.append({"type": "text_delta", "content": text})
+    events.append({"type": "tool_calls", "tool_calls": [
+        {"id": tc.id, "function": {"name": tc.function.name, "arguments": tc.function.arguments}}
+        for tc in tcs
+    ]})
+    events.append({"type": "done"})
+    return events
 
 
 class TestPermissions(unittest.TestCase):
@@ -228,7 +262,7 @@ class TestCompaction(unittest.TestCase):
         self.assertTrue(s)
 
     def test_get_history_outbound_view(self):
-        """有摘要时：出站视图 = 摘要块 + 最近消息，canonical 历史不动"""
+        """有摘要时：出站视图只保留最近消息且不含摘要块（摘要由快照消息承载），canonical 历史不动"""
         db = make_db()
         mem = ChatMemory()
         sid = mem.get_or_create_session("c1", db)
@@ -238,12 +272,12 @@ class TestCompaction(unittest.TestCase):
 
         mem.save_summary(sid, "摘要：讨论策略", db)
         history = mem.get_history(sid, db)
-        self.assertEqual(history[0]["role"], "system")
-        self.assertIn("[历史对话摘要]", history[0]["content"])
-        # 压缩后出站最多 fetch limit*3 = 8*3 = 24 条（近似轮数，含摘要）
-        non_system = [m for m in history if m["role"] != "system"]
-        self.assertLessEqual(len(non_system), 24)
-        self.assertLess(len(non_system), 30)
+        # 摘要不再以 system 消息注入 history（改由 loop 拼入快照）
+        self.assertNotIn("[历史对话摘要]", history[0]["content"])
+        self.assertEqual(history[0]["role"], "user")
+        # 压缩后出站最多 fetch limit*3 = 8*3 = 24 条
+        self.assertLessEqual(len(history), 24)
+        self.assertLess(len(history), 30)
         # canonical 历史完整保留
         self.assertEqual(len(mem.get_all_messages(sid, db)), 30)
 
@@ -261,7 +295,12 @@ class TestCompaction(unittest.TestCase):
             st.context_window_tokens = 1000
             st.compaction_threshold = 0.5
             st.compaction_min_tokens = 100
-            events = list(loop._iter_events("你好", "c2", db))
+            st.llm_stream_retries = 0
+            st.llm_stream_retry_base = 1.0
+            from app.agent_core import provider as provider_mod
+            with patch.object(provider_mod, "stream_completion",
+                              side_effect=[iter(text_stream("好"))]):
+                events = list(loop._iter_events("你好", "c2", db))
 
         types = [ev["type"] for ev in events]
         self.assertIn("compacting", types)
@@ -290,13 +329,9 @@ class TestParallel(unittest.TestCase):
             SimpleNamespace(id=f"c{i}", function=SimpleNamespace(name=f"read{i}", arguments="{}"))
             for i in range(3)
         ]
-        tool_resp = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=tcs))]
-        )
-        loop.client.chat.completions.create.side_effect = [tool_resp, final_resp("完成")]
-
+        stream = [tool_calls_stream(tcs), text_stream("完成")]
         sid = loop.memory.get_or_create_session("p1", db)
-        events = iter_events(loop, "并行读", "p1", db)
+        events = iter_events(loop, "并行读", "p1", db, stream=stream)
         types = [ev["type"] for ev in events]
 
         self.assertEqual(loop.registry.execute.call_count, 3)
@@ -370,19 +405,22 @@ class TestProvider(unittest.TestCase):
         loop.memory.set_session_model("p6", "qwen-max", db)
 
         sess_client = MagicMock()
-        sess_client.chat.completions.create.return_value = final_resp()
         with patch("app.agent_core.loop.settings") as st, \
              patch("app.agent_core.loop.provider.resolve_llm", return_value=("https://dashscope/v1", "sk", "qwen-max")), \
-             patch("app.agent_core.loop.provider.build_openai_client", return_value=sess_client):
+             patch("app.agent_core.loop.provider.build_openai_client", return_value=sess_client), \
+             patch("app.agent_core.provider.stream_completion") as sc:
             st.llm_model = "mock-model"
             st.context_window_tokens = 128000
             st.compaction_threshold = 0.8
             st.compaction_min_tokens = 20000
+            st.llm_stream_retries = 0
+            st.llm_stream_retry_base = 1.0
+            sc.return_value = iter(text_stream("好"))
             events = list(loop._iter_events("你好", "p6", db))
 
-        sess_client.chat.completions.create.assert_called()
-        kwargs = sess_client.chat.completions.create.call_args.kwargs
-        self.assertEqual(kwargs["model"], "qwen-max")
+        sc.assert_called()
+        self.assertEqual(sc.call_args.args[1], "qwen-max")  # (client, model, messages, tools)
+        self.assertEqual(sc.call_args.args[0], sess_client)
         self.assertIn("assistant_message", [ev["type"] for ev in events])
 
 
@@ -416,14 +454,11 @@ class TestInterrupt(unittest.TestCase):
         loop.registry.execute.side_effect = exec_with_interrupt
 
         tcs = [SimpleNamespace(id="c1", function=SimpleNamespace(name="read1", arguments="{}"))]
-        tool_resp = SimpleNamespace(
-            choices=[SimpleNamespace(message=SimpleNamespace(content="", tool_calls=tcs))]
-        )
-        loop.client.chat.completions.create.side_effect = [tool_resp, final_resp("不该出现")]
+        stream = tool_calls_stream(tcs) + [{"type": "text_delta", "content": "不该出现"}, {"type": "done"}]
 
         clear_interrupt("i3")
         sid = loop.memory.get_or_create_session("i3", db)
-        events = iter_events(loop, "跑起来", "i3", db)
+        events = iter_events(loop, "跑起来", "i3", db, stream=stream)
         types = [ev["type"] for ev in events]
 
         self.assertIn("interrupted", types)

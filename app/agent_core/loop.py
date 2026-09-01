@@ -11,6 +11,7 @@ Agent Core Loop - LLM 决策循环
 import json
 import logging
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
@@ -78,8 +79,7 @@ SYSTEM_PROMPT = """你是ETF量化工作台的AI决策大脑，拥有完整的�
 - 生命周期：表现持续不佳的策略应暂停，发现新机会应创建新策略
 - 简洁明了：回复精炼，重点突出
 
-当前系统状态：
-{context}
+每轮对话开始前会有一条「系统状态快照」消息，包含当前时间与策略/市场/风控状态，以它为事实依据。
 
 可用技能：
 {skills}
@@ -97,10 +97,10 @@ class AgentLoop:
         self.client = provider.build_openai_client(settings.llm_api_base_url, settings.llm_api_key)
 
     def _build_skills_summary(self) -> str:
-        """构建可用技能摘要（仅 name+description，全文按需 load_skill）"""
+        """构建可用技能摘要（仅 name+description，全文按需 load_skill；只含模型可调用技能）"""
         from app.agent_core.skill_manager import get_skill_manager
 
-        skills = get_skill_manager().list_skills()
+        skills = get_skill_manager().list_skills(audience="model")
         if not skills:
             return "- 无（如需外部数据接入，可提示用户配置 MCP server 和技能）"
         return "\n".join(
@@ -187,10 +187,9 @@ class AgentLoop:
         # 保存用户消息
         self.memory.save_message(session_id, "user", user_message, db=db)
 
-        # 构建消息列表
-        context = self.context_builder.build_system_context(db)
+        # 构建消息列表（system prompt 只含静态身份与规则，跨轮字节稳定）
         skills_summary = self._build_skills_summary()
-        system_msg = SYSTEM_PROMPT.format(context=context, skills=skills_summary)
+        system_msg = SYSTEM_PROMPT.format(skills=skills_summary)
 
         # 加载历史
         history = self.memory.get_history(session_id, db)
@@ -217,6 +216,13 @@ class AgentLoop:
         messages = [{"role": "system", "content": system_msg}]
         messages.extend(history)
 
+        # 系统状态快照：动态状态（时间/摘要/策略/市场/风控）以 user-role 消息注入，
+        # 不落库；与静态 system prompt 分离以保 provider prompt cache
+        snapshot = self.context_builder.build_turn_snapshot(
+            db, summary=self.memory.get_summary(session_id, db)
+        )
+        messages.append({"role": "user", "content": f"[系统状态快照]\n{snapshot}"})
+
         # 添加当前用户消息
         messages.append({"role": "user", "content": user_message})
 
@@ -227,6 +233,7 @@ class AgentLoop:
         tool_calls_made = []
         final_content = ""
         seq = 0
+        round_usage = None
 
         for _ in range(MAX_TOOL_ROUNDS):
             # 中断检查：上一轮工具执行中用户点了停止
@@ -234,37 +241,64 @@ class AgentLoop:
                 yield {"type": "interrupted", "data": {"session_id": session_id}}
                 return
 
-            # 流式LLM调用（参照deepseek-harness translate.ts模式）
+            # 流式LLM调用（参照deepseek-harness translate.ts模式）；
+            # 瞬态错误有界重试：仅在未产出任何内容时，避免前端收到重复增量
             text_acc = ""
             thinking_acc = ""
             tool_calls_acc = {}
             got_stream_error = False
+            stream_error_msg = ""
+            max_retries = getattr(settings, "llm_stream_retries", 2)
+            retry_base = getattr(settings, "llm_stream_retry_base", 1.0)
 
-            try:
-              for ev in provider.stream_completion(client, model, messages, tools if tools else None):
-                etype = ev["type"]
-                if etype == "thinking_delta":
-                    thinking_acc += ev["content"]
-                    yield {"type": "thinking_delta", "data": {"content": ev["content"]}}
-                elif etype == "text_delta":
-                    text_acc += ev["content"]
-                    yield {"type": "text_delta", "data": {"content": ev["content"]}}
-                elif etype == "thinking_done":
-                    yield {"type": "thinking_done", "data": {"content": thinking_acc}}
-                elif etype == "tool_calls":
-                    tool_calls_acc = {tc["id"]: tc for tc in ev["tool_calls"]}
-                elif etype == "done":
-                    break
-                elif etype == "error":
-                    yield {"type": "error", "data": {"error": ev.get("error", "流式响应异常")}}
+            for attempt in range(max_retries + 1):
+                text_acc = ""
+                thinking_acc = ""
+                tool_calls_acc = {}
+                got_stream_error = False
+                emitted_any = False
+                try:
+                  for ev in provider.stream_completion(client, model, messages, tools if tools else None):
+                    etype = ev["type"]
+                    if etype == "thinking_delta":
+                        thinking_acc += ev["content"]
+                        emitted_any = True
+                        yield {"type": "thinking_delta", "data": {"content": ev["content"]}}
+                    elif etype == "text_delta":
+                        text_acc += ev["content"]
+                        emitted_any = True
+                        yield {"type": "text_delta", "data": {"content": ev["content"]}}
+                    elif etype == "thinking_done":
+                        yield {"type": "thinking_done", "data": {"content": thinking_acc}}
+                    elif etype == "tool_calls":
+                        tool_calls_acc = {tc["id"]: tc for tc in ev["tool_calls"]}
+                    elif etype == "usage":
+                        round_usage = {
+                            "usage": ev.get("usage") or {},
+                            "finish_reason": ev.get("finish_reason"),
+                        }
+                        yield {"type": "usage", "data": round_usage}
+                    elif etype == "done":
+                        break
+                    elif etype == "error":
+                        stream_error_msg = ev.get("error", "流式响应异常")
+                        got_stream_error = True
+                        break
+                except Exception as _stream_exc:
+                    logger.error(f"流式迭代异常: {_stream_exc}")
+                    stream_error_msg = f"流式响应异常: {_stream_exc}"
                     got_stream_error = True
-                    break
 
-            except Exception as _stream_exc:
-                logger.error(f"流式迭代异常: {_stream_exc}")
-                yield {"type": "error", "data": {"error": f"流式响应异常: {_stream_exc}"}}
-                return
+                if not got_stream_error:
+                    break
+                if emitted_any or attempt >= max_retries or check_interrupted(session_id):
+                    break
+                backoff = retry_base * (2 ** attempt)
+                logger.warning(f"[AgentLoop] 流式错误（第{attempt + 1}次），{backoff}s后重试: {stream_error_msg}")
+                time.sleep(backoff)
+
             if got_stream_error:
+                yield {"type": "error", "data": {"error": stream_error_msg or "流式响应异常"}}
                 return
 
             # 构造虚拟assistant_msg供后续工具执行逻辑复用
@@ -383,12 +417,13 @@ class AgentLoop:
             # 保存工具调用记录
             self.memory.save_message(
                 session_id, "assistant", assistant_msg.content,
-                tool_calls=tc_list, tool_results=tool_results_for_db, db=db
+                tool_calls=tc_list, tool_results=tool_results_for_db,
+                usage=round_usage, db=db
             )
 
         # 保存最终回复
         if final_content:
-            self.memory.save_message(session_id, "assistant", final_content, db=db)
+            self.memory.save_message(session_id, "assistant", final_content, usage=round_usage, db=db)
             # 自动更新会话标题
             self.memory.update_session_title(session_id, user_message, db)
 
@@ -468,10 +503,15 @@ class AgentLoop:
         if not self.client:
             return AgentResponse(content="LLM未配置", error="no_llm")
 
-        context = self.context_builder.build_system_context(db)
-        system_msg = SYSTEM_PROMPT.format(context=context, skills=self._build_skills_summary())
+        skills_summary = self._build_skills_summary()
+        system_msg = SYSTEM_PROMPT.format(skills=skills_summary)
 
-        autonomous_prompt = f"""[自主决策模式 - 触发类型: {trigger}]
+        # 状态快照并入首条 user 消息（system prompt 保持静态）
+        snapshot = self.context_builder.build_turn_snapshot(db)
+        autonomous_prompt = f"""[系统状态快照]
+{snapshot}
+
+[自主决策模式 - 触发类型: {trigger}]
 
 {instruction}
 
