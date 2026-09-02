@@ -886,6 +886,7 @@ const Workbench = {
         if (listEl) listEl.innerHTML = '<div class="empty-hint">加载中...</div>';
         statsEl.innerHTML = '<div class="empty-hint">加载中...</div>';
         historyEl.innerHTML = '<div class="empty-hint">加载中...</div>';
+        this.loadPipelineToday(true);
 
         try {
             const [listResp, statsResp, historyResp] = await Promise.all([
@@ -914,7 +915,7 @@ const Workbench = {
                 'daily_pipeline.policy_flow': '阶段·政策与资金流',
                 'daily_pipeline.market_scan': '阶段·市场扫描',
                 'daily_pipeline.rotation_review': '阶段·轮动复盘',
-                'daily_pipeline.autonomous': '阶段·自主决策',
+                'daily_pipeline.autonomous': 'AI自主决策',
             };
 
             // 渲染任务列表（含手动触发按钮）
@@ -930,12 +931,11 @@ const Workbench = {
                         const triggerBtn = t.trigger
                             ? `<button class="btn-trigger" data-trigger="${t.trigger}" data-name="${this.esc(t.name)}">▶ 立即执行</button>`
                             : '<span class="task-badge task-badge-muted">仅定时</span>';
-                        return `<div class="task-row">
+                        return `<div class="task-row" title="${this.esc(t.description || '')}">
                             <div class="task-row-main">
-                                <div class="task-row-name">${this.esc(t.name)} ${statusBadge}</div>
+                                <div class="task-row-name">${this.esc(t.name)} ${statusBadge} <span class="task-schedule">${this.esc(t.schedule || '')}</span></div>
                                 <div class="task-row-desc">${this.esc(t.description || '')}</div>
                                 <div class="task-row-meta">
-                                    <span>📅 ${this.esc(t.schedule || '')}</span>
                                     <span>🔢 总${t.total_executions||0} · 成${t.success_count||0} · 败${t.failed_count||0}</span>
                                     <span>🕒 上次: ${lastRunStr}</span>
                                 </div>
@@ -1019,20 +1019,111 @@ const Workbench = {
 
     async triggerTask(trigger, name) {
         if (!trigger) return;
-        if (!confirm(`确定要立即执行「${name || trigger}」吗？\n任务将在后台异步运行，可在执行历史中查看结果。`)) return;
+        if (!confirm(`确定要立即执行「${name || trigger}」吗？\n任务将在后台异步运行，可在"今日管道过程"和执行历史中查看进度。`)) return;
         try {
             const resp = await fetch(`/api/tasks/trigger/${trigger}`, {method: 'POST'});
             const data = await resp.json();
             if (data.code === 200) {
                 alert(`✓ ${name || trigger} 已提交后台执行`);
                 // 刷新视图
-                setTimeout(() => this.loadTasksView(), 1000);
+                setTimeout(() => { this.loadTasksView(); this.loadPipelineToday(true); }, 1000);
             } else {
                 alert(`✕ 触发失败: ${data.message || '未知错误'}`);
             }
         } catch (e) {
             alert(`✕ 触发失败: ${e.message}`);
         }
+    },
+
+    // === 今日管道过程 ===
+    _pipelinePollTimer: null,
+    _pipelineExpandStage: null,
+
+    async loadPipelineToday(schedulePoll) {
+        const el = document.getElementById('pipeline-today');
+        if (!el) return;
+        try {
+            const resp = await fetch('/api/tasks/pipeline/today').then(r => r.json());
+            if (resp.code !== 200) { el.innerHTML = '<div class="empty-hint">加载失败</div>'; return; }
+            const d = resp.data;
+            this.renderPipelineToday(d, el);
+
+            const running = d.pipeline_status === 'running' || (d.stages || []).some(s => s.status === 'running');
+            const subEl = document.getElementById('pipeline-today-sub');
+            if (subEl) {
+                subEl.textContent = running
+                    ? `执行中 ${d.done_count}/${d.total_stages} 阶段 · 自动刷新中`
+                    : (d.pipeline_status === 'failed' ? `失败于第 ${d.done_count + 1} 阶段（${d.done_count}/${d.total_stages} 已完成）`
+                       : `已完成 ${d.done_count}/${d.total_stages} 阶段`);
+            }
+            if (schedulePoll && running) {
+                clearTimeout(this._pipelinePollTimer);
+                this._pipelinePollTimer = setTimeout(() => this.loadPipelineToday(true), 5000);
+            }
+        } catch (e) {
+            el.innerHTML = '<div class="empty-hint" style="color:var(--danger)">加载失败</div>';
+        }
+    },
+
+    renderPipelineToday(d, el) {
+        const statusMeta = {
+            not_started: { icon: '', cls: 'pl-not', label: '待执行' },
+            running: { icon: '⟳', cls: 'pl-run', label: '运行中' },
+            done: { icon: '✓', cls: 'pl-done', label: '完成' },
+            failed: { icon: '✕', cls: 'pl-fail', label: '失败' },
+        };
+        const stages = d.stages || [];
+        const steps = stages.map(s => {
+            const m = statusMeta[s.status] || statusMeta.not_started;
+            const dur = s.duration_seconds != null ? `${s.duration_seconds.toFixed(1)}s`
+                : (s.status === 'running' ? '进行中' : '');
+            return `<div class="pl-stage ${m.cls}${this._pipelineExpandStage === s.stage ? ' pl-active' : ''}" data-stage="${s.stage}" title="点击查看详情：${this.esc(s.description)}">
+                <div class="pl-dot">${m.icon}</div>
+                <div class="pl-name">${this.esc(s.name)}</div>
+                <div class="pl-state">${m.label}</div>
+                <div class="pl-dur">${dur}</div>
+            </div>`;
+        }).join('<div class="pl-arrow">→</div>');
+
+        // 详情区：默认展开失败或运行中的阶段，可点击切换
+        let detailHtml = '';
+        const expand = this._pipelineExpandStage || (stages.find(s => s.status === 'failed') || {}).stage
+            || (stages.find(s => s.status === 'running') || {}).stage;
+        const sel = stages.find(s => s.stage === expand);
+        if (sel) {
+            const rows = [`<div class="pl-detail-desc">${this.esc(sel.description)}</div>`];
+            if (sel.started_at) {
+                const t = parseServerTime(sel.started_at);
+                rows.push(`<div>开始：${t ? t.toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit'}) : sel.started_at}</div>`);
+            }
+            if (sel.duration_seconds != null) rows.push(`<div>耗时：${sel.duration_seconds.toFixed(1)}s</div>`);
+            const summaryText = this.formatTaskSummary(sel.result_summary);
+            if (summaryText) rows.push(`<div>结果：${this.esc(summaryText)}</div>`);
+            if (sel.error_message) rows.push(`<div class="pl-err">错误：${this.esc(sel.error_message)}</div>`);
+            detailHtml = `<div class="pl-detail"><div class="pl-detail-title">${this.esc(sel.name)}（第${sel.seq}阶段）</div>${rows.join('')}</div>`;
+        }
+
+        const pipelineErr = d.pipeline_error && d.pipeline_status === 'failed'
+            ? `<div class="pl-err">检查点记录的失败原因：${this.esc(d.pipeline_error)}</div>` : '';
+        el.innerHTML = `<div class="pl-steps">${steps}</div>${pipelineErr}${detailHtml}`;
+
+        el.querySelectorAll('.pl-stage').forEach(node => {
+            node.addEventListener('click', () => {
+                this._pipelineExpandStage = this._pipelineExpandStage === node.dataset.stage ? null : node.dataset.stage;
+                this.loadPipelineToday(false);
+            });
+        });
+    },
+
+    formatTaskSummary(summary) {
+        if (!summary || typeof summary !== 'object') return '';
+        if (!Object.keys(summary).length) return '';
+        const map = { success_count: '成功', fail_count: '失败', total: '总计', count: '数量', message: '信息', status: '状态' };
+        return Object.entries(summary).map(([k, v]) => {
+            const label = map[k] || k;
+            const val = (k === 'message' || k === 'status') ? v : (typeof v === 'object' ? JSON.stringify(v) : v);
+            return `${label}:${val}`;
+        }).join(' · ');
     },
 
     renderTimeline(actions) {

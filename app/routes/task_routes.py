@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/tasks", tags=["定时任务"])
 TASK_DEFINITIONS = {
     "daily_auto_pipeline": {
         "name": "每日自驱动管道",
-        "description": "完整管道：净值更新 → 组合再平衡 → 舆情采集 → AI分析+风控+策略调整",
+        "description": "8阶段串行：数据更新→再平衡→舆情→量化扫描→轮动→AI自主决策",
         "schedule": "工作日 20:00",
         "log_name": "daily_pipeline",
         "trigger": "daily-pipeline",
@@ -101,6 +101,93 @@ def list_tasks(db: Session = Depends(get_db)):
         })
 
     return APIResponse(data={"tasks": tasks})
+
+
+# ------------------------------------------------------------------ #
+#  今日管道过程
+# ------------------------------------------------------------------ #
+
+# 管道阶段定义（顺序与 scheduler._job_daily_pipeline 一致）
+PIPELINE_STAGES = [
+    {"stage": "net_value", "name": "净值更新", "description": "更新ETF净值数据"},
+    {"stage": "quotes", "name": "行情更新", "description": "同步ETF日K行情"},
+    {"stage": "rebalance", "name": "组合再平衡", "description": "按配置比例调仓，写入持仓快照与交易记录"},
+    {"stage": "sentiment", "name": "舆情采集", "description": "采集市场新闻舆情并做情感分析"},
+    {"stage": "policy_flow", "name": "政策与资金流", "description": "评估政策影响，采集资金流向"},
+    {"stage": "market_scan", "name": "市场扫描", "description": "计算全市场ETF量化技术指标"},
+    {"stage": "rotation_review", "name": "轮动复盘", "description": "评估策略持仓强弱，触发换仓（有进必出）"},
+    {"stage": "autonomous", "name": "AI自主决策", "description": "LLM综合分析行情/舆情/风控，自主调仓、建仓或暂停策略"},
+]
+
+
+@router.get("/pipeline/today", response_model=APIResponse)
+def get_pipeline_today(pipeline: str = Query("daily_pipeline"), db: Session = Depends(get_db)):
+    """今日管道过程：检查点状态 + 各阶段最新执行明细（供前端步骤条展示）"""
+    from app.models.pipeline_checkpoint import PipelineCheckpoint
+
+    target_date = date.today()
+    cp = (
+        db.query(PipelineCheckpoint)
+        .filter(
+            PipelineCheckpoint.pipeline_name == pipeline,
+            PipelineCheckpoint.run_date == target_date,
+        )
+        .first()
+    )
+    done_stages = (cp.done_stages or []) if cp else []
+
+    # 今日该管道的阶段级日志，按阶段取最新一条
+    prefix = f"{pipeline}."
+    today_logs = (
+        db.query(TaskExecutionLog)
+        .filter(
+            TaskExecutionLog.task_name.like(f"{prefix}%"),
+            TaskExecutionLog.started_at >= datetime.combine(target_date, datetime.min.time()),
+        )
+        .order_by(TaskExecutionLog.started_at.desc())
+        .all()
+    )
+    latest_by_stage = {}
+    for log in today_logs:
+        stage = log.task_name[len(prefix):]
+        if stage not in latest_by_stage:
+            latest_by_stage[stage] = log
+
+    stages_out = []
+    for idx, meta in enumerate(PIPELINE_STAGES):
+        s = meta["stage"]
+        log = latest_by_stage.get(s)
+        if log and log.status == "running":
+            status = "running"
+        elif log and log.status == "failed" and s not in done_stages:
+            status = "failed"
+        elif s in done_stages:
+            status = "done"
+        else:
+            status = "not_started"
+        stages_out.append({
+            "seq": idx + 1,
+            "stage": s,
+            "name": meta["name"],
+            "description": meta["description"],
+            "status": status,
+            "started_at": log.started_at.isoformat() if log and log.started_at else None,
+            "finished_at": log.finished_at.isoformat() if log and log.finished_at else None,
+            "duration_seconds": log.duration_seconds if log else None,
+            "result_summary": log.result_summary if log else None,
+            "error_message": log.error_message if log else None,
+        })
+
+    return APIResponse(data={
+        "pipeline": pipeline,
+        "run_date": target_date.isoformat(),
+        "pipeline_status": (cp.status if cp else "not_started"),
+        "pipeline_error": cp.error_message if cp else None,
+        "updated_at": cp.updated_at.isoformat() if cp and cp.updated_at else None,
+        "done_count": len(done_stages),
+        "total_stages": len(PIPELINE_STAGES),
+        "stages": stages_out,
+    })
 
 
 @router.put("/{task_id}/status", response_model=APIResponse)

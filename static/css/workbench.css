@@ -2135,6 +2135,10 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     font-size: 12px;
     color: var(--text-secondary);
     margin-bottom: 6px;
+    /* 单行省略，避免描述换行把行挤高；完整内容看 title 悬浮 */
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 .task-row-meta {
     display: flex;
@@ -2145,6 +2149,79 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     font-variant-numeric: tabular-nums;
 }
 .task-row-action { flex-shrink: 0; }
+
+/* 今日管道过程步骤条 */
+.pl-steps {
+    display: flex;
+    align-items: stretch;
+    gap: 4px;
+    overflow-x: auto;
+    padding: 4px 0 8px;
+}
+.pl-stage {
+    flex: 1;
+    min-width: 76px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 8px 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    background: var(--bg-primary);
+}
+.pl-stage:hover { border-color: var(--accent); }
+.pl-stage.pl-active { border-color: var(--accent); background: rgba(59, 130, 246, 0.06); }
+.pl-dot {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 700;
+    border: 2px solid var(--border);
+    color: var(--text-secondary);
+}
+.pl-name { font-size: 11px; font-weight: 600; color: var(--text-primary); white-space: nowrap; }
+.pl-state { font-size: 10px; color: var(--text-tertiary, #999); }
+.pl-dur { font-size: 10px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.pl-stage.pl-done .pl-dot { border-color: var(--success); color: var(--success); background: rgba(34, 197, 94, 0.1); }
+.pl-stage.pl-done .pl-state { color: var(--success); }
+.pl-stage.pl-run .pl-dot { border-color: var(--accent); color: var(--accent); background: rgba(59, 130, 246, 0.1); animation: plPulse 1.2s ease-in-out infinite; }
+.pl-stage.pl-run { border-color: var(--accent); }
+.pl-stage.pl-run .pl-state { color: var(--accent); }
+.pl-stage.pl-fail .pl-dot { border-color: var(--danger); color: var(--danger); background: rgba(239, 68, 68, 0.1); }
+.pl-stage.pl-fail .pl-state { color: var(--danger); }
+.pl-stage.pl-fail { border-color: var(--danger); }
+@keyframes plPulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+}
+.pl-arrow {
+    align-self: center;
+    color: var(--text-tertiary, #999);
+    font-size: 12px;
+    flex-shrink: 0;
+    padding: 0 2px;
+}
+.pl-detail {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.pl-detail-title { font-weight: 600; color: var(--text-primary); }
+.pl-detail-desc { color: var(--text-secondary); }
+.pl-err { color: var(--danger); }
 
 /* 任务状态徽章 */
 .task-badge {
@@ -2159,6 +2236,14 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .task-badge-warn { background: rgba(245, 158, 11, 0.12); color: var(--warning); }
 .task-badge-running { background: rgba(59, 130, 246, 0.12); color: var(--accent); }
 .task-badge-muted { background: var(--bg-primary); color: var(--text-secondary); }
+.task-schedule {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-secondary);
+    background: var(--bg-primary);
+    padding: 1px 6px;
+    border-radius: 8px;
+}
 
 /* 触发按钮 */
 .btn-trigger {

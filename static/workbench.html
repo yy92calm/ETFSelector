@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ETF智能工作台</title>
-    <link rel="stylesheet" href="/static/css/workbench.css?v=30">
+    <link rel="stylesheet" href="/static/css/workbench.css?v=31">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
 </head>
 <body>
@@ -181,6 +181,12 @@
 
         <!-- 任务视图 -->
         <div id="view-tasks" class="view-panel" style="display:none">
+            <div class="panel" style="margin-bottom:12px">
+                <div class="panel-header">🛠 今日管道过程 <span class="panel-sub" id="pipeline-today-sub">每日8阶段串行执行进度</span></div>
+                <div class="panel-body" id="pipeline-today">
+                    <div class="empty-hint">加载中...</div>
+                </div>
+            </div>
             <div class="tasks-layout">
                 <div class="panel">
                     <div class="panel-header">⚙️ 定时任务 <span class="panel-sub" id="tasks-list-sub">所有已注册任务</span></div>
@@ -309,7 +315,7 @@
 </footer>
 
 <script src="/static/js/auth.js"></script>
-    <script src="/static/js/workbench.js?v=36"></script>
+    <script src="/static/js/workbench.js?v=37"></script>
 <script src="/static/js/chat.js?v=21"></script>
 <script>
 // 更新时间
