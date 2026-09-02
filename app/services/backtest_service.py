@@ -105,10 +105,10 @@ class BacktestEngine:
             
             total_asset = cash + market_value
             
-            # 获取当日配置（静态模式用固定配置，规则模式逐日计算）
+            # 获取当日配置（静态模式用固定配置，规则模式按策略逐日计算）
             if mode == "rule_based" and rule_engine:
                 daily_alloc = rule_engine.compute_daily_allocation(
-                    td, db, strategy.allocation_config
+                    td, db, strategy.allocation_config, strategy_id=strategy.id
                 )
             else:
                 daily_alloc = strategy.allocation_config
@@ -179,7 +179,7 @@ class BacktestEngine:
             day_analysis = {}
             if mode == "rule_based" and rule_engine:
                 try:
-                    regime_info = rule_engine.get_regime_info(td, db)
+                    regime_info = rule_engine.get_regime_info(td, db, strategy_id=strategy.id)
                     day_analysis = {
                         "regime": regime_info.get("regime", ""),
                         "regime_label": regime_info.get("regime_label", ""),

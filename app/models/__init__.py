@@ -1,7 +1,7 @@
 """数据模型导出"""
 
 from app.models.etf import ETFBasic, ETFQuotation
-from app.models.strategy import Strategy
+from app.models.strategy import Strategy, StrategyEvolvedPrompt, RuleSnapshot
 from app.models.portfolio import PortfolioSnapshot, TradeRecord, Holding
 from app.models.sentiment import SentimentData
 from app.models.auto_strategy_log import AutoStrategyLog
@@ -13,6 +13,8 @@ __all__ = [
     "ETFBasic",
     "ETFQuotation",
     "Strategy",
+    "StrategyEvolvedPrompt",
+    "RuleSnapshot",
     "PortfolioSnapshot",
     "TradeRecord",
     "Holding",

@@ -40,16 +40,17 @@ class RuleTrainer:
     }
     """
 
-    def train(self, db: Session, days: int = 60) -> dict:
+    def train(self, db: Session, days: int = 60, strategy_id: Optional[int] = None) -> dict:
         """
         从历史分析记录中训练规则
         
         Args:
             db: 数据库会话
             days: 回看天数（默认60天）
+            strategy_id: 策略ID；None=全局（所有策略日志混统），指定=仅该策略的日志
         
         Returns:
-            规则表字典
+            规则表字典（含 scope 标注来源范围）
         """
         cutoff = date.today() - timedelta(days=days)
 
@@ -80,16 +81,14 @@ class RuleTrainer:
             return recs
 
         def _load(action_type, since):
-            return (
-                db.query(AutoStrategyLog)
-                .filter(
-                    AutoStrategyLog.action_type == action_type,
-                    AutoStrategyLog.log_date >= since,
-                    AutoStrategyLog.analysis_result.isnot(None),
-                )
-                .order_by(AutoStrategyLog.log_date.asc())
-                .all()
+            query = db.query(AutoStrategyLog).filter(
+                AutoStrategyLog.action_type == action_type,
+                AutoStrategyLog.log_date >= since,
+                AutoStrategyLog.analysis_result.isnot(None),
             )
+            if strategy_id is not None:
+                query = query.filter(AutoStrategyLog.strategy_id == strategy_id)
+            return query.order_by(AutoStrategyLog.log_date.asc()).all()
 
         records = _parse_records(_load("analyzed", cutoff))
 
@@ -180,6 +179,7 @@ class RuleTrainer:
         } if replay_records else None
 
         result = {
+            "scope": f"strategy:{strategy_id}" if strategy_id is not None else "global",
             "regime_rules": regime_rules,
             "regime_transitions": transitions,
             "etf_frequency": dict(sorted(etf_freq.items(), key=lambda x: -x[1])),

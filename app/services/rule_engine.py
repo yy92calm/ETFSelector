@@ -62,44 +62,101 @@ class RuleEngine:
     支持两种规则来源：
     - 确定性规则：硬编码的 regime→allocation 映射
     - AI历史规则：从 auto_strategy_log 提取的 regime→allocation 映射
+    
+    规则分层（策略化）：
+    - regime 判定全局共享；regime→配置映射按策略统计
+    - 兜底链：本策略AI规则 → 全局AI规则 → 确定性规则 → 策略静态配置
+    - 所有分支产出统一收敛到策略标的池
     """
 
-    def __init__(self):
-        self._trained_rules = None  # 缓存训练后的规则
-        self._rules_date = None
+    # 落库快照新鲜度（天数）：超期视为陈旧，现场重算
+    SNAPSHOT_FRESH_DAYS = 7
+    # AI规则数据量门槛：样本天数不足时回退
+    MIN_RULE_DAYS = 10
 
-    def _ensure_trained_rules(self, db: Session) -> Optional[dict]:
-        """确保已加载训练规则"""
-        if self._trained_rules is not None:
-            return self._trained_rules
-        
+    def __init__(self):
+        # 分层规则缓存，key: "global" / "strategy:{id}"
+        self._trained_by_scope: Dict[str, dict] = {}
+
+    def _ensure_trained_rules(self, db: Session, strategy_id: Optional[int] = None) -> Optional[dict]:
+        """确保已加载训练规则（策略优先，全局兜底；优先读落库快照，超期现场重算）"""
+        scope = f"strategy:{strategy_id}" if strategy_id is not None else "global"
+        if scope in self._trained_by_scope:
+            return self._trained_by_scope[scope]
+
+        rules = self._load_fresh_snapshot(db, strategy_id) or self._train_and_snapshot(db, strategy_id)
+        rules = self._check_min_days(rules)
+        if rules:
+            self._trained_by_scope[scope] = rules
+            return rules
+
+        # 本策略规则数据不足 → 回退全局规则
+        if strategy_id is not None:
+            return self._ensure_trained_rules(db, strategy_id=None)
+
+        logger.info("[RuleEngine] AI历史数据不足，使用确定性规则")
+        return None
+
+    def _load_fresh_snapshot(self, db: Session, strategy_id: Optional[int]) -> Optional[dict]:
+        """读取新鲜期内的落库规则快照"""
+        try:
+            from datetime import timedelta
+            from app.models.strategy import RuleSnapshot
+
+            cutoff = date.today() - timedelta(days=self.SNAPSHOT_FRESH_DAYS)
+            query = db.query(RuleSnapshot).filter(RuleSnapshot.created_at >= cutoff)
+            query = query.filter(RuleSnapshot.strategy_id.is_(None) if strategy_id is None
+                                 else RuleSnapshot.strategy_id == strategy_id)
+            row = query.order_by(RuleSnapshot.created_at.desc()).first()
+            if row:
+                logger.info(f"[RuleEngine] 命中规则快照: strategy={strategy_id or 'global'} @ {row.created_at}")
+                return row.snapshot
+        except Exception as e:
+            logger.warning(f"[RuleEngine] 读取规则快照失败: {e}")
+        return None
+
+    def _train_and_snapshot(self, db: Session, strategy_id: Optional[int]) -> Optional[dict]:
+        """现场训练规则并落一份快照（source=manual）"""
         try:
             from app.services.rule_trainer import get_rule_trainer
-            trainer = get_rule_trainer()
-            rules = trainer.train(db, days=90)
-            
-            # 只有当规则表有足够数据时才使用
-            if rules.get("training_period") and rules["training_period"]["days"] >= 10:
-                self._trained_rules = rules
-                self._rules_date = date.today()
-                logger.info("[RuleEngine] 加载AI历史规则: %d天数据, %d种regime" % (
-                    rules["training_period"]["days"],
-                    len(rules.get("regime_rules", {}))
+            rules = get_rule_trainer().train(db, days=90, strategy_id=strategy_id)
+            try:
+                from app.models.strategy import RuleSnapshot
+                db.add(RuleSnapshot(
+                    strategy_id=strategy_id,
+                    snapshot=rules,
+                    source="manual",
+                    days_covered=(rules.get("training_period") or {}).get("days"),
                 ))
-                return rules
-            else:
-                logger.info("[RuleEngine] AI历史数据不足(%d天)，使用确定性规则" % (
-                    rules.get("training_period", {}).get("days", 0) if rules.get("training_period") else 0
-                ))
-                return None
+                db.commit()
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"[RuleEngine] 规则快照落库失败: {e}")
+            return rules
         except Exception as e:
-            logger.warning("[RuleEngine] 加载AI历史规则失败: %s，回退确定性规则" % e)
+            logger.warning(f"[RuleEngine] 训练AI历史规则失败: {e}")
             return None
+
+    def _check_min_days(self, rules: Optional[dict]) -> Optional[dict]:
+        """数据量门槛检查"""
+        if not rules:
+            return None
+        days = (rules.get("training_period") or {}).get("days", 0)
+        if days >= self.MIN_RULE_DAYS:
+            logger.info("[RuleEngine] 加载AI历史规则[%s]: %d天数据, %d种regime" % (
+                rules.get("scope", "?"), days, len(rules.get("regime_rules", {}))
+            ))
+            return rules
+        logger.info(f"[RuleEngine] AI历史数据不足({days}天): scope={rules.get('scope', '?')}")
+        return None
+
+    def get_rules(self, db: Session, strategy_id: Optional[int] = None) -> Optional[dict]:
+        """获取规则表（优先落库快照，现场计算兜底；供复盘进化等只读方使用）"""
+        return self._ensure_trained_rules(db, strategy_id=strategy_id)
 
     def invalidate_cache(self):
         """清除规则缓存（新分析完成后调用）"""
-        self._trained_rules = None
-        self._rules_date = None
+        self._trained_by_scope = {}
         logger.info("[RuleEngine] 规则缓存已清除")
 
     def compute_daily_allocation(
@@ -108,44 +165,63 @@ class RuleEngine:
         db: Session,
         base_allocation: dict,
         lookback_days: int = 30,
+        strategy_id: Optional[int] = None,
     ) -> dict:
         """
         根据当日技术指标计算目标配置
         
-        优先使用AI历史规则，回退到确定性规则
+        规则兜底链：本策略AI规则 → 全局AI规则 → 确定性规则 → 策略静态配置；
+        所有AI/确定性分支产出统一收敛到策略标的池（base_allocation 的 keys）。
         """
         # 1. 获取当日有指标的ETF
         indicators = self._get_indicators(trade_date, db)
         if not indicators:
             return base_allocation
+        pool = set((base_allocation or {}).keys())
 
-        # 2. 判定市场状态
+        # 2. 判定市场状态（全局共享）
         regime = self._compute_regime(trade_date, db, lookback_days)
         
-        # 3. 尝试用AI历史规则
-        trained = self._ensure_trained_rules(db)
+        # 3. AI历史规则（策略优先，全局兜底）
+        trained = self._ensure_trained_rules(db, strategy_id=strategy_id)
         if trained:
             from app.services.rule_trainer import get_rule_trainer
             trainer = get_rule_trainer()
             ai_alloc = trainer.get_allocation_for_regime(regime, trained)
             
             if ai_alloc and sum(ai_alloc.values()) > 0:
-                # 用AI历史规则的平均配置，但只保留当日有指标的ETF
-                allocation = {}
-                for etf, weight in ai_alloc.items():
-                    if any(ind.etf_code == etf for ind in indicators):
-                        allocation[etf] = weight
-                
-                # 归一化
-                total = sum(allocation.values())
-                if total > 0:
-                    allocation = {k: round(v / total, 4) for k, v in allocation.items()}
+                # 只保留当日有指标的ETF，并收敛到策略标的池
+                allocation = {
+                    etf: weight for etf, weight in ai_alloc.items()
+                    if any(ind.etf_code == etf for ind in indicators)
+                }
+                allocation = self._filter_to_pool(allocation, pool)
+                if allocation:
                     return allocation
         
-        # 4. 回退到确定性规则
+        # 4. 回退到确定性规则（同样收敛到策略标的池）
         regime_weights = REGIMEAllocation.get(regime, REGIMEAllocation["neutral"])
-        allocation = self._distribute_by_score(indicators, regime_weights)
-        return allocation
+        pool_indicators = [ind for ind in indicators if not pool or ind.etf_code in pool]
+        allocation = self._distribute_by_score(pool_indicators, regime_weights)
+        allocation = self._filter_to_pool(allocation, pool)
+        if allocation:
+            return allocation
+
+        # 5. 最终兜底：策略静态配置
+        return base_allocation
+
+    @staticmethod
+    def _filter_to_pool(allocation: dict, pool: set) -> dict:
+        """把配置收敛到策略标的池内并归一化；池外标的剔除，结果为空返回{}"""
+        if not allocation:
+            return {}
+        if not pool:
+            return allocation
+        filtered = {k: v for k, v in allocation.items() if k in pool and v > 0}
+        total = sum(filtered.values())
+        if total <= 0:
+            return {}
+        return {k: round(v / total, 4) for k, v in filtered.items()}
 
     def _get_indicators(self, trade_date: date, db: Session) -> list:
         rows = (
@@ -229,7 +305,8 @@ class RuleEngine:
         self,
         trade_date: date,
         db: Session,
-        lookback: int = 30
+        lookback: int = 30,
+        strategy_id: Optional[int] = None,
     ) -> dict:
         regime = self._compute_regime(trade_date, db, lookback)
         regime_weights = REGIMEAllocation.get(regime, REGIMEAllocation["neutral"])
@@ -249,14 +326,19 @@ class RuleEngine:
             .first()
         )
 
-        # 检查是否有AI历史规则
-        trained = self._ensure_trained_rules(db)
+        # 检查是否有AI历史规则（策略优先，标注规则来源供前端展示）
+        trained = self._ensure_trained_rules(db, strategy_id=strategy_id)
         rule_source = "deterministic"
         regime_explanation = ""
-        if trained and trained.get("regime_rules", {}).get(regime):
-            rule_source = "ai_history"
-            from app.services.rule_trainer import get_rule_trainer
-            regime_explanation = get_rule_trainer().explain_regime(regime, trained)
+        if trained:
+            scope = trained.get("scope", "global")
+            if trained.get("regime_rules", {}).get(regime):
+                rule_source = "ai_history_strategy" if scope.startswith("strategy:") else "ai_history_global"
+                from app.services.rule_trainer import get_rule_trainer
+                regime_explanation = get_rule_trainer().explain_regime(regime, trained)
+            elif scope.startswith("strategy:"):
+                # 本策略无该regime但全局有 → 降级标注
+                rule_source = "ai_history_global"
 
         return {
             "regime": regime,

@@ -181,6 +181,13 @@ def _job_daily_pipeline():
     # ============================== 阶段4 ==============================
     _run_stage("autonomous", _step_autonomous_decision)
 
+    # 管道完成：新分析日志已产生，失效规则缓存使次日规则刷新
+    try:
+        from app.services.rule_engine import get_rule_engine
+        get_rule_engine().invalidate_cache()
+    except Exception as e:
+        logger.warning(f"规则缓存失效失败: {e}")
+
     db_local = SessionLocal()
     try:
         _cp_svc.mark_completed("daily_pipeline", _run_date, db_local)

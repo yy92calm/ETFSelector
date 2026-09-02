@@ -70,6 +70,40 @@ class ReviewService:
 - 避免过于具体的细节
 - 总结规律而非单次事件"""
 
+    PROMPT_EVOLUTION_TEMPLATE = """你是提示词进化引擎。请基于复盘材料，重写策略「{strategy_name}」的进化提示词。
+进化提示词将注入该策略未来每轮AI决策的上下文，直接指导其行为。
+
+## 收益目标（不可变使命）
+月收益 {t_min} ~ {t_max}。目标本身永远不得被调整，进化只能优化达成目标的打法。
+
+## 当月目标进度
+{progress_text}
+
+## 本期复盘经验
+{experiences}
+
+## 历史规律统计（规则提取）
+{rules_summary}
+
+## 当前进化提示词
+{current_prompt}
+
+## 重写要求
+1. 输出必须包含以下四个分节：
+   [目标使命] 原样保留收益目标数字，并强调其不可变性
+   [有效规律] 从历史规律统计与成功经验提炼的可执行规则
+   [教训禁区] 从失败经验提炼的禁止行为
+   [执行纪律] 进度落后时的行动准则（提高执行纪律、严格止损、主动复盘，但不得放大风险敞口硬冲目标）
+2. 保留旧版本中仍然有效的条目，淘汰过时或低效条目
+3. 总长不超过800字，条目必须可执行、可验证，禁止空话
+4. 绝对禁止出现调整收益目标、放宽风控、加大单一标的集中度的内容
+
+输出JSON格式（不要包含其他文字）：
+{{
+  "prompt_text": "完整进化提示词全文",
+  "evolution_summary": "一句话说明本次进化改了什么"
+}}"""
+
     DEEP_ANALYSIS_PROMPT = """你是专业的投资策略分析师。
 
 请对以下异常情况进行深度分析：
@@ -185,12 +219,177 @@ class ReviewService:
         
         logger.info(f"策略{strategy_id}复盘完成: 生成{saved_count}条经验")
         
+        # 规则快照落库（本策略+全局），供 rule_engine 与提示词进化读取
+        try:
+            self._snapshot_rules(strategy_id, db)
+        except Exception as e:
+            logger.error(f"策略{strategy_id}规则快照落库失败: {e}", exc_info=True)
+        
+        # 提示词自进化：经验+规则沉淀为策略级进化提示词（失败不影响复盘结果）
+        evolution_result = None
+        try:
+            evolution_result = self._evolve_prompt(strategy_id, review_type, saved_experiences, db)
+        except Exception as e:
+            logger.error(f"策略{strategy_id}提示词进化失败: {e}", exc_info=True)
+        
         # 返回详细的复盘报告
         return {
             "experiences_generated": saved_count,
             "review_type": review_type,
             "review_report": self._build_review_report(period_data, saved_experiences, start_date, end_date),
+            "prompt_evolution": evolution_result,
         }
+    
+    def _snapshot_rules(self, strategy_id: int, db: Session) -> None:
+        """周复盘时落规则快照（本策略+全局），供 rule_engine 与提示词进化读取"""
+        from app.models.strategy import RuleSnapshot
+        from app.services.rule_trainer import get_rule_trainer
+
+        trainer = get_rule_trainer()
+        for sid in (strategy_id, None):
+            try:
+                rules = trainer.train(db, days=90, strategy_id=sid)
+                db.add(RuleSnapshot(
+                    strategy_id=sid,
+                    snapshot=rules,
+                    source="weekly_review",
+                    days_covered=(rules.get("training_period") or {}).get("days"),
+                ))
+                db.commit()
+                logger.info(f"[复盘] 规则快照已落库: strategy={sid or 'global'}")
+            except Exception as e:
+                db.rollback()
+                logger.warning(f"[复盘] 规则快照落库失败 strategy={sid or 'global'}: {e}")
+
+        # 新快照落库后失效内存缓存
+        from app.services.rule_engine import get_rule_engine
+        get_rule_engine().invalidate_cache()
+
+    def _evolve_prompt(self, strategy_id: int, review_type: str,
+                       experiences: List[Dict], db: Session) -> Dict:
+        """提示词自进化：基于本期经验+规则提取+目标进度，改写策略级进化提示词
+
+        Returns:
+            {"version": int, "evolution_summary": str}；LLM不可用或解析失败时返回 None
+        """
+        from app.models.strategy import StrategyEvolvedPrompt
+        from app.services.rule_trainer import get_rule_trainer
+        from app.services.portfolio_service import get_portfolio_service
+
+        if not self.llm_client:
+            logger.info("[进化] LLM未配置，跳过提示词进化")
+            return None
+
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+        if not strategy:
+            return None
+
+        existing = db.query(StrategyEvolvedPrompt).filter(
+            StrategyEvolvedPrompt.strategy_id == strategy_id
+        ).first()
+
+        # 原料1：本策略规则（优先落库快照，回退全局规则）
+        try:
+            from app.services.rule_engine import get_rule_engine
+            rules = get_rule_engine().get_rules(db, strategy_id=strategy_id)
+            rules_summary = self._summarize_regime_rules(rules) if rules else "（暂无规则统计数据）"
+        except Exception as e:
+            logger.warning(f"[进化] 规则提取失败，仅用经验进化: {e}")
+            rules_summary = "（暂无规则统计数据）"
+
+        # 原料2：当月目标进度
+        try:
+            progress = get_portfolio_service().get_monthly_progress(strategy_id, db)
+            progress_text = progress["text"] if progress else "（暂无快照数据）"
+        except Exception as e:
+            logger.warning(f"[进化] 进度查询失败: {e}")
+            progress_text = "（暂无快照数据）"
+
+        t_min = strategy.target_monthly_min if strategy.target_monthly_min is not None else 0.05
+        t_max = strategy.target_monthly_max if strategy.target_monthly_max is not None else 0.10
+
+        prompt = self.PROMPT_EVOLUTION_TEMPLATE.format(
+            strategy_name=strategy.name,
+            t_min=f"{t_min:.0%}",
+            t_max=f"{t_max:.0%}",
+            progress_text=progress_text,
+            experiences=json.dumps(experiences, ensure_ascii=False) if experiences else "（本期无新经验）",
+            rules_summary=rules_summary,
+            current_prompt=existing.prompt_text if existing else "（首次生成，无历史版本）",
+        )
+
+        response = self.llm_client.chat.completions.create(
+            model=settings.llm_model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.4,
+            max_tokens=1500,
+        )
+        data = self._parse_json_object(response.choices[0].message.content)
+        prompt_text = (data.get("prompt_text") or "").strip()
+        if not prompt_text:
+            logger.warning("[进化] LLM未返回有效提示词，跳过本次进化")
+            return None
+        prompt_text = prompt_text[:2000]  # 硬上限，避免快照膨胀
+
+        if existing:
+            existing.prompt_text = prompt_text
+            existing.version += 1
+            existing.source_type = review_type
+        else:
+            existing = StrategyEvolvedPrompt(
+                strategy_id=strategy_id,
+                prompt_text=prompt_text,
+                version=1,
+                source_type=review_type,
+            )
+            db.add(existing)
+        db.commit()
+
+        # 审计日志
+        try:
+            db.add(AutoStrategyLog(
+                strategy_id=strategy_id,
+                log_date=date.today(),
+                status="success",
+                action_type="prompt_evolved",
+                analysis_result={
+                    "version": existing.version,
+                    "evolution_summary": data.get("evolution_summary", ""),
+                },
+            ))
+            db.commit()
+        except Exception as e:
+            db.rollback()
+            logger.warning(f"[进化] 审计日志写入失败: {e}")
+
+        logger.info(f"[进化] 策略{strategy_id}提示词已更新至v{existing.version}")
+        return {"version": existing.version, "evolution_summary": data.get("evolution_summary", "")}
+    
+    @staticmethod
+    def _summarize_regime_rules(rules: Dict) -> str:
+        """把RuleTrainer规则表压缩为进化原料摘要"""
+        lines = []
+        for regime, rule in (rules.get("regime_rules") or {}).items():
+            if not isinstance(rule, dict):
+                continue
+            action = rule.get("action", rule.get("dominant_action", ""))
+            alloc = rule.get("allocation") or rule.get("avg_allocation") or {}
+            alloc_str = ", ".join(f"{k}:{v:.0%}" for k, v in list(alloc.items())[:4]) if isinstance(alloc, dict) else str(alloc)
+            lines.append(f"- {regime}: 倾向动作={action} | 历史配置={alloc_str}")
+        return "\n".join(lines) if lines else "（暂无规律）"
+    
+    @staticmethod
+    def _parse_json_object(content: str) -> Dict:
+        """解析JSON对象（容错提取）"""
+        try:
+            match = re.search(r'\{[\s\S]*\}', content)
+            if match:
+                parsed = json.loads(match.group())
+                if isinstance(parsed, dict):
+                    return parsed
+        except Exception as e:
+            logger.warning(f"[进化] JSON对象解析失败: {e}")
+        return {}
     
     def get_review_report(self, strategy_id: int, review_type: str, db: Session) -> Dict:
         """获取复盘报告（不触发LLM生成）"""

@@ -2454,6 +2454,43 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
     opacity: 0.5;
     cursor: not-allowed;
 }
+/* 规则学习面板：范围选择器与来源标注 */
+.trained-rules-scope {
+    margin-left: auto;
+    max-width: 150px;
+    padding: 3px 6px;
+    font-size: 11px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--bg-secondary, transparent);
+    color: var(--text-primary);
+}
+.trained-rules-scope + .btn-backtest-rule { margin-left: 6px; }
+.rule-scope-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 0 10px;
+    border-bottom: 1px dashed var(--border);
+    margin-bottom: 10px;
+}
+.rule-scope-tag {
+    flex-shrink: 0;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 10px;
+    font-weight: 600;
+}
+.rule-scope-tag.scope-strategy { color: #f97316; background: rgba(249, 115, 22, 0.15); }
+.rule-scope-tag.scope-global { color: var(--accent); background: rgba(59, 130, 246, 0.12); }
+.rule-scope-snap { font-size: 10px; color: var(--text-tertiary, #999); }
+/* 回测逐日卡片：规则来源标注 */
+.bt-rule-source-tip {
+    font-weight: 400;
+    font-size: 10px;
+    color: var(--text-tertiary, #999);
+    margin-left: 8px;
+}
 .alloc-legend-hint {
     display: flex;
     gap: 16px;

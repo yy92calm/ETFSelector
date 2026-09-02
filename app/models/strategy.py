@@ -72,7 +72,39 @@ class Strategy(Base):
     def is_auto_strategy(self):
         """判断是否为自动策略"""
         return self.strategy_source == 'auto_generated'
+
     
     def can_adjust_today(self):
         """判断今日是否还能调整"""
         return self.auto_adjustment_count < self.max_daily_adjustments
+
+
+class StrategyEvolvedPrompt(Base):
+    """策略级进化提示词 - 复盘后由LLM改写，每轮注入AI上下文实现自进化"""
+    __tablename__ = "strategy_evolved_prompt"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_id = Column(Integer, nullable=False, unique=True, index=True, comment="策略ID（单策略单行）")
+    prompt_text = Column(Text, nullable=False, comment="当前进化提示词全文")
+    version = Column(Integer, nullable=False, default=1, comment="进化版本号，每次改写+1")
+    source_type = Column(String(20), nullable=True, comment="触发来源: weekly/anomaly")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<StrategyEvolvedPrompt strategy={self.strategy_id} v{self.version}>"
+
+
+class RuleSnapshot(Base):
+    """规则快照 - 定期汇总的regime→配置规律（按策略隔离，None为全局）"""
+    __tablename__ = "rule_snapshot"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_id = Column(Integer, nullable=True, index=True, comment="策略ID；NULL=全局快照")
+    snapshot = Column(JSON, nullable=False, comment="RuleTrainer.train() 完整结果")
+    source = Column(String(20), nullable=True, comment="来源: weekly_review/daily_pipeline/manual")
+    days_covered = Column(Integer, nullable=True, comment="规则覆盖的样本天数")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    def __repr__(self):
+        return f"<RuleSnapshot strategy={self.strategy_id or 'global'} at {self.created_at}>"

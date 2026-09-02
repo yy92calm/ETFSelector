@@ -59,6 +59,7 @@ class ContextBuilder:
         """
         builders = [
             ("活跃策略", self._get_strategies_summary),
+            ("策略进化提示词", self._get_evolved_prompts),
             ("市场概况", self._get_market_summary),
             ("风控状态", self._get_risk_summary),
             ("最近AI决策", self._get_recent_actions),
@@ -80,6 +81,7 @@ class ContextBuilder:
 
     def _get_strategies_summary(self, db: Session) -> str:
         from app.models.strategy import Strategy
+        from app.services.portfolio_service import get_portfolio_service
 
         strategies = db.query(Strategy).filter(Strategy.status == "active").all()
         if not strategies:
@@ -90,9 +92,40 @@ class ContextBuilder:
             alloc = s.allocation_config or {}
             alloc_str = ", ".join(f"{k}:{v:.0%}" for k, v in list(alloc.items())[:4])
             status = s.auto_strategy_status or s.status
-            lines.append(f"- [{s.id}] {s.name} | 状态:{status} | 配置:{alloc_str}")
+            # 收益目标与当月进度（不可变使命，AI须以此校准行动）
+            try:
+                progress = get_portfolio_service().get_monthly_progress(s.id, db)
+                progress_text = progress["text"] if progress else ""
+            except Exception as e:
+                logger.warning(f"策略{s.id}目标进度查询失败: {e}")
+                progress_text = ""
+            t_min = s.target_monthly_min if s.target_monthly_min is not None else 0.05
+            t_max = s.target_monthly_max if s.target_monthly_max is not None else 0.10
+            lines.append(
+                f"- [{s.id}] {s.name} | 状态:{status} | 配置:{alloc_str} | "
+                f"收益目标:月{t_min:.0%}~{t_max:.0%}（不可变）"
+                + (f" | {progress_text}" if progress_text else "")
+            )
 
         return "\n".join(lines)
+
+    def _get_evolved_prompts(self, db: Session) -> str:
+        """策略级进化提示词（复盘产出，自进化层）"""
+        from app.models.strategy import Strategy, StrategyEvolvedPrompt
+
+        rows = (
+            db.query(StrategyEvolvedPrompt, Strategy.name)
+            .join(Strategy, Strategy.id == StrategyEvolvedPrompt.strategy_id)
+            .filter(Strategy.status == "active")
+            .all()
+        )
+        if not rows:
+            return ""
+
+        parts = []
+        for evolved, name in rows:
+            parts.append(f"[{evolved.strategy_id}] {name}（v{evolved.version}）:\n{evolved.prompt_text}")
+        return "\n\n".join(parts)
 
     def _get_market_summary(self, db: Session) -> str:
         from app.models.etf import ETFQuotation, ETFBasic

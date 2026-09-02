@@ -1462,6 +1462,12 @@ const Workbench = {
                                 <div class="bt-chart-title">月度收益</div>
                                 <div id="bt-monthly-${s.id}" style="overflow-x:auto"></div>
                             </div>
+                            <div id="bt-daily-cards-wrap-${s.id}" style="display:none">
+                                <div class="bt-chart-panel">
+                                    <div class="bt-chart-title">逐日规则与调仓 <span id="bt-daily-cards-tip-${s.id}" class="bt-rule-source-tip"></span></div>
+                                    <div id="bt-daily-cards-${s.id}" style="overflow-x:auto"></div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>`;
@@ -1694,6 +1700,7 @@ const Workbench = {
             start_date: document.getElementById(`bt-start-${id}`).value,
             end_date: document.getElementById(`bt-end-${id}`).value,
             initial_capital: Number(document.getElementById(`bt-capital-${id}`).value),
+            mode: 'rule_based',
         };
         try {
             const resp = await fetch('/api/backtest/run', {
@@ -1748,6 +1755,24 @@ const Workbench = {
         const hasAnalysis = daily.some(d => d.analysis && Object.keys(d.analysis).length > 0);
         if (!hasAnalysis) { wrap.style.display = 'none'; return; }
         wrap.style.display = 'block';
+
+        // 规则来源统计（本策略AI规则/全局AI规则/确定性）
+        const sourceLabels = {
+            ai_history_strategy: '本策略规则', ai_history_global: '全局规则', deterministic: '确定性规则',
+        };
+        const sourceCount = {};
+        daily.forEach(d => {
+            const src = d.analysis && d.analysis.rule_source;
+            if (src) sourceCount[src] = (sourceCount[src] || 0) + 1;
+        });
+        const sourceText = Object.entries(sourceCount)
+            .sort((a, b) => b[1] - a[1])
+            .map(([k, v]) => `${sourceLabels[k] || k} ${v}天`)
+            .join(' · ');
+        if (sourceText) {
+            const tipEl = document.getElementById(`bt-daily-cards-tip-${id}`);
+            if (tipEl) tipEl.textContent = `配置规则来源：${sourceText}（所有配置均收敛在策略标的池内）`;
+        }
 
         const regimeColors = {
             bull_strong: '#dc2626', bull_weak: '#f97316',
@@ -2302,11 +2327,19 @@ const Workbench = {
     },
 
     // === 规则学习面板 ===
-    loadTrainedRules() {
+    async loadTrainedRules() {
         const el = document.getElementById("analyses-trained-rules");
         if (!el) return;
+        el.innerHTML = "<div class=\"empty-hint\">加载中...</div>";
 
-        fetch("/api/rules")
+        // 首次填充策略范围选择器（自动策略）
+        await this._fillRulesScopeOptions();
+
+        const sel = document.getElementById("trained-rules-scope");
+        const sid = sel && sel.value ? Number(sel.value) : "";
+        const q = sid !== "" ? `?strategy_id=${sid}` : "";
+
+        fetch(`/api/rules${q}`)
             .then(r => r.json())
             .then(d => {
                 if (d.code !== 200 || !d.data) {
@@ -2318,10 +2351,28 @@ const Workbench = {
             .catch(() => { el.innerHTML = "<div class=\"empty-hint\">网络错误</div>"; });
     },
 
+    async _fillRulesScopeOptions() {
+        const sel = document.getElementById("trained-rules-scope");
+        if (!sel || sel.options.length > 1) return;
+        try {
+            const resp = await fetch("/api/strategy/list").then(r => r.json());
+            const list = resp.code === 200 ? (resp.data || []) : [];
+            const autos = list.filter(s => s.strategy_source === "auto_generated" || s.auto_strategy_status);
+            for (const s of autos) {
+                const opt = document.createElement("option");
+                opt.value = s.id;
+                opt.textContent = `策略${s.id}·${s.name}`;
+                sel.appendChild(opt);
+            }
+        } catch (e) { /* 选择器降级为仅全局 */ }
+    },
+
     trainRulesNow() {
         const btn = document.getElementById("btn-refresh-trained-rules");
         if (btn) { btn.disabled = true; btn.textContent = "提取中..."; }
-        fetch("/api/rules/train", { method: "POST" })
+        const sel = document.getElementById("trained-rules-scope");
+        const sid = sel && sel.value ? `?strategy_id=${sel.value}` : "";
+        fetch(`/api/rules/train${sid}`, { method: "POST" })
             .then(r => r.json())
             .then(d => {
                 if (d.code === 200) this.loadTrainedRules();
@@ -2340,6 +2391,22 @@ const Workbench = {
         const replayRules = rules.replay_rules || {};
         const transitions = rules.regime_transitions || [];
         const etfFreq = rules.etf_frequency || {};
+
+        // 规则范围与数据新鲜度标注
+        let metaHtml = '';
+        const isStrategyScope = String(rules.scope || '').startsWith('strategy:');
+        const snap = rules.latest_snapshot;
+        const snapText = snap && snap.created_at ? `最近快照 ${snap.created_at.slice(0, 16).replace('T', ' ')}（${{manual:'手动提取', weekly_review:'周复盘', daily_pipeline:'每日管道'}[snap.source] || snap.source || '未知'}）` : '尚无落库快照（展示为现算结果）';
+        metaHtml = '<div class="rule-scope-meta">'
+            + '<span class="rule-scope-tag ' + (isStrategyScope ? 'scope-strategy' : 'scope-global') + '">'
+            + (isStrategyScope ? '本策略规则 ' + String(rules.scope).replace('strategy:', '#') : '全局规则')
+            + '</span>'
+            + '<span class="rule-scope-snap">' + this.esc(snapText) + '</span>'
+            + '</div>';
+        if (isStrategyScope && !tp && !rp) {
+            el.innerHTML = metaHtml + '<div class="empty-hint">该策略暂无足够分析数据，回测时将回退全局规则</div>';
+            return;
+        }
 
         const regimeColors = {
             bull_strong: "#dc2626", bull_weak: "#f97316",
@@ -2432,7 +2499,7 @@ const Workbench = {
             html += '</div></div>';
         }
 
-        el.innerHTML = html;
+        el.innerHTML = metaHtml + html;
     },
 
 };
