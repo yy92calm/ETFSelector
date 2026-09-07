@@ -573,13 +573,14 @@ const Workbench = {
         const el = document.getElementById('monthly-target-bar');
         if (!el) return;
         try {
-            const resp = await fetch('/api/workbench/monthly-target?strategy_id=1').then(r => r.json());
+            const sid = await this._getDefaultStrategyId();
+            const resp = await fetch(`/api/workbench/monthly-target?strategy_id=${sid}`).then(r => r.json());
             if (resp.code !== 200 || !resp.data) { el.style.display = 'none'; return; }
             const d = resp.data;
             const statusCls = { behind: 'mt-behind', on_track: 'mt-ontrack', above: 'mt-above' }[d.status] || '';
             const retTxt = d.monthly_return != null ? (d.monthly_return * 100).toFixed(2) + '%' : '-';
             const paceTxt = d.expected_pace != null ? (d.expected_pace * 100).toFixed(2) + '%' : '-';
-            el.innerHTML = `<span class="mt-label">月目标进度</span>` +
+            el.innerHTML = `<span class="mt-label">月目标进度·策略${sid}</span>` +
                 `<span class="mt-val">本月 ${retTxt}</span>` +
                 `<span class="mt-sep">/</span>` +
                 `<span class="mt-pace">节奏 ${paceTxt}</span>` +
@@ -587,6 +588,19 @@ const Workbench = {
                 `<span class="mt-range">目标 ${(d.target_min * 100).toFixed(0)}%-${(d.target_max * 100).toFixed(0)}%</span>`;
             el.style.display = 'flex';
         } catch (e) { el.style.display = 'none'; }
+    },
+
+    // 默认策略ID：第一个运行中的自动策略，兜底第一个自动策略，再兜底1（会话内缓存）
+    async _getDefaultStrategyId() {
+        if (this._defaultStrategyId) return this._defaultStrategyId;
+        try {
+            const resp = await fetch('/api/strategy/list').then(r => r.json());
+            const list = resp.code === 200 ? ((resp.data && resp.data.strategies) || []) : [];
+            const autos = list.filter(s => s.strategy_type === 'auto');
+            const target = autos.find(s => s.status === 'active') || autos[0];
+            if (target) { this._defaultStrategyId = target.id; return target.id; }
+        } catch (e) { /* 忽略 */ }
+        return 1;
     },
 
     async loadStrategiesExtras() {
@@ -2005,10 +2019,44 @@ const Workbench = {
 
     // === 分析视图 ===
 
+    // 分析/规则视图共享的策略选择状态（"" = 全局，仅规则学习可用）
+    _analysisStrategyId: null,
+
+    async _ensureAnalysisStrategySelect() {
+        const selects = document.querySelectorAll('.analysis-strategy-select');
+        if (!selects.length) return;
+        let autos = [];
+        try {
+            const resp = await fetch('/api/strategy/list').then(r => r.json());
+            const list = resp.code === 200 ? ((resp.data && resp.data.strategies) || []) : [];
+            autos = list.filter(s => s.strategy_type === 'auto');
+        } catch (e) { /* 选择器降级为仅全局 */ }
+        if (this._analysisStrategyId === null) {
+            // 默认选第一个运行中的自动策略（接口以 status=active 为运行中口径）
+            const preferred = autos.find(s => s.status === 'active') || autos[0];
+            this._analysisStrategyId = preferred ? String(preferred.id) : '';
+        }
+        const options = '<option value="">全局（仅规则学习）</option>' + autos.map(s =>
+            `<option value="${s.id}">策略${s.id}·${this.esc(s.name)}</option>`).join('');
+        selects.forEach(sel => {
+            if (!sel.dataset.filled) { sel.dataset.filled = '1'; sel.innerHTML = options; }
+            sel.value = this._analysisStrategyId || '';
+        });
+    },
+
+    onAnalysisStrategyChange(val) {
+        this._analysisStrategyId = val || '';
+        document.querySelectorAll('.analysis-strategy-select').forEach(sel => { sel.value = this._analysisStrategyId; });
+        if (this.currentView === 'analyses') this.loadAnalysesView();
+        if (this.currentView === 'rules') this.loadRulesView();
+    },
+
     async loadAnalysesView() {
         const dailyEl = document.getElementById('analyses-daily-list');
         const allocEl = document.getElementById('analyses-allocation-timeline');
         if (dailyEl) dailyEl.innerHTML = '<div class="empty-hint">加载中...</div>';
+        await this._ensureAnalysisStrategySelect();
+        const sid = this._analysisStrategyId || '';
 
         // 确保 ETF 名称映射已加载
         if (Object.keys(this._etfNameMap).length === 0) {
@@ -2018,10 +2066,20 @@ const Workbench = {
             } catch (e) { /* ignore */ }
         }
 
+        // 全局视角无具体策略可看每日分析与配置轨迹
+        if (!sid) {
+            if (dailyEl) dailyEl.innerHTML = '<div class="empty-hint">全局视角无每日分析，请选择具体策略</div>';
+            if (allocEl) allocEl.innerHTML = '<div class="empty-hint">全局视角无配置轨迹，请选择具体策略</div>';
+            const sub = document.getElementById('analyses-count-sub');
+            if (sub) sub.textContent = '';
+            this._bindBacktestRuleBtn();
+            return;
+        }
+
         try {
             const [dailyResp, rulesResp] = await Promise.all([
-                fetch('/api/workbench/daily-analysis?days=60').then(r => r.json()).catch(() => ({ code: 500 })),
-                fetch('/api/workbench/rules?days=60').then(r => r.json()).catch(() => ({ code: 500 })),
+                fetch(`/api/workbench/daily-analysis?days=60&strategy_id=${sid}`).then(r => r.json()).catch(() => ({ code: 500 })),
+                fetch(`/api/workbench/rules?days=60&strategy_id=${sid}`).then(r => r.json()).catch(() => ({ code: 500 })),
             ]);
 
             if (dailyResp.code === 200) {
@@ -2229,11 +2287,19 @@ const Workbench = {
             `;
         }).join('');
 
+        // 样本规模与环境分布按当前策略数据动态生成
+        const regimeRule = rules.find(r => r.id === 'regime_action');
+        const totalDays = regimeRule ? regimeRule.items.reduce((s, i) => s + (i.count || 0), 0) : 0;
+        const topRegime = regimeRule ? regimeRule.items.slice().sort((a, b) => b.count - a.count)[0] : null;
+        const caveat = totalDays
+            ? `注意：当前样本共${totalDays}个交易日${topRegime ? `，且以「${this.zh(topRegime.regime)}」状态为主（${topRegime.count}天）` : ''}。单一市场环境下的规律未必在风格切换时成立，样本积累覆盖完整牛熊周期前，请谨慎采信。`
+            : '注意：样本积累覆盖完整牛熊周期前，请谨慎采信。';
+
         el.insertAdjacentHTML('afterbegin', `
             <div class="rule-intro">
                 <div class="rule-intro-title">这组规则怎么读</div>
                 <p>以下模式统计自最近60天的AI每日分析记录，回答的是同一个问题：<b>当某类信号出现时，AI历史上是怎么做的？</b>每张卡上方是白话解读，下方是原始统计行，供规则驱动回测与人工审查参考。</p>
-                <p class="rule-intro-caveat">注意：当前样本仅21个交易日，且全部处于牛市/震荡环境。熊市相关数字（如"看空时调仓37.5%"）只来自2次观测，样本积累覆盖完整牛熊周期前，请谨慎采信。</p>
+                <p class="rule-intro-caveat">${this.esc(caveat)}</p>
             </div>
         `);
     },
@@ -2364,12 +2430,14 @@ const Workbench = {
             const endDate = dates[0] || new Date().toISOString().slice(0, 10);
             // 默认回测最近180天
             const startDate = dates.length > 120 ? dates[Math.min(120, dates.length - 1)] : '2024-01-02';
+            // 跟随视图策略选择器（未选时取默认策略）
+            const sid = this._analysisStrategyId || await this._getDefaultStrategyId();
 
             const resp = await fetch('/api/backtest/run', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    strategy_id: 1,
+                    strategy_id: sid,
                     start_date: startDate,
                     end_date: endDate,
                     mode: 'rule_based',
@@ -2381,12 +2449,22 @@ const Workbench = {
                 return;
             }
             const r = data.data;
-            alert(`规则驱动回测结果\n` +
+            // 规则来源统计
+            const sourceLabels = { ai_history_strategy: '本策略规则', ai_history_global: '全局规则', deterministic: '确定性规则' };
+            const sourceCount = {};
+            (r.daily_data || []).forEach(day => {
+                const src = day.analysis && day.analysis.rule_source;
+                if (src) sourceCount[src] = (sourceCount[src] || 0) + 1;
+            });
+            const sourceText = Object.entries(sourceCount).sort((a, b) => b[1] - a[1])
+                .map(([k, v]) => `${sourceLabels[k] || k} ${v}天`).join(' · ');
+            alert(`规则驱动回测结果（策略${sid}）\n` +
                 `区间: ${r.start_date} ~ ${r.end_date}\n` +
                 `总收益: ${r.total_return_pct.toFixed(2)}%\n` +
                 `最大回撤: ${r.max_drawdown_pct.toFixed(2)}%\n` +
                 `Sharpe: ${(r.sharpe_ratio || 0).toFixed(2)}\n` +
-                `再平衡: ${r.rebalance_count}次`);
+                `再平衡: ${r.rebalance_count}次` +
+                (sourceText ? `\n配置规则来源: ${sourceText}` : ''));
         } catch (e) {
             console.error('回测异常:', e);
             alert('回测请求失败');
@@ -2400,10 +2478,19 @@ const Workbench = {
     async loadRulesView() {
         const el = document.getElementById('analyses-rules-list');
         if (el) el.innerHTML = '<div class="empty-hint">加载中...</div>';
+        await this._ensureAnalysisStrategySelect();
         this.loadTrainedRules();
 
+        const sid = this._analysisStrategyId || '';
+        // 轮动规则按策略统计；全局视角仅规则学习面板可用
+        if (!sid) {
+            if (el) el.innerHTML = '<div class="empty-hint">全局视角无轮动规则，请选择具体策略</div>';
+            const sub = document.getElementById('rules-count-sub');
+            if (sub) sub.textContent = '';
+            return;
+        }
         try {
-            const resp = await fetch('/api/workbench/rules?days=60').then(r => r.json());
+            const resp = await fetch(`/api/workbench/rules?days=60&strategy_id=${sid}`).then(r => r.json());
             if (resp.code === 200) {
                 const rules = resp.data.rules || [];
                 const sub = document.getElementById('rules-count-sub');
@@ -2422,12 +2509,9 @@ const Workbench = {
         const el = document.getElementById("analyses-trained-rules");
         if (!el) return;
         el.innerHTML = "<div class=\"empty-hint\">加载中...</div>";
+        await this._ensureAnalysisStrategySelect();
 
-        // 首次填充策略范围选择器（自动策略）
-        await this._fillRulesScopeOptions();
-
-        const sel = document.getElementById("trained-rules-scope");
-        const sid = sel && sel.value ? Number(sel.value) : "";
+        const sid = this._analysisStrategyId || "";
         const q = sid !== "" ? `?strategy_id=${sid}` : "";
 
         fetch(`/api/rules${q}`)
@@ -2442,27 +2526,10 @@ const Workbench = {
             .catch(() => { el.innerHTML = "<div class=\"empty-hint\">网络错误</div>"; });
     },
 
-    async _fillRulesScopeOptions() {
-        const sel = document.getElementById("trained-rules-scope");
-        if (!sel || sel.options.length > 1) return;
-        try {
-            const resp = await fetch("/api/strategy/list").then(r => r.json());
-            const list = resp.code === 200 ? (resp.data || []) : [];
-            const autos = list.filter(s => s.strategy_source === "auto_generated" || s.auto_strategy_status);
-            for (const s of autos) {
-                const opt = document.createElement("option");
-                opt.value = s.id;
-                opt.textContent = `策略${s.id}·${s.name}`;
-                sel.appendChild(opt);
-            }
-        } catch (e) { /* 选择器降级为仅全局 */ }
-    },
-
     trainRulesNow() {
         const btn = document.getElementById("btn-refresh-trained-rules");
         if (btn) { btn.disabled = true; btn.textContent = "提取中..."; }
-        const sel = document.getElementById("trained-rules-scope");
-        const sid = sel && sel.value ? `?strategy_id=${sel.value}` : "";
+        const sid = this._analysisStrategyId ? `?strategy_id=${this._analysisStrategyId}` : "";
         fetch(`/api/rules/train${sid}`, { method: "POST" })
             .then(r => r.json())
             .then(d => {

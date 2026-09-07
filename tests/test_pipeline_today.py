@@ -41,7 +41,7 @@ class TestPipelineToday(unittest.TestCase):
             pipeline_name="daily_pipeline", run_date=date.today(),
             done_stages=["net_value", "quotes"], status="running",
         ))
-        base = datetime(2026, 9, 2, 20, 0, 0)
+        base = datetime.combine(date.today(), datetime.min.time()).replace(hour=20)
         add_stage_log(db, "net_value", "success", base, 5.2, summary={"success_count": 10})
         add_stage_log(db, "quotes", "success", base, 12.0)
         add_stage_log(db, "rebalance", "running", base)
@@ -63,9 +63,9 @@ class TestPipelineToday(unittest.TestCase):
             done_stages=["net_value"], status="running",
             error_message="行情接口超时",
         ))
-        add_stage_log(db, "net_value", "success", datetime(2026, 9, 2, 20, 0, 0), 3.0)
-        add_stage_log(db, "quotes", "failed", datetime(2026, 9, 2, 20, 1, 0), 8.0,
-                      error="行情接口超时")
+        base = datetime.combine(date.today(), datetime.min.time()).replace(hour=20)
+        add_stage_log(db, "net_value", "success", base, 3.0)
+        add_stage_log(db, "quotes", "failed", base, 8.0, error="行情接口超时")
         db.commit()
         resp = get_pipeline_today("daily_pipeline", db)
         by_stage = {s["stage"]: s for s in resp.data["stages"]}

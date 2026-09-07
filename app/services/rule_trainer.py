@@ -106,7 +106,8 @@ class RuleTrainer:
 
         if not records and not replay_records:
             logger.warning("[RuleTrainer] 无可用分析记录")
-            return {"regime_rules": {}, "regime_transitions": [], "etf_frequency": {},
+            return {"scope": f"strategy:{strategy_id}" if strategy_id is not None else "global",
+                    "regime_rules": {}, "regime_transitions": [], "etf_frequency": {},
                     "training_period": None, "replay_rules": {}, "replay_period": None}
 
         def _build_regime_rules(recs):

@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ETF智能工作台</title>
-    <link rel="stylesheet" href="/static/css/workbench.css?v=31">
+    <link rel="stylesheet" href="/static/css/workbench.css?v=32">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
 </head>
 <body>
@@ -214,7 +214,10 @@
             <div class="analyses-layout">
                 <div class="analyses-main">
                     <div class="panel">
-                        <div class="panel-header">📅 每日AI分析 <span class="panel-sub" id="analyses-count-sub"></span></div>
+                        <div class="panel-header">📅 每日AI分析
+                            <select class="trained-rules-scope analysis-strategy-select" onchange="Workbench.onAnalysisStrategyChange(this.value)" title="选择策略"></select>
+                            <span class="panel-sub" id="analyses-count-sub"></span>
+                        </div>
                         <div class="panel-body analyses-scroll" id="analyses-daily-list">
                             <div class="empty-hint">加载中...</div>
                         </div>
@@ -237,7 +240,10 @@
             <div class="analyses-layout">
                 <div class="analyses-main">
                     <div class="panel">
-                        <div class="panel-header">📐 提取的轮动规则 <span class="panel-sub" id="rules-count-sub"></span></div>
+                        <div class="panel-header">📐 提取的轮动规则
+                            <select class="trained-rules-scope analysis-strategy-select" onchange="Workbench.onAnalysisStrategyChange(this.value)" title="选择策略（全局仅规则学习可用）"></select>
+                            <span class="panel-sub" id="rules-count-sub"></span>
+                        </div>
                         <div class="panel-body analyses-scroll" id="analyses-rules-list">
                             <div class="empty-hint">加载中...</div>
                         </div>
@@ -247,9 +253,6 @@
                     <div class="panel">
                         <div class="panel-header">
                             📊 规则学习
-                            <select id="trained-rules-scope" class="trained-rules-scope" onchange="Workbench.loadTrainedRules()" title="选择规则范围">
-                                <option value="">全局规则</option>
-                            </select>
                             <button class="btn-backtest-rule" id="btn-refresh-trained-rules" title="重新提取规则" onclick="Workbench.trainRulesNow()">🔄 重新提取</button>
                         </div>
                         <div class="panel-body analyses-scroll" id="analyses-trained-rules">
@@ -315,7 +318,7 @@
 </footer>
 
 <script src="/static/js/auth.js"></script>
-    <script src="/static/js/workbench.js?v=37"></script>
+    <script src="/static/js/workbench.js?v=39"></script>
 <script src="/static/js/chat.js?v=21"></script>
 <script>
 // 更新时间
