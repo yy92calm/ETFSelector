@@ -31,7 +31,7 @@ class TestPipelineToday(unittest.TestCase):
         d = resp.data
         self.assertEqual(d["pipeline_status"], "not_started")
         self.assertEqual(d["done_count"], 0)
-        self.assertEqual(len(d["stages"]), 8)
+        self.assertEqual(len(d["stages"]), 10)
         self.assertTrue(all(s["status"] == "not_started" for s in d["stages"]))
 
     def test_partial_progress_with_running_stage(self):

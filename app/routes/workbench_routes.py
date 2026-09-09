@@ -587,6 +587,28 @@ def get_extracted_rules(
     })
 
 
+@router.get("/market-regime", response_model=APIResponse)
+def get_market_regime_state(db: Session = Depends(get_db)):
+    """最新中期市场状态刻画：风险偏好/风格轮动/基金收益分化度/建议权益仓位"""
+    from app.services.market_regime_service import get_market_regime_service
+
+    snap = get_market_regime_service().get_latest(db)
+    if not snap:
+        return APIResponse(data=None)
+    return APIResponse(data={
+        "trade_date": snap.trade_date.isoformat(),
+        "risk_appetite": snap.risk_appetite,
+        "risk_label": snap.risk_label,
+        "style_rotation": snap.style_rotation or {},
+        "fund_dispersion": snap.fund_dispersion,
+        "dispersion_label": snap.dispersion_label,
+        "market_state": snap.market_state,
+        "state_label": snap.state_label,
+        "state_note": snap.state_note,
+        "suggested_equity_range": snap.suggested_equity_range,
+    })
+
+
 @router.get("/market-indicators", response_model=APIResponse)
 def get_market_indicators(
     sort_by: str = "composite_score",

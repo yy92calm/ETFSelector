@@ -37,6 +37,50 @@ def trigger_backfill(db: Session = Depends(get_db)):
     return APIResponse(message=f"回填{filled}条", data={"filled": filled})
 
 
+@router.get("/etf", response_model=APIResponse)
+def get_etf_factor_profile(etf_code: str, db: Session = Depends(get_db)):
+    """单ETF因子画像：最新交易日各因子得分与综合排名"""
+    from app.models.etf import ETFDailyIndicator
+    from app.models.factor_performance import FactorPerformance
+
+    latest = (
+        db.query(FactorPerformance.trade_date)
+        .filter(FactorPerformance.etf_code == etf_code)
+        .order_by(FactorPerformance.trade_date.desc())
+        .first()
+    )
+    if not latest:
+        return APIResponse(data=None)
+    trade_date = latest[0]
+
+    rows = (
+        db.query(FactorPerformance)
+        .filter(
+            FactorPerformance.etf_code == etf_code,
+            FactorPerformance.trade_date == trade_date,
+        )
+        .all()
+    )
+    factor_scores = {r.factor_name: r.factor_value for r in rows}
+
+    ind = (
+        db.query(ETFDailyIndicator)
+        .filter(
+            ETFDailyIndicator.etf_code == etf_code,
+            ETFDailyIndicator.trade_date == trade_date,
+        )
+        .first()
+    )
+
+    return APIResponse(data={
+        "etf_code": etf_code,
+        "trade_date": trade_date.isoformat(),
+        "composite_score": ind.composite_score if ind else None,
+        "rank": ind.rank_in_market if ind else None,
+        "factor_scores": factor_scores,
+    })
+
+
 @router.get("/failure-modes", response_model=APIResponse)
 def get_failure_modes(limit: int = 20, db: Session = Depends(get_db)):
     """获取活跃失败模式"""

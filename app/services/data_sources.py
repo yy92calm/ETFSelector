@@ -97,7 +97,11 @@ def _call_with_retry(fetch_fn: Callable[[], pd.DataFrame], circuit: Optional[_So
             return pd.DataFrame()
         try:
             df = fetch_fn()
-            if df is None or df.empty:
+            if df is None:
+                raise ValueError("空数据")
+            if hasattr(df, "empty") and df.empty:
+                raise ValueError("空数据")
+            if isinstance(df, dict) and not df:
                 raise ValueError("空数据")
             if circuit is not None:
                 circuit.record_success()
@@ -321,6 +325,22 @@ class EFinanceDataSource:
 
         return _call_with_retry(_fetch, circuit=self.circuit)
 
+    def fetch_fund_nav_batch(self, fund_codes: List[str], pz: int = 80) -> dict:
+        """批量获取公募基金历史净值（东财）。返回 {fund_code: DataFrame(日期/单位净值/累计净值/涨跌幅)}"""
+        if not self.is_available():
+            return {}
+
+        def _fetch():
+            import efinance as ef
+
+            dfs = ef.fund.get_quote_history_multi(fund_codes, pz=pz)
+            valid = {k: v for k, v in (dfs or {}).items() if v is not None and not v.empty}
+            if len(valid) < min(30, len(fund_codes)):
+                raise ValueError(f"有效基金净值数据不足: {len(valid)}/{len(fund_codes)}")
+            return valid
+
+        return _call_with_retry(_fetch, circuit=self.circuit)
+
 
 class DataSourceManager:
     """数据源管理器：Ashare(新浪+腾讯) → efinance(东方财富) 自动降级"""
@@ -380,6 +400,12 @@ class DataSourceManager:
 
         logger.warning(f"[DataSource] Ashare失败，降级到efinance: {etf_code}")
         return self.fallback.fetch_etf_daily(etf_code, start_date, end_date)
+
+    # ---------------- 公募基金净值（仅efinance有此数据） ----------------
+    def fetch_fund_nav_batch(self, fund_codes: List[str], pz: int = 80) -> dict:
+        if self.ashare_only:
+            logger.warning("[DataSource] 定时任务模式下基金净值仍走efinance（唯一数据源）")
+        return self.fallback.fetch_fund_nav_batch(fund_codes, pz=pz)
 
     def get_available_sources(self) -> List[str]:
         return ["ashare", "eastmoney_list", "efinance"]

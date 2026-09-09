@@ -20,7 +20,7 @@ router = APIRouter(prefix="/api/tasks", tags=["定时任务"])
 TASK_DEFINITIONS = {
     "daily_auto_pipeline": {
         "name": "每日自驱动管道",
-        "description": "8阶段串行：数据更新→再平衡→舆情→量化扫描→轮动→AI自主决策",
+        "description": "9阶段串行：数据更新→再平衡→舆情→量化扫描→市场状态→轮动→AI自主决策",
         "schedule": "工作日 20:00",
         "log_name": "daily_pipeline",
         "trigger": "daily-pipeline",
@@ -115,6 +115,8 @@ PIPELINE_STAGES = [
     {"stage": "sentiment", "name": "舆情采集", "description": "采集市场新闻舆情并做情感分析"},
     {"stage": "policy_flow", "name": "政策与资金流", "description": "评估政策影响，采集资金流向"},
     {"stage": "market_scan", "name": "市场扫描", "description": "计算全市场ETF量化技术指标"},
+    {"stage": "market_regime", "name": "市场状态刻画", "description": "风险偏好/风格轮动/基金收益分化度 → 中期市场状态与仓位信号"},
+    {"stage": "fundamental", "name": "基本面同步", "description": "同步池内个股估值与盈利增速，计算行业盈利-估值性价比"},
     {"stage": "rotation_review", "name": "轮动复盘", "description": "评估策略持仓强弱，触发换仓（有进必出）"},
     {"stage": "autonomous", "name": "AI自主决策", "description": "LLM综合分析行情/舆情/风控，自主调仓、建仓或暂停策略"},
 ]

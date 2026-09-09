@@ -872,8 +872,79 @@ body {
     margin-bottom: 16px;
 }
 .ov-grid-market { grid-template-columns: 3fr 2fr; }
-.ov-grid-quant { grid-template-columns: 1fr 1fr 1fr; }
+.ov-grid-quant { grid-template-columns: 1fr 1fr; }
 .ov-grid-bottom { grid-template-columns: 1fr 1fr; }
+
+/* 因子模型面板：权重条与IC曲线 */
+.factor-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    padding: 3px 0;
+}
+.factor-row .fl { width: 44px; flex-shrink: 0; color: var(--text-secondary); }
+.factor-row .factor-bar-wrap {
+    flex: 1;
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+}
+.factor-row .factor-bar {
+    display: block;
+    height: 100%;
+    background: var(--accent);
+    border-radius: 4px;
+}
+.factor-row .fv { width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
+.factor-row .fd { width: 58px; text-align: right; font-size: 10px; color: var(--text-secondary); }
+.factor-note { font-size: 10px; color: var(--text-secondary); margin-top: 4px; }
+.factor-head { font-size: 12px; margin-bottom: 6px; color: var(--text-secondary); }
+.factor-head b { color: var(--text-primary); }
+.factor-head .factor-date { float: right; font-size: 10px; }
+.factor-bar--down { background: var(--success); }
+
+/* 市场状态刻画面板 */
+.regime-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    margin-bottom: 8px;
+}
+.regime-head .mkt-tag { flex-shrink: 0; }
+.regime-note {
+    font-size: 11px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+
+/* 行情展开行扩展区：实时技术面 + 因子画像 */
+.mkt-detail-ext {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--border);
+}
+.mkt-detail-cols {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px 20px;
+}
+.mkt-ext-title {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+}
+.tech-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: 12px;
+    padding: 3px 0;
+}
+.tech-row .tl { color: var(--text-secondary); flex-shrink: 0; }
+.tech-row .tv { text-align: right; }
 
 /* 指标卡片动效与数字字体 */
 .wb-card {
@@ -2978,4 +3049,35 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 }
 .msg.tool-info.thinking[open] .thinking-summary::before {
     content: "▾ ";
+}
+
+/* 研究视图：行业性价比卡片 */
+.industry-card {
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 8px;
+}
+.industry-card:nth-child(1) { border-color: var(--accent); }
+.industry-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-weight: 600;
+}
+.industry-rank { color: var(--accent); }
+.industry-name { flex: 1; }
+.industry-score { color: var(--accent); }
+.industry-meta {
+    margin-top: 4px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+.research-note {
+    margin-top: 10px;
+    font-size: 10px;
+    color: var(--text-secondary);
+    line-height: 1.6;
 }

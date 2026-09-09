@@ -120,17 +120,21 @@ const Workbench = {
         if (view === 'sentiment') this.loadSentimentView();
         if (view === 'tasks') this.loadTasksView();
         if (view === 'analyses') this.loadAnalysesView();
+        if (view === 'research') this.loadResearchView();
         if (view === 'rules') this.loadRulesView();
     },
 
     async loadOverview() {
         try {
-            const [ovResp, quotesResp, sentiResp, stratResp, quantResp] = await Promise.all([
+            const [ovResp, quotesResp, sentiResp, stratResp, quantResp, weightsResp, icResp, regimeResp] = await Promise.all([
                 fetch('/api/workbench/overview').then(r => r.json()),
                 fetch('/api/etf/overview?limit=2000').then(r => r.json()),
                 fetch('/api/auto-strategy/sentiments/summary').then(r => r.json()).catch(() => ({ code: 500 })),
                 fetch('/api/strategy/list').then(r => r.json()),
                 fetch('/api/workbench/quant-summary').then(r => r.json()).catch(() => ({ code: 500 })),
+                fetch('/api/factors/adaptive-weights').then(r => r.json()).catch(() => ({ code: 500 })),
+                fetch('/api/factors/ic-history?days=30').then(r => r.json()).catch(() => ({ code: 500 })),
+                fetch('/api/workbench/market-regime').then(r => r.json()).catch(() => ({ code: 500 })),
             ]);
 
             const ov = ovResp.code === 200 ? ovResp.data : null;
@@ -144,6 +148,8 @@ const Workbench = {
             this.renderDistChart(quotes);
             this.renderMovers(quotes);
             this.renderQuantAnalysis(quant);
+            this.renderFactorPanel(weightsResp, icResp);
+            this.renderMarketRegimePanel(regimeResp);
             this.updateFooter(ov);
         } catch (e) {
             console.error('加载工作台概览失败:', e);
@@ -356,6 +362,223 @@ const Workbench = {
             },
             series: [{ type: 'bar', barWidth: '55%', data }],
         });
+    },
+
+    renderFactorPanel(weightsResp, icResp) {
+        const el = document.getElementById('factor-content');
+        if (!el) return;
+        const zhFactor = { momentum: '动量', trend: '趋势', volume: '量能', volatility: '波动', capital_flow: '资金流' };
+        const weights = (weightsResp.code === 200 && weightsResp.data) ? weightsResp.data.adaptive_weights : null;
+        const history = (icResp.code === 200 && icResp.data) ? (icResp.data.history || []) : [];
+        if (!weights && !history.length) {
+            el.innerHTML = '<div class="empty-hint">暂无因子数据（待每日管道积累）</div>';
+            return;
+        }
+
+        let weightHtml;
+        if (weights) {
+            const defaults = (weightsResp.data && weightsResp.data.default_weights) || {};
+            weightHtml = Object.entries(weights).map(([k, v]) => {
+                const pct = (v * 100).toFixed(1);
+                const dPct = defaults[k] != null ? (defaults[k] * 100).toFixed(0) + '%' : '-';
+                return `<div class="factor-row">
+                    <span class="fl">${zhFactor[k] || k}</span>
+                    <span class="factor-bar-wrap"><span class="factor-bar" style="width:${pct}%"></span></span>
+                    <span class="fv">${pct}%</span>
+                    <span class="fd">默认${dPct}</span>
+                </div>`;
+            }).join('') + '<div class="factor-note">权重由近30日因子IC自适应生成</div>';
+        } else {
+            weightHtml = '<div class="empty-hint">IC 数据不足，使用默认权重</div>';
+        }
+
+        el.innerHTML = `${weightHtml}<div id="factor-ic-chart" style="height:150px;margin-top:10px;"></div>`;
+        const dateEl = document.getElementById('factor-ic-date');
+        if (dateEl) dateEl.textContent = history.length ? 'IC截至 ' + history[history.length - 1].trade_date : '';
+
+        const container = document.getElementById('factor-ic-chart');
+        if (!history.length || typeof echarts === 'undefined' || !container) {
+            if (container && !history.length) container.style.display = 'none';
+            return;
+        }
+        if (this._icChart) this._icChart.dispose();
+        this._icChart = echarts.init(container);
+        const dates = history.map(h => h.trade_date.slice(5));
+        const lastIc = history[history.length - 1].ic || {};
+        const series = Object.keys(lastIc).map(f => ({
+            name: zhFactor[f] || f,
+            type: 'line',
+            showSymbol: false,
+            lineStyle: { width: 1.5 },
+            data: history.map(h => (h.ic && h.ic[f] != null) ? Number(h.ic[f].toFixed(3)) : null),
+        }));
+        this._icChart.setOption({
+            grid: { left: 36, right: 10, top: 24, bottom: 22 },
+            legend: { top: 0, itemWidth: 10, itemHeight: 4, textStyle: { fontSize: 10, color: '#5c6f82' } },
+            tooltip: {
+                trigger: 'axis',
+                backgroundColor: '#ffffff', borderColor: '#dfe6ee',
+                textStyle: { color: '#1c2b3a', fontSize: 12 },
+            },
+            xAxis: {
+                type: 'category', data: dates,
+                axisLabel: { color: '#5c6f82', fontSize: 9 },
+                axisLine: { lineStyle: { color: '#d5dee8' } },
+                axisTick: { show: false },
+            },
+            yAxis: {
+                type: 'value',
+                axisLabel: { color: '#5c6f82', fontSize: 9 },
+                splitLine: { lineStyle: { color: '#e8eef4' } },
+            },
+            series,
+        });
+    },
+
+    renderMarketRegimePanel(regimeResp) {
+        const el = document.getElementById('regime-content');
+        if (!el) return;
+        const d = (regimeResp.code === 200 && regimeResp.data) ? regimeResp.data : null;
+        if (!d) {
+            el.innerHTML = '<div class="empty-hint">暂无市场状态快照（每日管道自动生成）</div>';
+            return;
+        }
+        const dateEl = document.getElementById('regime-date');
+        if (dateEl) dateEl.textContent = d.trade_date || '';
+
+        const stateCls = { opportunity: 'mkt-tag-bull', risk: 'mkt-tag-bear', neutral: 'mkt-tag-warn' }[d.market_state] || 'mkt-tag-warn';
+        const appetiteCls = d.risk_label === '进取' ? 'text-up' : d.risk_label === '保守' ? 'text-down' : '';
+        const styleText = Object.entries(d.style_rotation || {})
+            .filter(([, v]) => v && v.leading && v.leading !== '均衡')
+            .map(([key, v]) => `${key === 'size' ? '大小盘' : '成长价值'}${v.leading}占优(${v.spread > 0 ? '+' : ''}${Number(v.spread).toFixed(1)}%)`)
+            .join(' · ') || '风格均衡';
+        const disp = d.fund_dispersion != null
+            ? `${d.fund_dispersion}%（${d.dispersion_label || '-'}）`
+            : '数据待积累';
+        const range = Array.isArray(d.suggested_equity_range) && d.suggested_equity_range.length === 2
+            ? `${(d.suggested_equity_range[0] * 100).toFixed(0)}% ~ ${(d.suggested_equity_range[1] * 100).toFixed(0)}%`
+            : '-';
+
+        el.innerHTML = `
+            <div class="regime-head">
+                <span class="mkt-tag ${stateCls}">${this.esc(d.state_label || '中性')}</span>
+                <span class="regime-note">${this.esc(d.state_note || '')}</span>
+            </div>
+            ${d.risk_appetite != null ? `
+            <div class="factor-row">
+                <span class="fl">风险偏好</span>
+                <span class="factor-bar-wrap"><span class="factor-bar ${d.risk_label === '保守' ? 'factor-bar--down' : ''}" style="width:${Math.max(0, Math.min(100, d.risk_appetite))}%"></span></span>
+                <span class="fv ${appetiteCls}">${d.risk_appetite} ${d.risk_label || ''}</span>
+            </div>` : ''}
+            <div class="tech-row"><span class="tl">风格轮动</span><span class="tv">${this.esc(styleText)}</span></div>
+            <div class="tech-row"><span class="tl">收益分化度</span><span class="tv">${this.esc(disp)}</span></div>
+            <div class="tech-row"><span class="tl">建议权益仓位</span><span class="tv">${range}</span></div>
+        `;
+    },
+
+    // === 研究视图：盈利-估值性价比 ===
+
+    async loadResearchView() {
+        const picksEl = document.getElementById('research-picks');
+        const indEl = document.getElementById('research-industries');
+        if (picksEl) picksEl.innerHTML = '<div class="empty-hint">加载中...</div>';
+        if (indEl) indEl.innerHTML = '<div class="empty-hint">加载中...</div>';
+        try {
+            const [picksResp, indResp] = await Promise.all([
+                fetch('/api/research/stock-picks?top_n=30').then(r => r.json()).catch(() => ({ code: 500 })),
+                fetch('/api/research/industry-ranking').then(r => r.json()).catch(() => ({ code: 500 })),
+            ]);
+            if (picksResp.code === 200) this.renderStockPicks(picksResp.data.picks || []);
+            else if (picksEl) picksEl.innerHTML = '<div class="empty-hint">暂无数据（请先回填历史数据）</div>';
+            if (indResp.code === 200) this.renderIndustryRanking(indResp.data.industries || []);
+            else if (indEl) indEl.innerHTML = '<div class="empty-hint">暂无数据</div>';
+        } catch (e) {
+            console.error('加载研究视图失败:', e);
+        }
+    },
+
+    renderStockPicks(picks) {
+        const el = document.getElementById('research-picks');
+        if (!el) return;
+        if (!picks.length) {
+            el.innerHTML = '<div class="empty-hint">暂无符合条件标的（需盈利正增长且PEG≤1.5，请确认已回填历史数据）</div>';
+            return;
+        }
+        const rows = picks.map((p, i) => `
+            <tr>
+                <td class="mkt-rank">${i + 1}</td>
+                <td class="mkt-etf">
+                    <span class="mkt-name">${this.esc(p.stock_name || '-')}</span>
+                    <span class="mkt-code">${p.stock_code}</span>
+                </td>
+                <td>${this.esc(p.industry || '-')}</td>
+                <td class="num">${p.close != null ? p.close.toFixed(2) : '-'}</td>
+                <td class="num">${p.pe_ttm != null ? p.pe_ttm.toFixed(1) : '-'}</td>
+                <td class="num text-up">+${Number(p.ni_yoy).toFixed(1)}%</td>
+                <td class="num ${p.peg <= 1 ? 'text-up' : ''}">${p.peg.toFixed(2)}</td>
+                <td class="num">${p.pe_percentile != null ? p.pe_percentile.toFixed(0) + '%' : '-'}</td>
+                <td class="num"><b>${p.score.toFixed(1)}</b></td>
+            </tr>`).join('');
+        el.innerHTML = `
+            <table class="mkt-table">
+                <thead><tr>
+                    <th>#</th><th>个股</th><th>行业</th>
+                    <th class="num">现价</th><th class="num">PE-TTM</th><th class="num">净利同比</th>
+                    <th class="num">PEG</th><th class="num">PE历史分位</th><th class="num">安全边际分</th>
+                </tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+            <div class="research-note">安全边际分 = 0.6×PEG分（越低越好）+ 0.4×估值历史分位反分（PE处于自身历史低位加分）。数据截至最新交易日，仅作研究参考。</div>
+        `;
+    },
+
+    renderIndustryRanking(industries) {
+        const el = document.getElementById('research-industries');
+        if (!el) return;
+        // 仅保留最新评分日
+        const byDate = {};
+        industries.forEach(r => { (byDate[r.trade_date] = byDate[r.trade_date] || []).push(r); });
+        const latestDate = Object.keys(byDate).sort().pop();
+        const rows = (byDate[latestDate] || []).sort((a, b) => (a.rank || 99) - (b.rank || 99));
+        const dateEl = document.getElementById('research-ind-date');
+        if (dateEl) dateEl.textContent = latestDate || '';
+        if (!rows.length) {
+            el.innerHTML = '<div class="empty-hint">暂无行业评分（请先回填历史数据）</div>';
+            return;
+        }
+        el.innerHTML = rows.map(r => `
+            <div class="industry-card">
+                <div class="industry-head">
+                    <span class="industry-rank">#${r.rank}</span>
+                    <span class="industry-name">${this.esc(r.industry)}</span>
+                    <span class="industry-score">${r.score != null ? r.score.toFixed(1) : '-'}</span>
+                </div>
+                <div class="industry-meta">
+                    中位PE ${r.median_pe != null ? r.median_pe.toFixed(1) : '-'}
+                    · 中位增速 ${r.median_growth != null ? (r.median_growth > 0 ? '+' : '') + r.median_growth.toFixed(1) + '%' : '-'}
+                    ${r.peg != null ? ` · PEG ${r.peg.toFixed(2)}` : ''}
+                    ${r.pe_percentile != null ? ` · PE分位 ${r.pe_percentile.toFixed(0)}%` : ''}
+                    ${r.trend_momentum != null ? ` · 趋势${r.trend_momentum > 0 ? '+' : ''}${r.trend_momentum.toFixed(1)}%` : ''}
+                    · 样本 ${r.sample_count || 0}
+                </div>
+            </div>`).join('');
+    },
+
+    triggerResearchBackfill() {
+        const btn = document.getElementById('btn-research-backfill');
+        if (btn) { btn.disabled = true; btn.textContent = '回填中...'; }
+        fetch('/api/research/backfill?years=3', { method: 'POST' })
+            .then(r => r.json())
+            .then(d => {
+                if (d.code === 200) {
+                    alert('历史回填已在后台启动（沪深300+中证500池，约3年估值与增速，耗时数分钟）。完成后重新进入本视图即可看到结果。');
+                    setTimeout(() => this.loadResearchView(), 300000);
+                } else {
+                    alert('回填启动失败: ' + (d.message || ''));
+                }
+            })
+            .catch(() => alert('回填请求失败'))
+            .finally(() => { if (btn) { btn.disabled = false; btn.textContent = '回填历史数据'; } });
     },
 
     renderMomentumList(top, bottom) {
@@ -1214,6 +1437,7 @@ const Workbench = {
         const el = document.getElementById('market-content');
         if (!el) return;
         el.innerHTML = '<div class="empty-hint">加载中...</div>';
+        this._mktDetailCache = {};
 
         try {
             const params = new URLSearchParams({
@@ -1306,6 +1530,7 @@ const Workbench = {
                                         ${r.vol_ratio >= 1.5 ? '<span class="mkt-tag mkt-tag-vol">放量异动</span>' : ''}
                                         ${r.volatility_20d > 40 ? '<span class="mkt-tag mkt-tag-warn">高波动</span>' : ''}
                                     </div>
+                                    <div class="mkt-detail-ext" id="mkt-detail-ext-${r.etf_code}"></div>
                                 </div>
                             </td>
                         </tr>
@@ -1395,7 +1620,81 @@ const Workbench = {
         if (!isOpen) {
             detailRow.style.display = 'table-row';
             if (rowEl) rowEl.classList.add('row-active');
+            this._loadEtfDetailExt(code);
         }
+    },
+
+    // 展开行扩展区：实时技术面 + 因子画像（按 ETF 缓存，列表刷新时清空）
+    _mktDetailCache: {},
+
+    async _loadEtfDetailExt(code) {
+        const el = document.getElementById(`mkt-detail-ext-${code}`);
+        if (!el) return;
+        if (this._mktDetailCache[code]) { el.innerHTML = this._mktDetailCache[code]; return; }
+        el.innerHTML = '<div class="empty-hint">指标加载中...</div>';
+        const [techResp, factorResp] = await Promise.all([
+            fetch(`/api/auto-strategy/enhanced/technical-indicators?etf_code=${code}`).then(r => r.json()).catch(() => null),
+            fetch(`/api/factors/etf?etf_code=${code}`).then(r => r.json()).catch(() => null),
+        ]);
+        const tech = (techResp && techResp.code === 200) ? techResp.data : null;
+        const factor = (factorResp && factorResp.code === 200) ? factorResp.data : null;
+        if ((!tech || tech.error) && !factor) {
+            el.innerHTML = '<div class="empty-hint">暂无技术面/因子数据</div>';
+        } else {
+            el.innerHTML = this.renderEtfDetailExt(tech, factor);
+        }
+        this._mktDetailCache[code] = el.innerHTML;
+    },
+
+    renderEtfDetailExt(tech, factor) {
+        const zhSignal = {
+            overbought: '超买', oversold: '超卖',
+            strong_bullish: '强势多头', bullish: '多头', bearish: '空头', strong_bearish: '强势空头',
+            huge_increase: '大幅放量', increase: '放量', decrease: '缩量', normal: '量能正常',
+        };
+        const zhFactor = { momentum: '动量', trend: '趋势', volume: '量能', volatility: '波动', capital_flow: '资金流' };
+        const fmtPct = v => v != null ? (v > 0 ? '+' : '') + v + '%' : '-';
+
+        let techRows;
+        if (tech && !tech.error) {
+            const rsi = tech.rsi || {}, macd = tech.macd || {}, boll = tech.bollinger || {};
+            const vol = tech.volume_analysis || {}, mom = tech.price_momentum || {}, ts = tech.trend_signal || {};
+            const chg = mom.changes || {};
+            const hist = macd.histogram != null ? macd.histogram : null;
+            const trendCls = ts.trend && ts.trend.includes('bullish') ? 'text-up' : ts.trend && ts.trend.includes('bearish') ? 'text-down' : '';
+            techRows = `
+                <div class="tech-row"><span class="tl">RSI(14)</span><span class="tv">${rsi.value != null ? rsi.value : '-'}${rsi.signal === 'overbought' ? ' <span class="mkt-tag mkt-tag-warn">超买</span>' : rsi.signal === 'oversold' ? ' <span class="mkt-tag mkt-tag-bear">超卖</span>' : ''}</span></div>
+                <div class="tech-row"><span class="tl">MACD柱</span><span class="tv ${hist > 0 ? 'text-up' : hist < 0 ? 'text-down' : ''}">${hist != null ? hist.toFixed(3) : '-'}${macd.trend ? ` · ${macd.trend === 'bullish' ? '多头' : '空头'}${macd.strength === 'strong' ? '(强)' : ''}` : ''}</span></div>
+                <div class="tech-row"><span class="tl">布林位置</span><span class="tv">${boll.position_pct != null ? boll.position_pct + '%' : '-'}${boll.signal === 'upper' ? ' <span class="mkt-tag mkt-tag-warn">触上轨</span>' : boll.signal === 'lower' ? ' <span class="mkt-tag mkt-tag-bear">触下轨</span>' : ''}</span></div>
+                <div class="tech-row"><span class="tl">量能</span><span class="tv">${vol.ratio != null ? '量比 ' + vol.ratio : '-'}${vol.trend && vol.trend !== 'normal' ? ` · ${zhSignal[vol.trend]}` : ''}</span></div>
+                <div class="tech-row"><span class="tl">动量</span><span class="tv">1日 ${fmtPct(chg['1d'])} / 3日 ${fmtPct(chg['3d'])} / 5日 ${fmtPct(chg['5d'])}</span></div>
+                <div class="tech-row"><span class="tl">趋势信号</span><span class="tv ${trendCls}">${zhSignal[ts.trend] || '-'}${ts.bullish_signals != null ? `（${ts.bullish_signals}多${ts.bearish_signals}空 · ${ts.confidence}%）` : ''}</span></div>
+                <div class="tech-row"><span class="tl">指标日期</span><span class="tv">${tech.latest_date || '-'}</span></div>
+            `;
+        } else {
+            techRows = '<div class="empty-hint">行情数据不足，无法计算技术面</div>';
+        }
+
+        let factorHtml;
+        if (factor && factor.factor_scores && Object.keys(factor.factor_scores).length) {
+            const bars = Object.entries(factor.factor_scores).map(([k, v]) => `
+                <div class="factor-row">
+                    <span class="fl">${zhFactor[k] || k}</span>
+                    <span class="factor-bar-wrap"><span class="factor-bar" style="width:${Math.max(0, Math.min(100, Number(v) || 0)).toFixed(0)}%"></span></span>
+                    <span class="fv">${v != null ? Number(v).toFixed(1) : '-'}</span>
+                </div>`).join('');
+            factorHtml = `
+                <div class="factor-head">综合分 <b>${factor.composite_score != null ? factor.composite_score : '-'}</b> · 市场排名 <b>#${factor.rank || '-'}</b><span class="factor-date">${factor.trade_date || ''}</span></div>
+                ${bars}`;
+        } else {
+            factorHtml = '<div class="empty-hint">暂无因子数据</div>';
+        }
+
+        return `
+            <div class="mkt-detail-cols">
+                <div><div class="mkt-ext-title">实时技术面</div>${techRows}</div>
+                <div><div class="mkt-ext-title">因子画像（0-100）</div>${factorHtml}</div>
+            </div>`;
     },
 
     initMarketToolbar() {

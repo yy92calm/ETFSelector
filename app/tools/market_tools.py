@@ -181,3 +181,25 @@ def add_etf_to_pool(db: Session, etf_code: str, etf_name: str = "", start_date: 
         "history_records": added,
         "message": f"已将 {name}({etf_code}) 纳入观察池，导入 {added} 条历史行情",
     }
+
+
+@tool(name="get_market_position_signal", description="获取最新中期市场状态刻画与仓位信号：风险偏好指数、大小盘/成长价值风格轮动、偏股基金收益率分化度、建议权益仓位区间")
+def get_market_position_signal(db: Session) -> dict:
+    from app.services.market_regime_service import get_market_regime_service
+
+    snap = get_market_regime_service().get_latest(db)
+    if not snap:
+        return {"error": "暂无市场状态快照（由每日管道 market_regime 阶段生成）"}
+
+    return {
+        "trade_date": snap.trade_date.isoformat(),
+        "risk_appetite": snap.risk_appetite,
+        "risk_label": snap.risk_label,
+        "style_rotation": snap.style_rotation,
+        "fund_dispersion": snap.fund_dispersion,
+        "dispersion_label": snap.dispersion_label,
+        "market_state": snap.market_state,
+        "state_label": snap.state_label,
+        "state_note": snap.state_note,
+        "suggested_equity_range": snap.suggested_equity_range,
+    }

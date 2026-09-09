@@ -111,6 +111,8 @@ app.include_router(factor_routes.router)
 app.include_router(auth_routes.router)
 from app.routes import rules_routes
 app.include_router(rules_routes.router)
+from app.routes import research_routes
+app.include_router(research_routes.router)
 
 
 @app.middleware("http")

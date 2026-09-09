@@ -18,6 +18,7 @@ dependencies = [
     "efinance>=0.4",
     "pandas>=2.0.0",
     "numpy>=1.24.0",
+    "baostock>=0.8.9",
     "apscheduler>=3.10.0",
     "aiohttp>=3.9.0",
     "httpx>=0.25.0",

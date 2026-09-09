@@ -107,7 +107,7 @@ def _job_daily_pipeline():
     _cp_svc = get_pipeline_checkpoint_service()
     _run_date = date.today()
     _stages = ["net_value", "quotes", "rebalance", "sentiment", "policy_flow",
-               "market_scan", "rotation_review", "autonomous"]
+               "market_scan", "market_regime", "fundamental", "rotation_review", "autonomous"]
 
     db = SessionLocal()
     try:
@@ -176,6 +176,8 @@ def _job_daily_pipeline():
 
     # ============================== 阶段3 ==============================
     _run_stage("market_scan", _step_market_scan)
+    _run_stage("market_regime", _step_market_regime)
+    _run_stage("fundamental", _step_fundamental)
     _run_stage("rotation_review", _step_rotation_review)
 
     # ============================== 阶段4 ==============================
@@ -350,6 +352,43 @@ def _step_market_scan():
             logger.error(f"因子收益回填异常: {e}")
     except Exception as e:
         logger.error(f"量化扫描异常: {e}")
+    finally:
+        db.close()
+
+
+def _step_market_regime():
+    """STEP 6.5: 市场状态刻画 — 风险偏好/风格轮动/基金收益率分化度 → 中期仓位信号"""
+    from app.db.database import SessionLocal
+    from app.services.market_regime_service import get_market_regime_service
+
+    logger.info("===== [阶段3.5] 市场状态刻画 =====")
+    db = SessionLocal()
+    try:
+        snap = get_market_regime_service().compute(date.today(), db)
+        logger.info(f"市场状态刻画完成: {snap}")
+    except Exception as e:
+        logger.error(f"市场状态刻画异常: {e}")
+        raise
+    finally:
+        db.close()
+
+
+def _step_fundamental():
+    """STEP 6.8: 基本面同步与性价比模型 — 池内估值增量 + 行业盈利-估值性价比评分"""
+    from app.db.database import SessionLocal
+    from app.services.fundamental_data_service import get_fundamental_data_service
+    from app.services.value_model_service import get_value_model_service
+
+    logger.info("===== [阶段3.8] 基本面与性价比模型 =====")
+    db = SessionLocal()
+    try:
+        result = get_fundamental_data_service().sync_fundamentals(db, days_back=5)
+        logger.info(f"基本面同步完成: {result}")
+        n = get_value_model_service().compute_industry_scores(db, date.today())
+        logger.info(f"行业性价比评分完成: {n} 个行业")
+    except Exception as e:
+        logger.error(f"基本面阶段异常: {e}")
+        raise
     finally:
         db.close()
 
