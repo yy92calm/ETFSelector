@@ -203,3 +203,42 @@ def get_market_position_signal(db: Session) -> dict:
         "state_note": snap.state_note,
         "suggested_equity_range": snap.suggested_equity_range,
     }
+
+
+@tool(name="get_industry_ranking", description="获取行业盈利-估值性价比排名（基于池内个股基本面聚合的板块层面信号），含中位PE、中位增速、PEG、PE历史分位、匹配ETF动量")
+def get_industry_ranking(db: Session, days: int = 1) -> dict:
+    """行业性价比排名
+
+    Args:
+    days: 回看天数（1=最新一期）
+    """
+    from app.services.value_model_service import get_value_model_service
+
+    rows = get_value_model_service().get_industry_ranking(db, days)
+    if not rows:
+        return {"error": "暂无行业评分数据（需基本面同步完成后生成）"}
+    return {
+        "trade_date": rows[0].trade_date.isoformat(),
+        "industries": [
+            {
+                "rank": r.rank,
+                "industry": r.industry,
+                "score": r.score,
+                "median_pe": r.median_pe,
+                "median_growth": r.median_growth,
+                "peg": r.peg,
+                "pe_percentile": r.pe_percentile,
+                "trend_momentum": r.trend_momentum,
+                "sample_count": r.sample_count,
+            }
+            for r in rows
+        ],
+    }
+
+
+@tool(name="get_market_regime", description="识别当前市场阶段（牛/熊/震荡及所处周期位置），基于市场情绪指数与行情统计")
+def get_market_regime(db: Session) -> dict:
+    from app.services.market_environment_service import MarketEnvironmentService
+    from app.tools.analysis_tools import _latest_trade_date
+
+    return MarketEnvironmentService().get_market_regime(_latest_trade_date(db), db)

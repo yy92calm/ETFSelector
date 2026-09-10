@@ -75,3 +75,11 @@ def resume_strategy(db: Session, strategy_id: int) -> dict:
         "status": "running",
         "message": f"策略 {strategy_id} 已恢复运行",
     }
+
+
+@tool(name="get_banned_codes", description="获取失败模式规避名单：反复出现在失败决策中的ETF代码及失败次数，这些代码在AI建议配置中会被标记警告")
+def get_banned_codes(db: Session) -> dict:
+    from app.services.failure_mode_service import get_failure_mode_service
+
+    banned = get_failure_mode_service().get_banned_codes(db)
+    return {"banned_codes": banned, "total": len(banned)}

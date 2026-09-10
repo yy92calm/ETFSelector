@@ -17,8 +17,11 @@ class MacroCycleAgent(BaseAgent):
 ## 市场代理数据
 {market_data}
 
+## 行业盈利-估值性价比排名（基于池内个股基本面聚合，仅反映板块层面信号）
+{industry_ranking}
+
 ## 分析要求
-通过价格动量、成交量变化、板块分化等信号推断宏观周期。输出JSON（不要包含其他文字）：
+通过价格动量、成交量变化、板块分化等信号推断宏观周期。行业性价比排名来自个股聚合数据，仅用于板块超配/低配判断，不得据此输出个股标的。输出JSON（不要包含其他文字）：
 {{
   "cycle_phase": "recovery/overheating/stagflation/recession",
   "confidence": 0.0-1.0,
@@ -45,12 +48,36 @@ class MacroCycleAgent(BaseAgent):
             return {"error": "市场数据不足，无法判断宏观周期"}
 
         prompt = self.PROMPT.format(
-            market_data=json.dumps(market_data, ensure_ascii=False, indent=2)
+            market_data=json.dumps(market_data, ensure_ascii=False, indent=2),
+            industry_ranking=self._build_industry_ranking(db),
         )
         result = self.call_llm(prompt)
         if result and "error" not in result:
             result["data_source"] = "price_proxy"
         return result
+
+    def _build_industry_ranking(self, db: Session) -> str:
+        """行业盈利-估值性价比排名（首尾各5），无数据时降级为空说明"""
+        try:
+            from app.services.value_model_service import get_value_model_service
+            scores = get_value_model_service().get_industry_ranking(db, days=1)
+        except Exception as e:
+            logger.warning(f"[MacroCycle] 行业排名获取失败: {e}")
+            return "暂无行业评分数据"
+        if not scores:
+            return "暂无行业评分数据"
+        # 同日数据按 rank 升序，取最优5与最差5
+        latest_date = max(s.trade_date for s in scores)
+        rows = sorted(
+            [s for s in scores if s.trade_date == latest_date],
+            key=lambda s: s.rank or 999,
+        )
+        picked = rows[:5] + ([] if len(rows) <= 10 else rows[-5:])
+        lines = [
+            f"第{s.rank}名 {s.industry}: 综合得分{s.score}"
+            for s in picked
+        ]
+        return "评分日期 " + str(latest_date) + "\n" + "\n".join(lines)
 
     def _build_market_proxy(self, etf_codes: List[str], db: Session) -> Dict:
         proxy = {}

@@ -63,6 +63,11 @@ _WRITE_TOOLS: Set[str] = {
     "add_etf_to_pool",
     "execute_rebalance",
     "sync_market_data",
+    "trigger_review",
+    "trigger_daily_pipeline",
+    "trigger_sentiment_collect",
+    "catch_up_strategy",
+    "fetch_etf_history",
 }
 
 
@@ -231,6 +236,7 @@ def get_tool_registry() -> ToolRegistry:
         from app.tools import portfolio_tools  # noqa: F401
         from app.tools import risk_tools  # noqa: F401
         from app.tools import analysis_tools  # noqa: F401
+        from app.tools import ops_tools  # noqa: F401
 
         _registry = ToolRegistry()
 

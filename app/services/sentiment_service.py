@@ -41,7 +41,9 @@ class SentimentService:
 - sentiment_score: -1到1的情感分数，正面为正数，负面为负数
 - sentiment_label: positive/negative/neutral
 - related_etfs: 相关的ETF代码列表，必须来自可用ETF列表
-- key_factors: 影响因素关键词列表"""
+- key_factors: 影响因素关键词列表
+
+注意：热门股排行榜中的个股代码仅用于感知市场热度与板块归属，不得将其本身作为投资标的判断依据。"""
 
     POSITIVE_KEYWORDS = [
         "大涨", "利好", "反弹", "突破", "增长", "上涨", "牛市", "看涨", "盈利",

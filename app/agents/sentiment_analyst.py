@@ -22,6 +22,8 @@ class SentimentAnalystAgent(BaseAgent):
 ## 舆情数据汇总
 {sentiment_summary}
 
+舆情中的个股热点信息仅反映板块情绪强度，结论须落在板块/ETF层面，不得推荐个股。
+
 ## 分析要求
 基于以上数据，输出JSON格式的情绪分析报告（不要包含其他文字）：
 {{

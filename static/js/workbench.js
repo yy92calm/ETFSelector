@@ -504,31 +504,49 @@ const Workbench = {
             el.innerHTML = '<div class="empty-hint">暂无符合条件标的（需盈利正增长且PEG≤1.5，请确认已回填历史数据）</div>';
             return;
         }
-        const rows = picks.map((p, i) => `
-            <tr>
-                <td class="mkt-rank">${i + 1}</td>
-                <td class="mkt-etf">
-                    <span class="mkt-name">${this.esc(p.stock_name || '-')}</span>
-                    <span class="mkt-code">${p.stock_code}</span>
-                </td>
-                <td>${this.esc(p.industry || '-')}</td>
-                <td class="num">${p.close != null ? p.close.toFixed(2) : '-'}</td>
-                <td class="num">${p.pe_ttm != null ? p.pe_ttm.toFixed(1) : '-'}</td>
-                <td class="num text-up">+${Number(p.ni_yoy).toFixed(1)}%</td>
-                <td class="num ${p.peg <= 1 ? 'text-up' : ''}">${p.peg.toFixed(2)}</td>
-                <td class="num">${p.pe_percentile != null ? p.pe_percentile.toFixed(0) + '%' : '-'}</td>
-                <td class="num"><b>${p.score.toFixed(1)}</b></td>
-            </tr>`).join('');
+        // 按行业分组：行业以组内最高安全边际分排序，组内展示前3只样本股
+        const groups = {};
+        picks.forEach(p => {
+            const ind = p.industry || '未分类';
+            (groups[ind] = groups[ind] || []).push(p);
+        });
+        const sortedGroups = Object.entries(groups)
+            .map(([ind, list]) => [ind, list.sort((a, b) => b.score - a.score)])
+            .sort((a, b) => b[1][0].score - a[1][0].score);
+        const blocks = sortedGroups.map(([ind, list]) => {
+            const rows = list.slice(0, 3).map(p => `
+                <tr>
+                    <td class="mkt-etf">
+                        <span class="mkt-name">${this.esc(p.stock_name || '-')}</span>
+                        <span class="mkt-code">${p.stock_code}</span>
+                    </td>
+                    <td class="num">${p.close != null ? p.close.toFixed(2) : '-'}</td>
+                    <td class="num">${p.pe_ttm != null ? p.pe_ttm.toFixed(1) : '-'}</td>
+                    <td class="num text-up">+${Number(p.ni_yoy).toFixed(1)}%</td>
+                    <td class="num ${p.peg <= 1 ? 'text-up' : ''}">${p.peg.toFixed(2)}</td>
+                    <td class="num">${p.pe_percentile != null ? p.pe_percentile.toFixed(0) + '%' : '-'}</td>
+                    <td class="num"><b>${p.score.toFixed(1)}</b></td>
+                </tr>`).join('');
+            return `
+            <div class="industry-card">
+                <div class="industry-head">
+                    <span class="industry-name">${this.esc(ind)}</span>
+                    <span class="panel-sub">组内样本 ${list.length} 只</span>
+                    <span class="industry-score">${list[0].score.toFixed(1)}</span>
+                </div>
+                <table class="mkt-table">
+                    <thead><tr>
+                        <th>样本股</th>
+                        <th class="num">现价</th><th class="num">PE-TTM</th><th class="num">净利同比</th>
+                        <th class="num">PEG</th><th class="num">PE历史分位</th><th class="num">安全边际分</th>
+                    </tr></thead>
+                    <tbody>${rows}</tbody>
+                </table>
+            </div>`;
+        }).join('');
         el.innerHTML = `
-            <table class="mkt-table">
-                <thead><tr>
-                    <th>#</th><th>个股</th><th>行业</th>
-                    <th class="num">现价</th><th class="num">PE-TTM</th><th class="num">净利同比</th>
-                    <th class="num">PEG</th><th class="num">PE历史分位</th><th class="num">安全边际分</th>
-                </tr></thead>
-                <tbody>${rows}</tbody>
-            </table>
-            <div class="research-note">安全边际分 = 0.6×PEG分（越低越好）+ 0.4×估值历史分位反分（PE处于自身历史低位加分）。数据截至最新交易日，仅作研究参考。</div>
+            ${blocks}
+            <div class="research-note">按行业分组展示板块内优质样本股，用于验证板块成色，不构成个股推荐。安全边际分 = 0.6×PEG分（越低越好）+ 0.4×估值历史分位反分（PE处于自身历史低位加分）。数据截至最新交易日，仅作研究参考。</div>
         `;
     },
 

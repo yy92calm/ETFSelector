@@ -494,7 +494,7 @@ def _step_auto_pipeline_fallback(db):
 
 @log_task_execution("weekly_review")
 def _job_weekly_review():
-    """每周复盘 - 每周日21:00"""
+    """每周复盘 - 每周三、周日21:00（复盘后触发提示词进化）"""
     from app.db.database import SessionLocal
     from app.services.review_service import ReviewService
     from app.models.strategy import Strategy
@@ -653,11 +653,18 @@ def get_scheduler() -> BackgroundScheduler:
             misfire_grace_time=7200,
         )
 
-        # ========== 每周复盘 ==========
+        # ========== 每周复盘（周三 + 周日 21:00，提示词每周进化两次） ==========
         _scheduler.add_job(
             _job_weekly_review,
             trigger=CronTrigger(day_of_week='sun', hour=21, minute=0),
             id="weekly_review",
+            replace_existing=True,
+            misfire_grace_time=3600,
+        )
+        _scheduler.add_job(
+            _job_weekly_review,
+            trigger=CronTrigger(day_of_week='wed', hour=21, minute=0),
+            id="midweek_review",
             replace_existing=True,
             misfire_grace_time=3600,
         )

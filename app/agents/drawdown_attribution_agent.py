@@ -64,13 +64,13 @@ class DrawdownAttributionAgent(BaseAgent):
 
         snapshots = db.query(PortfolioSnapshot).filter(
             PortfolioSnapshot.strategy_id == strategy_id
-        ).order_by(PortfolioSnapshot.snapshot_date.desc()).limit(30).all()
+        ).order_by(PortfolioSnapshot.trade_date.desc()).limit(30).all()
 
         if len(snapshots) < 5:
             return {}
 
         snapshots.reverse()
-        values = [s.total_value for s in snapshots]
+        values = [s.total_asset for s in snapshots]
         peak = max(values)
         current = values[-1]
         drawdown_pct = (current / peak - 1) * 100 if peak else 0
