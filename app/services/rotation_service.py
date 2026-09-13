@@ -73,6 +73,9 @@ class RotationService:
                 } for h in sorted(holding_scores, key=lambda x: -x["composite_score"])],
             }
 
+        # 板块层面参考信号：行业盈利-估值性价比（不参与综合分排名，仅供辩论）
+        self._attach_value_signals(eligible_holdings + enter_candidates, db)
+
         debate_result = self._run_debate(eligible_holdings, enter_candidates)
 
         if debate_result.get("decision") != "rotate" or not debate_result.get("final_swaps"):
@@ -172,6 +175,26 @@ class RotationService:
             "new_allocation": new_config,
             "effective": mode,
         }
+
+    def _attach_value_signals(self, items: List[Dict], db: Session) -> None:
+        """为辩论材料附加行业性价比信号（ETF名称→行业反查）。失败或无数据时静默跳过。"""
+        try:
+            from app.services.value_model_service import get_value_model_service
+            names = {i["etf_code"]: i.get("etf_name", "")
+                     for i in items if i.get("etf_code") and i.get("etf_name")}
+            if not names:
+                return
+            signals = get_value_model_service().get_etf_industry_signals(db, names)
+            attached = 0
+            for i in items:
+                sig = signals.get(i.get("etf_code"))
+                if sig:
+                    i["industry_value"] = sig
+                    attached += 1
+            if attached:
+                logger.info(f"[Rotation] 行业性价比信号已注入辩论材料: {attached}只")
+        except Exception as e:
+            logger.warning(f"[Rotation] 行业性价比信号注入失败（不影响辩论）: {e}")
 
     def _run_debate(self, holdings: List[Dict], candidates: List[Dict]) -> Dict:
         from app.agents.rotation_debate.orchestrator import RotationDebateOrchestrator

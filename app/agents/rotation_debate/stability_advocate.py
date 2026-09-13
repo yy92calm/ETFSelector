@@ -42,7 +42,7 @@ class StabilityAdvocate(BaseAgent):
   "summary": "一句话总结稳定派观点"
 }}
 
-注意：你不是完全反对换仓，而是要求充分理由。如果某只持仓确实趋势破位（得分远低于候选），你也应该同意替换。"""
+注意：你不是完全反对换仓，而是要求充分理由。如果某只持仓确实趋势破位（得分远低于候选），你也应该同意替换。若候选带有 industry_value 字段（行业盈利-估值性价比排名，rank 越接近 total 行业越被高估），可对"高估行业追涨"提出质疑；该信号仅是板块层面参考，不得涉及个股判断。"""
 
     def analyze(self, holdings: List[Dict], candidates: List[Dict], macro_context: str = "") -> Dict:
         prompt = self.PROMPT.format(

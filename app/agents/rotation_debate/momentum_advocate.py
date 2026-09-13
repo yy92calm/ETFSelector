@@ -38,7 +38,7 @@ class MomentumAdvocate(BaseAgent):
   "summary": "一句话总结动量派观点"
 }}
 
-注意：最多建议替换2只。如果持仓都足够强，可以建议不换。"""
+注意：最多建议替换2只。如果持仓都足够强，可以建议不换。若标的带有 industry_value 字段（行业盈利-估值性价比排名，rank 越小行业越值钱），可作为趋势可持续性的板块层面佐证，严禁由其得出任何个股结论。"""
 
     def analyze(self, holdings: List[Dict], candidates: List[Dict], macro_context: str = "") -> Dict:
         prompt = self.PROMPT.format(

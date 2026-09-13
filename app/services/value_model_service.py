@@ -266,6 +266,47 @@ class ValueModelService:
             IndustryScore.trade_date >= cutoff
         ).order_by(IndustryScore.trade_date.desc(), IndustryScore.rank.asc()).all()
 
+    def get_etf_industry_signals(
+        self, db: Session, etf_names: Dict[str, str]
+    ) -> Dict[str, dict]:
+        """ETF→行业性价比信号：按关键词表反查 ETF 名称所属行业的最新评分。
+
+        输出 {etf_code: {industry, score, rank, total, as_of}}，
+        供轮动辩论作板块层面参考；无评分数据或无匹配时优雅降级返回空。
+        """
+        if not etf_names:
+            return {}
+        latest = db.query(func.max(IndustryScore.trade_date)).scalar()
+        if latest is None:
+            return {}
+        rows = db.query(IndustryScore).filter(
+            IndustryScore.trade_date == latest
+        ).all()
+        total = len(rows)
+        signals: Dict[str, dict] = {}
+        for row in rows:
+            if not row.industry:
+                continue
+            keywords: List[str] = []
+            for key, kws in INDUSTRY_ETF_KEYWORDS.items():
+                if key in row.industry:
+                    keywords.extend(kws)
+            if not keywords:
+                continue
+            for code, name in etf_names.items():
+                if not name or not any(kw in name for kw in keywords):
+                    continue
+                existing = signals.get(code)
+                if existing is None or (row.rank or 9999) < existing["rank"]:
+                    signals[code] = {
+                        "industry": row.industry,
+                        "score": row.score,
+                        "rank": row.rank,
+                        "total": total,
+                        "as_of": latest.isoformat(),
+                    }
+        return signals
+
 
 _service = None
 
