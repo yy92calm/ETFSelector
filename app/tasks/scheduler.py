@@ -470,6 +470,8 @@ def _step_autonomous_decision():
             logger.info(f"LLM自主决策完成: {result.content[:200] if result.content else 'no content'}")
             if result.tool_calls_made:
                 logger.info(f"工具调用: {[t['tool'] for t in result.tool_calls_made]}")
+            if not result.error:
+                _record_autonomous_analysis(result, db)
         else:
             logger.info("===== [阶段2] LLM未配置，降级为原有管道 =====")
             _step_auto_pipeline_fallback(db)
@@ -478,6 +480,63 @@ def _step_autonomous_decision():
         _step_auto_pipeline_fallback(db)
     finally:
         db.close()
+
+
+def _record_autonomous_analysis(autonomous_result, db):
+    """AgentLoop自主决策后回写 analyzed 日志。
+
+    分析与规则视图的数据源是 auto_strategy_log 的 analyzed 记录（旧管道专属），
+    阶段4切换到 AgentLoop 后无人写入，导致视图恒空。此函数按运行中的自动策略
+    补写当日 analyzed 日志：辩论工具结果可用时取结构化字段，否则以决策摘要降级。
+    """
+    from app.models.auto_strategy_log import AutoStrategyLog
+    from app.models.strategy import Strategy
+
+    strategies = db.query(Strategy).filter(
+        Strategy.strategy_source == "auto_generated",
+        Strategy.auto_strategy_status == "running",
+    ).all()
+    if not strategies:
+        return
+
+    # 辩论结果按策略归集（自主决策期间 LLM 可能调用 run_multi_agent_analysis）
+    debate_by_sid: dict = {}
+    for tc in (autonomous_result.tool_calls_made or []):
+        if tc.get("tool") == "run_multi_agent_analysis" and tc.get("result") and "error" not in tc["result"]:
+            sid = (tc.get("arguments") or {}).get("strategy_id")
+            if sid is not None:
+                debate_by_sid[int(sid)] = tc["result"]
+
+    summary = (autonomous_result.content or "")[:500]
+    today = date.today()
+    for strategy in strategies:
+        debate = debate_by_sid.get(strategy.id) or {}
+        analysis = {
+            "market_regime": debate.get("market_regime"),
+            "regime_confidence": debate.get("confidence_level"),
+            "suggested_action": debate.get("suggested_action") or "hold",
+            "suggested_allocation": debate.get("suggested_allocation"),
+            "action_reason": debate.get("action_reason") or summary,
+            "risk_alert": debate.get("risk_alert"),
+            "agreement_level": debate.get("agreement_level"),
+            "key_signals_summary": debate.get("key_signals_summary") or [],
+            "source": "agentloop_autonomous",
+        }
+        existing = db.query(AutoStrategyLog).filter_by(
+            strategy_id=strategy.id, log_date=today, action_type="analyzed"
+        ).first()
+        if existing:
+            # 当日重跑（补跑/单阶段触发）时更新而非重复插入
+            existing.analysis_result = analysis
+            existing.status = "success"
+        else:
+            db.add(AutoStrategyLog(
+                strategy_id=strategy.id, log_date=today,
+                status="success", action_type="analyzed",
+                analysis_result=analysis,
+            ))
+    db.commit()
+    logger.info(f"[自主决策] analyzed 日志已回写: {len(strategies)}个策略")
 
 
 def _step_auto_pipeline_fallback(db):

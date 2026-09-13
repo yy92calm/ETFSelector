@@ -589,7 +589,11 @@ class AgentLoop:
                     "content": result_str,
                 })
 
-                tool_calls_made.append({"tool": tool_name, "arguments": arguments})
+                tool_calls_made.append({
+                    "tool": tool_name,
+                    "arguments": arguments,
+                    "result": result if isinstance(result, dict) else {},
+                })
 
         # 记录自主决策日志
         status = "completed" if not final_content.startswith("LLM") else "failed"
