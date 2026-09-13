@@ -64,8 +64,6 @@ memory_logs/
 *.db
 *.sqlite
 *.sqlite3
-# 保留示例数据库（README 已声明提交示例库）
-!etf_selector.db
 
 # ETF列表缓存（运行时生成）
 app/data/
