@@ -98,9 +98,10 @@ def get_sentiment_summary(target_date: date = None, db: Session = Depends(get_db
 def get_sentiment_calendar(
     start_date: date = None,
     end_date: date = None,
+    strategy_id: int = 0,
     db: Session = Depends(get_db)
 ):
-    """获取日期范围内每日舆情汇总（用于日历热力图）"""
+    """获取日期范围内每日舆情汇总（用于日历热力图）；strategy_id 传入时附带涉及策略池/持仓的条数"""
     if not end_date:
         end_date = db.query(func.max(SentimentData.data_date)).scalar() or date.today()
     if not start_date:
@@ -123,6 +124,26 @@ def get_sentiment_calendar(
         .all()
     )
 
+    # 策略相关条数：该日舆情关联ETF命中池/持仓的条数
+    related_counts = {}
+    if strategy_id:
+        from app.services.portfolio_service import get_portfolio_service
+        universe = get_portfolio_service().get_strategy_universe(strategy_id, db)
+        codes = universe["pool"] | universe["holding_codes"]
+        if codes:
+            rows = (
+                db.query(SentimentData.data_date, SentimentData.related_etfs)
+                .filter(
+                    SentimentData.data_date >= start_date,
+                    SentimentData.data_date <= end_date,
+                    SentimentData.related_etfs.isnot(None),
+                )
+                .all()
+            )
+            for d, rel in rows:
+                if any(c in codes for c in (rel or [])):
+                    related_counts[d] = related_counts.get(d, 0) + 1
+
     return APIResponse(data={
         "days": [
             {
@@ -131,6 +152,7 @@ def get_sentiment_calendar(
                 "avg_score": round(d.avg_score, 3) if d.avg_score is not None else None,
                 "positive": d.positive,
                 "negative": d.negative,
+                "strategy_related": related_counts.get(d.data_date, 0),
             }
             for d in daily
         ]
@@ -138,17 +160,29 @@ def get_sentiment_calendar(
 
 
 @router.get("/sentiments/by-date", response_model=APIResponse)
-def get_sentiments_by_date(target_date: date, db: Session = Depends(get_db)):
-    """获取指定日期的舆情列表"""
+def get_sentiments_by_date(target_date: date, strategy_id: int = 0, db: Session = Depends(get_db)):
+    """获取指定日期的舆情列表；strategy_id 传入时附带关联ETF的策略标注"""
     sentiments = (
         db.query(SentimentData)
         .filter(SentimentData.data_date == target_date)
         .order_by(SentimentData.publish_time.desc())
         .all()
     )
+    marks = {}
+    if strategy_id:
+        from app.services.portfolio_service import get_portfolio_service
+        universe = get_portfolio_service().get_strategy_universe(strategy_id, db)
+        for s in sentiments:
+            for code in (s.related_etfs or []):
+                if code in universe["pool"] or code in universe["holding_codes"]:
+                    marks[code] = {
+                        "in_pool": code in universe["pool"],
+                        "is_holding": code in universe["holding_codes"],
+                    }
     return APIResponse(data={
         "date": target_date.isoformat(),
         "sentiments": [s.to_dict() for s in sentiments],
+        "strategy_marks": marks,
         "total": len(sentiments),
     })
 

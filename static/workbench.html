@@ -105,7 +105,9 @@
         <!-- 行情视图 -->
         <div id="view-market" class="view-panel" style="display:none">
             <div class="mkt-toolbar">
+                <select class="trained-rules-scope strategy-select" onchange="Workbench.onStrategyChange(this.value)" title="选择策略后标注持仓/池内/禁入"></select>
                 <input type="text" class="mkt-search" id="mkt-search" placeholder="搜索代码或名称..." autocomplete="off">
+                <button class="mkt-strategy-only" id="mkt-strategy-only" onclick="Workbench.toggleMarketStrategyOnly()" title="只看当前策略的持仓与标的池">只看策略相关</button>
                 <div class="mkt-sort-group" id="mkt-sort-group">
                     <button class="mkt-sort active" data-sort="composite_score">综合得分</button>
                     <button class="mkt-sort" data-sort="momentum_5d">5日动量</button>
@@ -152,6 +154,11 @@
 
         <!-- 舆情视图 -->
         <div id="view-sentiment" class="view-panel" style="display:none">
+            <div class="view-toolbar">
+                <span class="view-toolbar-label">策略视角</span>
+                <select class="trained-rules-scope strategy-select" onchange="Workbench.onStrategyChange(this.value)" title="选择策略后标注关联ETF的持仓/池内归属"></select>
+                <button class="btn-backtest-rule" id="btn-senti-decision" onclick="Workbench.gotoAnalysis(Workbench._sentiSelectedDate)" title="查看该日AI决策">查看当日决策</button>
+            </div>
             <div class="senti-layout">
                 <div class="senti-rail">
                     <div class="panel">
@@ -232,7 +239,7 @@
                 <div class="analyses-main">
                     <div class="panel">
                         <div class="panel-header">📅 每日AI分析
-                            <select class="trained-rules-scope analysis-strategy-select" onchange="Workbench.onAnalysisStrategyChange(this.value)" title="选择策略"></select>
+                            <select class="trained-rules-scope strategy-select" onchange="Workbench.onStrategyChange(this.value)" title="选择策略"></select>
                             <span class="panel-sub" id="analyses-count-sub"></span>
                         </div>
                         <div class="panel-body analyses-scroll" id="analyses-daily-list">
@@ -254,6 +261,10 @@
             </div>
         </div>
         <div id="view-research" class="view-panel" style="display:none">
+            <div class="view-toolbar">
+                <span class="view-toolbar-label">策略视角</span>
+                <select class="trained-rules-scope strategy-select" onchange="Workbench.onStrategyChange(this.value)" title="选择策略后展示池内标的的行业性价比"></select>
+            </div>
             <div class="analyses-layout">
                 <div class="analyses-main">
                     <div class="panel">
@@ -267,6 +278,12 @@
                     </div>
                 </div>
                 <div class="analyses-rail">
+                    <div class="panel">
+                        <div class="panel-header">🎯 本策略标的板块性价比 <span class="panel-sub" id="research-strategy-sub"></span></div>
+                        <div class="panel-body analyses-scroll" id="research-strategy">
+                            <div class="empty-hint">加载中...</div>
+                        </div>
+                    </div>
                     <div class="panel">
                         <div class="panel-header">🏭 行业性价比排名 <span class="panel-sub" id="research-ind-date"></span></div>
                         <div class="panel-body analyses-scroll" id="research-industries">
@@ -282,7 +299,7 @@
                 <div class="analyses-main">
                     <div class="panel">
                         <div class="panel-header">📐 提取的轮动规则
-                            <select class="trained-rules-scope analysis-strategy-select" onchange="Workbench.onAnalysisStrategyChange(this.value)" title="选择策略（全局仅规则学习可用）"></select>
+                            <select class="trained-rules-scope strategy-select" onchange="Workbench.onStrategyChange(this.value)" title="选择策略（全局仅规则学习可用）"></select>
                             <span class="panel-sub" id="rules-count-sub"></span>
                         </div>
                         <div class="panel-body analyses-scroll" id="analyses-rules-list">

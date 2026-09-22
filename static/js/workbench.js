@@ -100,16 +100,16 @@ const Workbench = {
 
     bindViewTabs() {
         document.querySelectorAll('.view-tab').forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
-                tab.classList.add('active');
-                this.currentView = tab.dataset.view;
-                this.switchView(this.currentView);
-            });
+            tab.addEventListener('click', () => this.switchView(tab.dataset.view));
         });
     },
 
     switchView(view) {
+        // 同步Tab高亮与当前视图（互链跳转与手动点击走同一路径）
+        document.querySelectorAll('.view-tab').forEach(t => {
+            t.classList.toggle('active', t.dataset.view === view);
+        });
+        this.currentView = view;
         document.querySelectorAll('.view-panel').forEach(p => p.style.display = 'none');
         const panel = document.getElementById(`view-${view}`);
         if (panel) panel.style.display = 'block';
@@ -481,20 +481,65 @@ const Workbench = {
     async loadResearchView() {
         const picksEl = document.getElementById('research-picks');
         const indEl = document.getElementById('research-industries');
+        const stratEl = document.getElementById('research-strategy');
         if (picksEl) picksEl.innerHTML = '<div class="empty-hint">加载中...</div>';
         if (indEl) indEl.innerHTML = '<div class="empty-hint">加载中...</div>';
+        if (stratEl) stratEl.innerHTML = '<div class="empty-hint">加载中...</div>';
+        await this._ensureStrategySelect();
         try {
-            const [picksResp, indResp] = await Promise.all([
+            const [picksResp, indResp, mapResp] = await Promise.all([
                 fetch('/api/research/stock-picks?top_n=30').then(r => r.json()).catch(() => ({ code: 500 })),
                 fetch('/api/research/industry-ranking').then(r => r.json()).catch(() => ({ code: 500 })),
+                this._strategyId
+                    ? fetch(`/api/research/strategy-mapping?strategy_id=${this._strategyId}`).then(r => r.json()).catch(() => ({ code: 500 }))
+                    : Promise.resolve({ code: 200, data: { etfs: [], industries: {} } }),
             ]);
             if (picksResp.code === 200) this.renderStockPicks(picksResp.data.picks || []);
             else if (picksEl) picksEl.innerHTML = '<div class="empty-hint">暂无数据（请先回填历史数据）</div>';
-            if (indResp.code === 200) this.renderIndustryRanking(indResp.data.industries || []);
+            const mapping = mapResp.code === 200 ? mapResp.data : { etfs: [], industries: {} };
+            this.renderResearchStrategyPanel(mapping);
+            if (indResp.code === 200) this.renderIndustryRanking(indResp.data.industries || [], mapping.industries || {});
             else if (indEl) indEl.innerHTML = '<div class="empty-hint">暂无数据</div>';
         } catch (e) {
             console.error('加载研究视图失败:', e);
         }
+    },
+
+    // 本策略标的板块性价比：池内ETF → 行业评分（与轮动辩论注入同源）
+    renderResearchStrategyPanel(mapping) {
+        const el = document.getElementById('research-strategy');
+        if (!el) return;
+        const sub = document.getElementById('research-strategy-sub');
+        if (!this._strategyId) {
+            if (sub) sub.textContent = '';
+            el.innerHTML = '<div class="empty-hint">选择策略后展示本策略标的的行业性价比（与轮动辩论同源信号）</div>';
+            return;
+        }
+        const etfs = mapping.etfs || [];
+        if (!etfs.length) {
+            if (sub) sub.textContent = '';
+            el.innerHTML = '<div class="empty-hint">该策略暂无标的池记录</div>';
+            return;
+        }
+        const matched = etfs.filter(e => e.industry).length;
+        if (sub) sub.textContent = matched ? `${matched}/${etfs.length} 只匹配到行业评分 · ${etfs[0].as_of || ''}` : '暂无行业评分（请先回填历史数据）';
+        el.innerHTML = etfs.map(e => {
+            const rank = e.rank != null && e.total != null ? `#${e.rank}/${e.total}` : '-';
+            const score = e.score != null ? Number(e.score).toFixed(1) : '-';
+            const mark = e.is_holding
+                ? `<em class="sv-etf-mark sv-etf-mark--hold">持仓${e.holding_pct != null ? ' ' + e.holding_pct + '%' : ''}</em>`
+                : '<em class="sv-etf-mark sv-etf-mark--pool">池内</em>';
+            return `<div class="rs-item" onclick="Workbench.gotoMarket('${e.etf_code}')" title="在行情视图查看">
+                <div class="rs-main">
+                    <span class="rs-name">${this.esc(e.etf_name || e.etf_code)}${mark}</span>
+                    <span class="rs-code">${e.etf_code}</span>
+                </div>
+                <div class="rs-right">
+                    <span class="rs-industry">${this.esc(e.industry || '未匹配行业')}</span>
+                    ${e.score != null ? `<span class="rs-score">${score}<em>${rank}</em></span>` : ''}
+                </div>
+            </div>`;
+        }).join('') + '<div class="research-note">行业评分来自沪深300+中证500池的盈利-估值性价比模型，与轮动辩论注入的板块信号同源，仅供板块层面参考。</div>';
     },
 
     renderStockPicks(picks) {
@@ -550,9 +595,10 @@ const Workbench = {
         `;
     },
 
-    renderIndustryRanking(industries) {
+    renderIndustryRanking(industries, strategyIndustries) {
         const el = document.getElementById('research-industries');
         if (!el) return;
+        strategyIndustries = strategyIndustries || {};
         // 仅保留最新评分日
         const byDate = {};
         industries.forEach(r => { (byDate[r.trade_date] = byDate[r.trade_date] || []).push(r); });
@@ -564,8 +610,13 @@ const Workbench = {
             el.innerHTML = '<div class="empty-hint">暂无行业评分（请先回填历史数据）</div>';
             return;
         }
-        el.innerHTML = rows.map(r => `
-            <div class="industry-card">
+        el.innerHTML = rows.map(r => {
+            const codes = strategyIndustries[r.industry] || [];
+            const chips = codes.length
+                ? `<div class="industry-strategy-chips"><span class="isc-label">本策略</span>${codes.map(c => `<span class="isc-chip" onclick="Workbench.gotoMarket('${c}')" title="在行情视图查看">${this.etfLabel(c)}</span>`).join('')}</div>`
+                : '';
+            return `
+            <div class="industry-card ${codes.length ? 'industry-card--strategy' : ''}">
                 <div class="industry-head">
                     <span class="industry-rank">#${r.rank}</span>
                     <span class="industry-name">${this.esc(r.industry)}</span>
@@ -579,7 +630,9 @@ const Workbench = {
                     ${r.trend_momentum != null ? ` · 趋势${r.trend_momentum > 0 ? '+' : ''}${r.trend_momentum.toFixed(1)}%` : ''}
                     · 样本 ${r.sample_count || 0}
                 </div>
-            </div>`).join('');
+                ${chips}
+            </div>`;
+        }).join('');
     },
 
     triggerResearchBackfill() {
@@ -775,7 +828,7 @@ const Workbench = {
                     const pct = h && denom > 0 ? (h.market_value / denom * 100) : 0;
                     const pnl = h && h.current_price && h.avg_cost ? ((h.current_price / h.avg_cost - 1) * 100) : null;
                     return `<div class="ov-hold-row ov-hold-wide">
-                        <span class="ov-hold-etf">${this.etfLabel(code)}${pct > 0 ? ` <em class="hold-pct">${pct.toFixed(0)}%</em>` : ''}</span>
+                        <span class="ov-hold-etf link-cell" onclick="event.stopPropagation();Workbench.gotoMarket('${code}')" title="在行情视图查看">${this.etfLabel(code)}${pct > 0 ? ` <em class="hold-pct">${pct.toFixed(0)}%</em>` : ''}</span>
                         <span class="num">${h ? h.quantity : '-'}</span>
                         <span class="num">${h ? (h.avg_cost || 0).toFixed(3) : '-'}</span>
                         <span class="num">${h ? (h.current_price || 0).toFixed(3) : '-'}${pnl != null ? ` <em class="${pnl >= 0 ? 'text-up' : 'text-down'}">${pnl >= 0 ? '+' : ''}${pnl.toFixed(1)}%</em>` : ''}</span>
@@ -831,8 +884,9 @@ const Workbench = {
         } catch (e) { el.style.display = 'none'; }
     },
 
-    // 默认策略ID：第一个运行中的自动策略，兜底第一个自动策略，再兜底1（会话内缓存）
+    // 默认策略ID：共享选择器优先，其次第一个运行中的自动策略，兜底第一个自动策略，再兜底1（会话内缓存）
     async _getDefaultStrategyId() {
+        if (this._strategyId) return Number(this._strategyId);
         if (this._defaultStrategyId) return this._defaultStrategyId;
         try {
             const resp = await fetch('/api/strategy/list').then(r => r.json());
@@ -948,6 +1002,7 @@ const Workbench = {
 
     async loadSentimentView() {
         if (!this._sentiCalDate) this._sentiCalDate = new Date();
+        await this._ensureStrategySelect();
         await this.renderSentiCalendar();
         if (!this._sentiSelectedDate) {
             this._sentiSelectedDate = this._sentiLatestDate || this._dateStr(new Date());
@@ -973,7 +1028,8 @@ const Workbench = {
         const endDate = this._dateStr(new Date(year, month + 2, 0));
 
         try {
-            const resp = await fetch(`/api/auto-strategy/sentiments/calendar?start_date=${startDate}&end_date=${endDate}`).then(r => r.json());
+            const q = this._strategyId ? `&strategy_id=${this._strategyId}` : '';
+            const resp = await fetch(`/api/auto-strategy/sentiments/calendar?start_date=${startDate}&end_date=${endDate}${q}`).then(r => r.json());
             const days = resp.code === 200 ? (resp.data.days || []) : [];
             const dayMap = {};
             days.forEach(d => { dayMap[d.date] = d; });
@@ -1010,9 +1066,13 @@ const Workbench = {
                 if (isSelected) cls += ' sc-selected';
                 else if (isToday) cls += ' sc-today';
 
-                const tip = dayData ? `${dateStr} | 均分:${dayData.avg_score != null ? dayData.avg_score.toFixed(2) : '-'} | 共${dayData.total}条` : dateStr;
+                const rel = dayData ? (dayData.strategy_related || 0) : 0;
+                const relDot = rel > 0 ? '<span class="sc-rel-dot" title="涉及本策略标的的舆情"></span>' : '';
+                const tip = dayData
+                    ? `${dateStr} | 均分:${dayData.avg_score != null ? dayData.avg_score.toFixed(2) : '-'} | 共${dayData.total}条${rel > 0 ? ` | 涉及策略${rel}条` : ''}`
+                    : dateStr;
                 html += `<div class="${cls}" title="${tip}" onclick="Workbench.selectSentimentDate('${dateStr}')">
-                    <div>${d}</div>${scoreHtml}
+                    <div>${d}</div>${scoreHtml}${relDot}
                 </div>`;
             }
             calEl.innerHTML = html;
@@ -1051,11 +1111,12 @@ const Workbench = {
         try {
             const [sumResp, listResp] = await Promise.all([
                 fetch(`/api/auto-strategy/sentiments/summary?target_date=${dateStr}`).then(r => r.json()).catch(() => ({code: 500})),
-                fetch(`/api/auto-strategy/sentiments/by-date?target_date=${dateStr}`).then(r => r.json()).catch(() => ({code: 500})),
+                fetch(`/api/auto-strategy/sentiments/by-date?target_date=${dateStr}${this._strategyId ? `&strategy_id=${this._strategyId}` : ''}`).then(r => r.json()).catch(() => ({code: 500})),
             ]);
 
             const summary = sumResp.code === 200 ? sumResp.data : null;
             const sentiments = listResp.code === 200 ? (listResp.data.sentiments || []) : [];
+            const strategyMarks = (listResp.code === 200 && listResp.data.strategy_marks) ? listResp.data.strategy_marks : {};
 
             const dateEl = document.getElementById('senti-view-date');
             if (dateEl) dateEl.textContent = dateStr;
@@ -1103,6 +1164,12 @@ const Workbench = {
                     const sIcon = s.sentiment_label === 'positive' ? '▲' : s.sentiment_label === 'negative' ? '▼' : '—';
                     const time = s.created_at ? new Date(s.created_at).toLocaleString('zh-CN', {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '';
                     const etfs = (s.related_etfs || []).slice(0, 6);
+                    const markTip = code => {
+                        const m = strategyMarks[code];
+                        if (!m) return '';
+                        const label = m.is_holding ? '持仓' : '池内';
+                        return `<em class="sv-etf-mark sv-etf-mark--${m.is_holding ? 'hold' : 'pool'}">${label}</em>`;
+                    };
                     const scoreBadge = s.sentiment_score != null
                         ? `<span class="sv-item-score" style="color:${sColor}">${s.sentiment_score > 0 ? '+' : ''}${s.sentiment_score.toFixed(2)}</span>` : '';
                     const hasDetail = s.content || (s.key_factors && s.key_factors.length) || etfs.length;
@@ -1120,7 +1187,7 @@ const Workbench = {
                         ${hasDetail ? `<div class="sv-item-detail">
                             ${s.content ? `<div class="sv-detail-content">${this.esc(s.content)}</div>` : ''}
                             ${s.key_factors && s.key_factors.length ? `<div class="sv-detail-factors"><span class="sv-detail-label">关键因素</span>${s.key_factors.map(f => `<span class="sv-factor-tag">${this.esc(f)}</span>`).join('')}</div>` : ''}
-                            ${etfs.length ? `<div class="sv-detail-etfs"><span class="sv-detail-label">关联ETF</span>${etfs.map(e => `<span class="sv-etf-tag">${this.etfLabel(e)}</span>`).join('')}</div>` : ''}
+                            ${etfs.length ? `<div class="sv-detail-etfs"><span class="sv-detail-label">关联ETF</span>${etfs.map(e => `<span class="sv-etf-tag ${strategyMarks[e] ? 'sv-etf-tag--marked' : ''}" onclick="event.stopPropagation();Workbench.gotoMarket('${e}')" title="在行情视图查看">${this.etfLabel(e)}${markTip(e)}</span>`).join('')}</div>` : ''}
                         </div>` : ''}
                     </div>`;
                 }).join('');
@@ -1450,12 +1517,32 @@ const Workbench = {
     _mktPageSize: 50,
     _mktDate: '',
     _mktDates: [],
+    _mktStrategyOnly: false,
+    _mktFocusCode: null,
+
+    toggleMarketStrategyOnly() {
+        if (!this._strategyId) return;
+        this._mktStrategyOnly = !this._mktStrategyOnly;
+        this._mktPage = 1;
+        this._syncMarketStrategyOnlyBtn();
+        this.loadMarket();
+    },
+
+    _syncMarketStrategyOnlyBtn() {
+        const btn = document.getElementById('mkt-strategy-only');
+        if (!btn) return;
+        const enabled = !!this._strategyId;
+        btn.disabled = !enabled;
+        if (!enabled) this._mktStrategyOnly = false;
+        btn.classList.toggle('active', enabled && this._mktStrategyOnly);
+    },
 
     async loadMarket() {
         const el = document.getElementById('market-content');
         if (!el) return;
         el.innerHTML = '<div class="empty-hint">加载中...</div>';
         this._mktDetailCache = {};
+        await this._ensureStrategySelect();
 
         try {
             const params = new URLSearchParams({
@@ -1466,6 +1553,10 @@ const Workbench = {
                 page_size: this._mktPageSize,
             });
             if (this._mktDate) params.set('date', this._mktDate);
+            if (this._strategyId) {
+                params.set('strategy_id', this._strategyId);
+                if (this._mktStrategyOnly) params.set('strategy_only', 'true');
+            }
             const resp = await fetch(`/api/workbench/market-indicators?${params}`);
             const data = await resp.json();
             if (data.code !== 200) { el.innerHTML = '<div>加载失败</div>'; return; }
@@ -1482,10 +1573,85 @@ const Workbench = {
             this.renderMarketTable(el, rows);
             this.renderMarketPagination(total);
 
-            if (rows.length === 0) { el.innerHTML = '<div class="empty-hint">无匹配数据</div>'; }
+            if (rows.length === 0) {
+                const focusCode = this._mktFocusCode;
+                this._mktFocusCode = null;
+                const hint = this._mktStrategyOnly
+                    ? '当前策略在该日无持仓/池内标的'
+                    : (focusCode ? `未找到 ${focusCode} 在该交易日的指标数据` : '无匹配数据');
+                el.innerHTML = `<div class="empty-hint">${hint}</div>`;
+            } else if (this._mktFocusCode) {
+                // 互链定位：展开目标ETF详情行
+                const code = this._mktFocusCode;
+                this._mktFocusCode = null;
+                const detail = document.getElementById(`mkt-detail-${code}`);
+                if (detail) {
+                    this.toggleEtfDetail(code, detail.previousElementSibling);
+                    detail.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }
         } catch (e) {
             el.innerHTML = '<div style="color:var(--danger)">请求失败</div>';
         }
+    },
+
+    // === 视图互链 ===
+
+    gotoMarket(code) {
+        this._mktQuery = code || '';
+        this._mktPage = 1;
+        this._mktFocusCode = code || null;
+        const search = document.getElementById('mkt-search');
+        if (search) search.value = this._mktQuery;
+        this.switchView('market');
+    },
+
+    gotoStrategy(id) {
+        if (!id) return;
+        this._stratFocusId = Number(id);
+        this.switchView('strategies');
+    },
+
+    gotoAnalysis(date) {
+        if (!date) return;
+        this._analysisFocusDate = date;
+        this.switchView('analyses');
+    },
+
+    // 行情行的策略标注：持仓/池内/禁入
+    mktStrategyBadges(r) {
+        const m = r.strategy;
+        if (!m) return '';
+        let html = '';
+        if (m.is_holding) {
+            const pct = m.holding_pct != null ? ` ${m.holding_pct}%` : '';
+            const click = this._strategyId
+                ? ` onclick="event.stopPropagation();Workbench.gotoStrategy(${Number(this._strategyId)})" title="查看策略持仓"` : '';
+            html += `<span class="s-tag s-tag-hold"${click}>持仓${pct}</span>`;
+        } else if (m.in_pool) {
+            html += '<span class="s-tag s-tag-pool">池内</span>';
+        }
+        if (m.banned_count > 0) {
+            html += `<span class="s-tag s-tag-banned" title="历史失败${m.banned_count}次，已进规避名单">禁入</span>`;
+        }
+        return html;
+    },
+
+    mktStrategyLine(r) {
+        const m = r.strategy;
+        if (!m) return '';
+        const parts = [];
+        if (m.is_holding) {
+            const qty = m.holding_qty != null ? `${m.holding_qty}股` : '';
+            const pct = m.holding_pct != null ? `占总资产 ${m.holding_pct}%` : '';
+            parts.push(`持仓 ${[qty, pct].filter(Boolean).join(' · ')}`);
+        } else if (m.in_pool) {
+            parts.push('标的池内候选（当前未持有）');
+        } else {
+            parts.push('不在当前策略标的池内');
+        }
+        if (m.banned_count > 0) parts.push(`⚠ 历史失败 ${m.banned_count} 次，已列入规避名单`);
+        return `<div class="mkt-detail-strategy"><span class="mds-label">策略处置</span>${parts.join(' · ')}</div>`;
     },
 
     renderMarketTable(el, rows) {
@@ -1515,7 +1681,7 @@ const Workbench = {
                         <td class="mkt-rank">${r.rank || ((this._mktPage - 1) * this._mktPageSize + i + 1)}</td>
                             <td class="mkt-etf">
                                 <span class="mkt-name">${this.esc(r.etf_name || '-')}</span>
-                                <span class="mkt-code">${r.etf_code}</span>
+                                <span class="mkt-code">${r.etf_code}${this.mktStrategyBadges(r)}</span>
                             </td>
                             <td class="num">${r.close_price != null ? r.close_price.toFixed(3) : '-'}</td>
                             <td class="num ${(r.change_pct||0) >= 0 ? 'text-up' : 'text-down'}">${r.change_pct != null ? (r.change_pct >= 0 ? '+' : '') + r.change_pct.toFixed(2) + '%' : '-'}</td>
@@ -1542,6 +1708,7 @@ const Workbench = {
                                         <div class="mkt-detail-item"><span class="mkt-dl">全市场排名</span><span class="mkt-dv">#${r.rank || '-'}</span></div>
                                         <div class="mkt-detail-item"><span class="mkt-dl">趋势强度</span><span class="mkt-dv">${r.trend_strength}/3</span></div>
                                     </div>
+                                    ${this.mktStrategyLine(r)}
                                     <div class="mkt-detail-verdict">
                                         ${r.trend_strength >= 3 && r.momentum_5d > 0 ? '<span class="mkt-tag mkt-tag-bull">强势多头</span>' : ''}
                                         ${r.trend_strength <= 0 && r.momentum_5d < 0 ? '<span class="mkt-tag mkt-tag-bear">弱势空头</span>' : ''}
@@ -1903,6 +2070,18 @@ const Workbench = {
                 this.loadStrategyHoldings(s);
                 if (s.holding_start_date) this.loadActualReturn(s.id, s.holding_start_date);
             });
+
+            // 互链定位：滚动到目标策略
+            if (this._stratFocusId) {
+                const id = this._stratFocusId;
+                this._stratFocusId = null;
+                const block = document.getElementById(`strat-block-${id}`);
+                if (block) {
+                    block.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    block.classList.add('strat-block-focus');
+                    setTimeout(() => block.classList.remove('strat-block-focus'), 2000);
+                }
+            }
         } catch (e) {
             el.innerHTML = '<div style="color:var(--danger)">请求失败</div>';
         }
@@ -1935,7 +2114,7 @@ const Workbench = {
                         <tbody>${holdings.map(h => {
                             const pct = totalAsset > 0 ? (h.market_value / totalAsset * 100).toFixed(1) : '0.0';
                             return `<tr>
-                                <td>${this.etfLabel(h.etf_code)}</td>
+                                <td class="link-cell" onclick="Workbench.gotoMarket('${h.etf_code}')" title="在行情视图查看">${this.etfLabel(h.etf_code)}</td>
                                 <td>${h.quantity}</td>
                                 <td>${Number(h.avg_cost).toFixed(3)}</td>
                                 <td>${Number(h.current_price).toFixed(3)}</td>
@@ -2334,13 +2513,15 @@ const Workbench = {
         if (this.currentView === 'rules') this.loadRulesView();
     },
 
-    // === 分析视图 ===
+    // === 视图级共享策略上下文 ===
 
-    // 分析/规则视图共享的策略选择状态（"" = 全局，仅规则学习可用）
-    _analysisStrategyId: null,
+    // 行情/舆情/分析/研究/规则五视图共享的策略选择状态（"" = 全局/全市场，不做策略标注）
+    _strategyId: null,
+    _stratFocusId: null,
+    _analysisFocusDate: null,
 
-    async _ensureAnalysisStrategySelect() {
-        const selects = document.querySelectorAll('.analysis-strategy-select');
+    async _ensureStrategySelect() {
+        const selects = document.querySelectorAll('.strategy-select');
         if (!selects.length) return;
         let autos = [];
         try {
@@ -2348,32 +2529,47 @@ const Workbench = {
             const list = resp.code === 200 ? ((resp.data && resp.data.strategies) || []) : [];
             autos = list.filter(s => s.strategy_type === 'auto');
         } catch (e) { /* 选择器降级为仅全局 */ }
-        if (this._analysisStrategyId === null) {
+        if (this._strategyId === null) {
             // 默认选第一个运行中的自动策略（接口以 status=active 为运行中口径）
             const preferred = autos.find(s => s.status === 'active') || autos[0];
-            this._analysisStrategyId = preferred ? String(preferred.id) : '';
+            this._strategyId = preferred ? String(preferred.id) : '';
+        } else if (this._strategyId && !autos.some(s => String(s.id) === this._strategyId)) {
+            this._strategyId = ''; // 策略被删除/归档时回退全局
         }
-        const options = '<option value="">全局（仅规则学习）</option>' + autos.map(s =>
+        const options = '<option value="">全局（不区分策略）</option>' + autos.map(s =>
             `<option value="${s.id}">策略${s.id}·${this.esc(s.name)}</option>`).join('');
         selects.forEach(sel => {
-            if (!sel.dataset.filled) { sel.dataset.filled = '1'; sel.innerHTML = options; }
-            sel.value = this._analysisStrategyId || '';
+            if (!sel.dataset.filled || sel._optCount !== autos.length) {
+                sel.dataset.filled = '1';
+                sel._optCount = autos.length;
+                sel.innerHTML = options;
+            }
+            sel.value = this._strategyId || '';
         });
+        this._syncMarketStrategyOnlyBtn();
     },
 
-    onAnalysisStrategyChange(val) {
-        this._analysisStrategyId = val || '';
-        document.querySelectorAll('.analysis-strategy-select').forEach(sel => { sel.value = this._analysisStrategyId; });
+    onStrategyChange(val) {
+        this._strategyId = val || '';
+        document.querySelectorAll('.strategy-select').forEach(sel => { sel.value = this._strategyId; });
+        this._syncMarketStrategyOnlyBtn();
+        if (this.currentView === 'market') { this._mktPage = 1; this.loadMarket(); }
+        if (this.currentView === 'sentiment') this.loadSentimentView();
         if (this.currentView === 'analyses') this.loadAnalysesView();
+        if (this.currentView === 'research') this.loadResearchView();
         if (this.currentView === 'rules') this.loadRulesView();
+    },
+
+    _currentStrategyId() {
+        return this._strategyId ? Number(this._strategyId) : 0;
     },
 
     async loadAnalysesView() {
         const dailyEl = document.getElementById('analyses-daily-list');
         const allocEl = document.getElementById('analyses-allocation-timeline');
         if (dailyEl) dailyEl.innerHTML = '<div class="empty-hint">加载中...</div>';
-        await this._ensureAnalysisStrategySelect();
-        const sid = this._analysisStrategyId || '';
+        await this._ensureStrategySelect();
+        const sid = this._strategyId || '';
 
         // 确保 ETF 名称映射已加载
         if (Object.keys(this._etfNameMap).length === 0) {
@@ -2385,6 +2581,7 @@ const Workbench = {
 
         // 全局视角无具体策略可看每日分析与配置轨迹
         if (!sid) {
+            this._analysisFocusDate = null;
             if (dailyEl) dailyEl.innerHTML = '<div class="empty-hint">全局视角无每日分析，请选择具体策略</div>';
             if (allocEl) allocEl.innerHTML = '<div class="empty-hint">全局视角无配置轨迹，请选择具体策略</div>';
             const sub = document.getElementById('analyses-count-sub');
@@ -2403,6 +2600,7 @@ const Workbench = {
                 const analyses = dailyResp.data.analyses || [];
                 document.getElementById('analyses-count-sub').textContent = `${analyses.length}天`;
                 this.renderDailyAnalyses(analyses);
+                this._focusAnalysisDate(analyses);
             } else {
                 dailyEl.innerHTML = '<div class="empty-hint">加载失败</div>';
             }
@@ -2417,6 +2615,24 @@ const Workbench = {
         } catch (e) {
             console.error('加载分析视图失败:', e);
             if (dailyEl) dailyEl.innerHTML = '<div class="empty-hint">加载异常</div>';
+        }
+    },
+
+    // 互链定位：舆情日期 → 分析视图该日卡片
+    _focusAnalysisDate(analyses) {
+        const target = this._analysisFocusDate;
+        if (!target) return;
+        this._analysisFocusDate = null;
+        const el = document.getElementById('analyses-daily-list');
+        if (!el) return;
+        const card = el.querySelector(`.analysis-card[data-date="${target}"]`);
+        if (card) {
+            card.classList.add('ac-focus');
+            card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setTimeout(() => card.classList.remove('ac-focus'), 3000);
+        } else if (analyses.length) {
+            el.insertAdjacentHTML('afterbegin',
+                `<div class="empty-hint">未找到 ${this.esc(target)} 的分析记录（可能早于当前60天窗口）</div>`);
         }
     },
 
@@ -2462,7 +2678,7 @@ const Workbench = {
             const signals = (a.key_signals || []).slice(0, 3);
 
             return `
-                <div class="analysis-card">
+                <div class="analysis-card" data-date="${this.esc(a.log_date)}">
                     <div class="ac-header">
                         <span class="ac-date">${this.esc(a.log_date)}</span>
                         <span class="ac-badge ${rm.cls}">${this.esc(rm.label)}</span>
@@ -2748,7 +2964,7 @@ const Workbench = {
             // 默认回测最近180天
             const startDate = dates.length > 120 ? dates[Math.min(120, dates.length - 1)] : '2024-01-02';
             // 跟随视图策略选择器（未选时取默认策略）
-            const sid = this._analysisStrategyId || await this._getDefaultStrategyId();
+            const sid = this._strategyId || await this._getDefaultStrategyId();
 
             const resp = await fetch('/api/backtest/run', {
                 method: 'POST',
@@ -2795,10 +3011,10 @@ const Workbench = {
     async loadRulesView() {
         const el = document.getElementById('analyses-rules-list');
         if (el) el.innerHTML = '<div class="empty-hint">加载中...</div>';
-        await this._ensureAnalysisStrategySelect();
+        await this._ensureStrategySelect();
         this.loadTrainedRules();
 
-        const sid = this._analysisStrategyId || '';
+        const sid = this._strategyId || '';
         // 轮动规则按策略统计；全局视角仅规则学习面板可用
         if (!sid) {
             if (el) el.innerHTML = '<div class="empty-hint">全局视角无轮动规则，请选择具体策略</div>';
@@ -2826,9 +3042,9 @@ const Workbench = {
         const el = document.getElementById("analyses-trained-rules");
         if (!el) return;
         el.innerHTML = "<div class=\"empty-hint\">加载中...</div>";
-        await this._ensureAnalysisStrategySelect();
+        await this._ensureStrategySelect();
 
-        const sid = this._analysisStrategyId || "";
+        const sid = this._strategyId || "";
         const q = sid !== "" ? `?strategy_id=${sid}` : "";
 
         fetch(`/api/rules${q}`)
@@ -2846,7 +3062,7 @@ const Workbench = {
     trainRulesNow() {
         const btn = document.getElementById("btn-refresh-trained-rules");
         if (btn) { btn.disabled = true; btn.textContent = "提取中..."; }
-        const sid = this._analysisStrategyId ? `?strategy_id=${this._analysisStrategyId}` : "";
+        const sid = this._strategyId ? `?strategy_id=${this._strategyId}` : "";
         fetch(`/api/rules/train${sid}`, { method: "POST" })
             .then(r => r.json())
             .then(d => {

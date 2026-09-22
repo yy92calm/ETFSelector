@@ -618,10 +618,17 @@ def get_market_indicators(
     page: int = 1,
     page_size: int = 50,
     date: str = "",
+    strategy_id: int = 0,
+    strategy_only: bool = False,
     db: Session = Depends(get_db),
 ):
-    """行情+量化指标联合查询（行情页用），支持分页与跨表排序"""
+    """行情+量化指标联合查询（行情页用），支持分页与跨表排序
+
+    strategy_id 传入时附带策略标注（池/持仓/禁入），strategy_only 时只返回池∪持仓的代码。
+    """
     from app.models.etf import ETFBasic, ETFQuotation, ETFDailyIndicator
+    from app.services.portfolio_service import get_portfolio_service
+    from app.services.failure_mode_service import get_failure_mode_service
     from app.utils.trading_calendar import get_display_date
     from datetime import date as _date
 
@@ -645,6 +652,10 @@ def get_market_indicators(
         "etf_name": ETFBasic.etf_name,
     }
 
+    # 策略标注数据：池∪持仓（标的池=当前配置∪待生效配置）
+    universe = get_portfolio_service().get_strategy_universe(strategy_id, db) if strategy_id else None
+    banned = get_failure_mode_service().get_banned_codes(db) if strategy_id else {}
+
     query = (
         db.query(ETFDailyIndicator, ETFQuotation, ETFBasic)
         .join(ETFQuotation, (ETFQuotation.etf_code == ETFDailyIndicator.etf_code)
@@ -658,6 +669,13 @@ def get_market_indicators(
             (ETFDailyIndicator.etf_code.contains(q)) | (ETFBasic.etf_name.contains(q))
         )
 
+    if universe is not None and strategy_only:
+        codes = universe["pool"] | universe["holding_codes"]
+        if not codes:
+            return APIResponse(data={"rows": [], "date": display_date.isoformat(), "total": 0,
+                                     "page": page, "page_size": page_size})
+        query = query.filter(ETFDailyIndicator.etf_code.in_(codes))
+
     total = query.count()
 
     sort_col = _SORT_COLS.get(sort_by, ETFDailyIndicator.composite_score)
@@ -667,6 +685,17 @@ def get_market_indicators(
     page = max(page, 1)
     page_size = min(max(page_size, 1), 200)
     for ind, quote, basic in query.offset((page - 1) * page_size).limit(page_size).all():
+        mark = None
+        if universe is not None:
+            h = universe["holdings"].get(ind.etf_code)
+            total_asset = universe["total_asset"]
+            mark = {
+                "in_pool": ind.etf_code in universe["pool"],
+                "is_holding": h is not None,
+                "holding_qty": h.quantity if h else None,
+                "holding_pct": round(h.market_value / total_asset * 100, 1) if (h and total_asset > 0) else None,
+                "banned_count": banned.get(ind.etf_code, 0),
+            }
         rows.append({
             "etf_code": ind.etf_code,
             "etf_name": basic.etf_name if basic else "",
@@ -683,6 +712,7 @@ def get_market_indicators(
             "ma5": ind.ma5,
             "ma10": ind.ma10,
             "ma20": ind.ma20,
+            "strategy": mark,
         })
 
     return APIResponse(data={

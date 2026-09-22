@@ -43,6 +43,51 @@ def get_stock_picks(top_n: int = Query(20, ge=1, le=100), db: Session = Depends(
     return APIResponse(data={"picks": picks, "total": len(picks)})
 
 
+@router.get("/strategy-mapping", response_model=APIResponse)
+def get_strategy_mapping(strategy_id: int = 0, db: Session = Depends(get_db)):
+    """本策略标的池→行业性价比映射（研究视图用）：池=当前配置∪待生效配置，无匹配时返回空"""
+    if not strategy_id:
+        return APIResponse(data={"etfs": [], "industries": {}})
+
+    from app.models.etf import ETFBasic
+    from app.services.portfolio_service import get_portfolio_service
+
+    universe = get_portfolio_service().get_strategy_universe(strategy_id, db)
+    codes = sorted(universe["pool"] | universe["holding_codes"])
+    if not codes:
+        return APIResponse(data={"etfs": [], "industries": {}})
+
+    names = {
+        b.etf_code: b.etf_name
+        for b in db.query(ETFBasic).filter(ETFBasic.etf_code.in_(codes)).all()
+    }
+    signals = get_value_model_service().get_etf_industry_signals(
+        db, {c: names.get(c) for c in codes}
+    )
+
+    etfs = []
+    industries: dict = {}
+    for code in codes:
+        sig = signals.get(code) or {}
+        h = universe["holdings"].get(code)
+        total_asset = universe["total_asset"]
+        etfs.append({
+            "etf_code": code,
+            "etf_name": names.get(code, ""),
+            "is_holding": h is not None,
+            "holding_pct": round(h.market_value / total_asset * 100, 1) if (h and total_asset > 0) else None,
+            "industry": sig.get("industry"),
+            "score": sig.get("score"),
+            "rank": sig.get("rank"),
+            "total": sig.get("total"),
+            "as_of": sig.get("as_of"),
+        })
+        if sig.get("industry"):
+            industries.setdefault(sig["industry"], []).append(code)
+
+    return APIResponse(data={"etfs": etfs, "industries": industries})
+
+
 @router.post("/backfill", response_model=APIResponse)
 def trigger_backfill(years: int = Query(3, ge=1, le=5), db: Session = Depends(get_db)):
     """后台回填池内个股历史估值 + 增速 + 行业（首次上线/年度刷新用，耗时数分钟）"""

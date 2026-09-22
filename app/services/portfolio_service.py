@@ -345,6 +345,24 @@ class PortfolioService:
             .all()
         )
 
+    def get_strategy_universe(self, strategy_id: int, db: Session) -> Dict:
+        """策略视角标的集合：池（当前配置∪待生效配置）+ 在持，供各视图做策略标注"""
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+        pool: set = set()
+        if strategy:
+            for alloc in (strategy.allocation_config, strategy.pending_allocation):
+                if isinstance(alloc, dict):
+                    pool.update(str(c) for c in alloc.keys())
+        holdings = {h.etf_code: h for h in self.get_holdings(strategy_id, db)}
+        return {
+            "exists": strategy is not None,
+            "strategy": strategy,
+            "pool": pool,
+            "holdings": holdings,
+            "holding_codes": set(holdings.keys()),
+            "total_asset": sum(h.market_value or 0 for h in holdings.values()),
+        }
+
     def get_trades(self, strategy_id: int, db: Session) -> List[TradeRecord]:
         return (
             db.query(TradeRecord)
