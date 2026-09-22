@@ -3214,19 +3214,53 @@ const Workbench = {
     },
 
     trainRulesNow() {
-        const btn = document.getElementById("btn-refresh-trained-rules");
-        if (btn) { btn.disabled = true; btn.textContent = "提取中..."; }
+        if (this.currentView === 'analyses' && !this._strategyId) {
+            alert('请先在上方选择策略，再提取该策略的规则');
+            return;
+        }
+        const btns = document.querySelectorAll('.btn-extract-rules');
+        btns.forEach(b => { b._origText = b.textContent; b.disabled = true; b.textContent = '⏳ 提取中...'; });
+        this._setRulesStatus('提取中...', '');
         const sid = this._strategyId ? `?strategy_id=${this._strategyId}` : "";
         fetch(`/api/rules/train${sid}`, { method: "POST" })
             .then(r => r.json())
             .then(d => {
-                if (d.code === 200) this.loadTrainedRules();
-                else alert("提取失败: " + (d.message || ""));
+                if (d.code !== 200) {
+                    alert("提取失败: " + (d.message || ""));
+                    this._setRulesStatus('', '');
+                    return;
+                }
+                const data = d.data || {};
+                const tp = data.training_period || null;
+                const rp = data.replay_period || null;
+                const regimeCount = Object.keys(data.regime_rules || {}).length;
+                const parts = [];
+                if (tp) parts.push(`真实${tp.days}天`);
+                if (rp) parts.push(`回放${rp.days}天`);
+                const summary = parts.length ? parts.join(' / ') : '无分析样本';
+                if (regimeCount) {
+                    this._setRulesStatus(`已提取 · ${summary} · ${regimeCount}种状态`, 'ok');
+                } else {
+                    this._setRulesStatus(`样本不足（${summary}），仍回退确定性规则`, 'warn');
+                }
+                // 按当前视图刷新：规则视图刷新规则面板，分析视图刷新每日分析与轨迹
+                if (this.currentView === 'rules') this.loadRulesView();
+                if (this.currentView === 'analyses') this.loadAnalysesView();
             })
-            .catch(() => alert("提取请求失败"))
+            .catch(() => {
+                alert("提取请求失败");
+                this._setRulesStatus('', '');
+            })
             .finally(() => {
-                if (btn) { btn.disabled = false; btn.textContent = "🔄 重新提取"; }
+                btns.forEach(b => { b.disabled = false; b.textContent = b._origText || '🔄 提取规则'; });
             });
+    },
+
+    _setRulesStatus(text, level) {
+        document.querySelectorAll('#trained-rules-status').forEach(el => {
+            el.textContent = text || '';
+            el.className = 'panel-sub' + (level === 'warn' ? ' ext-warn' : level === 'ok' ? ' ext-ok' : '');
+        });
     },
 
     renderTrainedRules(rules, el) {
@@ -3248,8 +3282,11 @@ const Workbench = {
             + '</span>'
             + '<span class="rule-scope-snap">' + this.esc(snapText) + '</span>'
             + '</div>';
-        if (isStrategyScope && !tp && !rp) {
-            el.innerHTML = metaHtml + '<div class="empty-hint">该策略暂无足够分析数据，回测时将回退全局规则</div>';
+        if (!tp && !rp) {
+            el.innerHTML = metaHtml + '<div class="empty-hint">' +
+                (isStrategyScope ? '该策略' : '全局') +
+                '暂无足够分析样本（需 ≥10 天 analyzed 记录），提取后仍会回退确定性规则——' +
+                '可等待每日管道继续积累，或用「回放」补足历史样本</div>';
             return;
         }
 

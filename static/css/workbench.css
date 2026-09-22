@@ -3368,3 +3368,23 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .ev-senti-item:hover { background: var(--bg-hover); }
 .ev-senti-date { color: var(--text-secondary); flex-shrink: 0; font-variant-numeric: tabular-nums; }
 .ev-senti-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ===== 规则提取入口（规则视图/分析视图共用）===== */
+.btn-extract-rules {
+    margin-left: auto;
+    padding: 5px 14px;
+    border: none;
+    border-radius: 6px;
+    background: var(--accent);
+    color: #fff;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: opacity 0.15s ease;
+}
+.btn-extract-rules:hover { opacity: 0.88; }
+.btn-extract-rules:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn-extract-rules + .btn-backtest-rule { margin-left: 6px; }
+.panel-sub.ext-ok { color: var(--accent); }
+.panel-sub.ext-warn { color: var(--warning); }
