@@ -295,3 +295,16 @@ python -m app.services.replay_service
 - `.claude/worktrees/` 为历史工作树，不修改。
 - `app/memory_logs/` 为运行时生成的决策日志，不提交。
 - `server.log`、`etf_selector.db` 为运行时产物，不作为代码理解依据。
+
+## 协作约定
+
+- **提交节奏**：改完可直接 commit + push（用户已确认）。
+- **部署节奏**：上线到服务器（停服/pull/重启）**必须先问用户**，得到确认后再动。
+
+### 服务器部署要点（历史踩坑）
+
+- 线上路径 `/home/ubuntu/workspace/ETFSelector`，SSH `ssh -i ~/.ssh/yang.pem ubuntu@43.133.82.137`（无 systemd/tmux，进程为 `venv/bin/python main.py`，端口 12958）。
+- 启动方式：`cd ~/workspace/ETFSelector && nohup setsid venv/bin/python main.py >> server.log 2>&1 < /dev/null &`
+- 线上库 `etf_selector.db` 已取消 git 跟踪（`.gitignore` 忽略 `*.db`），git 不会再动它；若又遇到仍被跟踪的情况，先 `git rm --cached etf_selector.db` 再 pull，**切勿让 git 删掉线上库**。
+- 部署顺序：停服 → pull → 核验 DB（大小/md5/integrity_check）→ 启服 → 健康检查 + 新接口验证。
+- `.env` 的 `DEBUG=True` 开启 uvicorn reload，而 `server.log` 在监听目录内会自我触发 `change detected`（历史累计数百万条、日志 368MB）；生产建议 `DEBUG=False` 或日志重定向到项目目录外。
