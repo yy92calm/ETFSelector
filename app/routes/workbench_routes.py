@@ -286,6 +286,17 @@ def get_daily_analysis(
     return APIResponse(data={"analyses": analyses, "total": len(analyses)})
 
 
+@router.get("/strategy-evidence", response_model=APIResponse)
+def get_strategy_evidence(strategy_id: int = 1, db: Session = Depends(get_db)):
+    """策略决策依据：行情（评分/换仓差距）+研究（行业性价比）+规则（建议配置）+舆情 +最近决策留痕"""
+    from app.services.strategy_evidence_service import get_strategy_evidence_service
+
+    evidence = get_strategy_evidence_service().get_evidence(strategy_id, db)
+    if not evidence.get("exists"):
+        return APIResponse(code=404, message="策略不存在", data=None)
+    return APIResponse(data=evidence)
+
+
 @router.get("/monthly-target", response_model=APIResponse)
 def get_monthly_target(
     strategy_id: int = 1,

@@ -23,6 +23,9 @@ class RotationJudge(BaseAgent):
 ## 候选池
 {candidates}
 
+## 规则参考（该策略在同类市场状态下的历史统计偏好）
+{rule_context}
+
 ## 裁决规则
 - 持仓总数必须≤5只
 - 有进必有出（替换制）
@@ -50,15 +53,16 @@ class RotationJudge(BaseAgent):
   "summary": "一句话裁决总结"
 }}
 
-如果决定不换，final_swaps为空数组，decision为"hold"。"""
+如果决定不换，final_swaps为空数组，decision为"hold"。规则参考仅为历史统计偏好：与当日数据冲突时以当日数据为准，但需在 dissent_note 中说明为何不采纳规则建议。"""
 
     def analyze(self, momentum_opinion: Dict, stability_opinion: Dict,
-                holdings: list, candidates: list) -> Dict:
+                holdings: list, candidates: list, rule_context: str = "") -> Dict:
         prompt = self.PROMPT.format(
             momentum_opinion=json.dumps(momentum_opinion, ensure_ascii=False, indent=2),
             stability_opinion=json.dumps(stability_opinion, ensure_ascii=False, indent=2),
             holdings=json.dumps(holdings, ensure_ascii=False, indent=2),
             candidates=json.dumps(candidates, ensure_ascii=False, indent=2),
+            rule_context=rule_context or "无规则参考",
         )
         result = self.call_llm(prompt, temperature=0.2)
         return result if result and "error" not in result else {"error": "裁决失败", "decision": "hold", "final_swaps": []}

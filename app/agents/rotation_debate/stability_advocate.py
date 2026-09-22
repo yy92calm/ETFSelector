@@ -20,6 +20,9 @@ class StabilityAdvocate(BaseAgent):
 ## 市场宏观环境
 {macro_context}
 
+## 规则参考（该策略在同类市场状态下的历史统计偏好）
+{rule_context}
+
 ## 你的任务
 从稳定性/交易成本/均值回归角度，审视候选替换是否合理。输出JSON（不要包含其他文字）：
 {{
@@ -42,13 +45,15 @@ class StabilityAdvocate(BaseAgent):
   "summary": "一句话总结稳定派观点"
 }}
 
-注意：你不是完全反对换仓，而是要求充分理由。如果某只持仓确实趋势破位（得分远低于候选），你也应该同意替换。若候选带有 industry_value 字段（行业盈利-估值性价比排名，rank 越接近 total 行业越被高估），可对"高估行业追涨"提出质疑；该信号仅是板块层面参考，不得涉及个股判断。"""
+注意：你不是完全反对换仓，而是要求充分理由。如果某只持仓确实趋势破位（得分远低于候选），你也应该同意替换。若候选带有 industry_value 字段（行业盈利-估值性价比排名，rank 越接近 total 行业越被高估），可对"高估行业追涨"提出质疑；该信号仅是板块层面参考，不得涉及个股判断。规则参考如果与某笔换入方向相反（规则建议减持该标的），应作为反对理由的一部分明确引用。"""
 
-    def analyze(self, holdings: List[Dict], candidates: List[Dict], macro_context: str = "") -> Dict:
+    def analyze(self, holdings: List[Dict], candidates: List[Dict],
+                macro_context: str = "", rule_context: str = "") -> Dict:
         prompt = self.PROMPT.format(
             holdings=json.dumps(holdings, ensure_ascii=False, indent=2),
             candidates=json.dumps(candidates, ensure_ascii=False, indent=2),
             macro_context=macro_context or "无额外宏观信息",
+            rule_context=rule_context or "无规则参考",
         )
         result = self.call_llm(prompt, temperature=0.4)
         return result if result and "error" not in result else {"error": "稳定派分析失败", "stance": "conservative_hold", "acceptable_swaps": []}

@@ -39,6 +39,15 @@ REGIME_LABELS = {
     "bull_quiet": "温和牛市",
 }
 
+# 规则建议的来源标签（策略决策依据展示用）
+RULE_SOURCE_LABELS = {
+    "ai_history_strategy": "本策略AI规则",
+    "ai_history_global": "全局AI规则",
+    "deterministic": "确定性规则",
+    "static_fallback": "当前配置兜底",
+    "no_indicator": "无当日指标",
+}
+
 ETF_CATEGORIES = {
     "equity": ["510300", "510500", "510050", "159915", "512100", "588000"],
     "bond": ["511010", "511260", "511020"],
@@ -173,22 +182,41 @@ class RuleEngine:
         规则兜底链：本策略AI规则 → 全局AI规则 → 确定性规则 → 策略静态配置；
         所有AI/确定性分支产出统一收敛到策略标的池（base_allocation 的 keys）。
         """
+        allocation, _ = self._resolve_allocation(
+            trade_date, db, base_allocation, lookback_days, strategy_id
+        )
+        return allocation
+
+    def _resolve_allocation(
+        self,
+        trade_date: date,
+        db: Session,
+        base_allocation: dict,
+        lookback_days: int = 30,
+        strategy_id: Optional[int] = None,
+    ) -> tuple:
+        """
+        规则兜底链求解：返回 (目标配置, 来源分支)
+
+        来源分支：ai_history（AI历史规则）/ deterministic（确定性规则）
+              / static_fallback（静态配置兜底）/ no_indicator（当日无指标）
+        """
         # 1. 获取当日有指标的ETF
         indicators = self._get_indicators(trade_date, db)
         if not indicators:
-            return base_allocation
+            return base_allocation, "no_indicator"
         pool = set((base_allocation or {}).keys())
 
         # 2. 判定市场状态（全局共享）
         regime = self._compute_regime(trade_date, db, lookback_days)
-        
+
         # 3. AI历史规则（策略优先，全局兜底）
         trained = self._ensure_trained_rules(db, strategy_id=strategy_id)
         if trained:
             from app.services.rule_trainer import get_rule_trainer
             trainer = get_rule_trainer()
             ai_alloc = trainer.get_allocation_for_regime(regime, trained)
-            
+
             if ai_alloc and sum(ai_alloc.values()) > 0:
                 # 只保留当日有指标的ETF，并收敛到策略标的池
                 allocation = {
@@ -197,18 +225,79 @@ class RuleEngine:
                 }
                 allocation = self._filter_to_pool(allocation, pool)
                 if allocation:
-                    return allocation
-        
+                    return allocation, "ai_history"
+
         # 4. 回退到确定性规则（同样收敛到策略标的池）
         regime_weights = REGIMEAllocation.get(regime, REGIMEAllocation["neutral"])
         pool_indicators = [ind for ind in indicators if not pool or ind.etf_code in pool]
         allocation = self._distribute_by_score(pool_indicators, regime_weights)
         allocation = self._filter_to_pool(allocation, pool)
         if allocation:
-            return allocation
+            return allocation, "deterministic"
 
         # 5. 最终兜底：策略静态配置
-        return base_allocation
+        return base_allocation, "static_fallback"
+
+    def get_rule_suggestion(
+        self,
+        trade_date: date,
+        db: Session,
+        strategy_id: Optional[int] = None,
+        base_allocation: Optional[dict] = None,
+        lookback_days: int = 30,
+    ) -> dict:
+        """规则依据：当前市场状态下的规则建议配置（与规则驱动回测同源）
+
+        返回市场状态、规则来源、建议配置、与当前配置偏离；无数据时优雅降级不抛异常。
+        """
+        base_allocation = base_allocation or {}
+        allocation, branch = self._resolve_allocation(
+            trade_date, db, base_allocation, lookback_days, strategy_id
+        )
+        info = self.get_regime_info(trade_date, db, lookback_days, strategy_id=strategy_id)
+        regime = info["regime"]
+
+        trained = self._ensure_trained_rules(db, strategy_id=strategy_id) or {}
+        regime_rule = (trained.get("regime_rules") or {}).get(regime) or {}
+
+        if branch == "ai_history":
+            rule_source = info.get("rule_source") or "ai_history_global"
+            note = info.get("regime_explanation") or ""
+        elif branch == "deterministic":
+            rule_source = "deterministic"
+            note = "确定性规则：按当日综合得分在策略标的池内分配"
+        elif branch == "no_indicator":
+            rule_source = "no_indicator"
+            note = "当日无量化指标，无法给出规则建议"
+        else:
+            rule_source = "static_fallback"
+            note = "无可用规则样本，回退当前配置"
+
+        allocation = allocation or {}
+        codes = set(base_allocation) | set(allocation)
+        deviation = [{
+            "etf_code": c,
+            "current": round(float(base_allocation.get(c, 0)), 4),
+            "suggested": round(float(allocation.get(c, 0)), 4),
+            "delta": round(float(allocation.get(c, 0)) - float(base_allocation.get(c, 0)), 4),
+        } for c in sorted(codes)]
+
+        return {
+            "trade_date": trade_date.isoformat(),
+            "regime": regime,
+            "regime_label": info["regime_label"],
+            "rule_source": rule_source,
+            "rule_source_label": RULE_SOURCE_LABELS.get(rule_source, rule_source),
+            "suggested_allocation": allocation,
+            "deviation": deviation,
+            "sample_count": regime_rule.get("sample_count"),
+            "note": note,
+            "market_context": {
+                "avg_score": info["avg_score"],
+                "avg_volatility": info["avg_volatility"],
+                "avg_momentum_5d": info["avg_momentum_5d"],
+            },
+        }
 
     @staticmethod
     def _filter_to_pool(allocation: dict, pool: set) -> dict:

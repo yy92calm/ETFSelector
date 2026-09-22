@@ -292,3 +292,40 @@ def get_strategy_detail(db: Session, strategy_id: int) -> dict:
         "last_analysis_result": strategy.last_analysis_result,
         "enable_memory": strategy.enable_memory,
     }
+
+
+@tool(name="get_rule_suggestion", description="获取策略在当前市场状态下的规则建议配置（历史规则统计→配置映射，与规则驱动回测同源）。返回规则来源、样本天数、建议配置及与当前配置的偏离，是调仓决策的依据之一")
+def get_rule_suggestion(db: Session, strategy_id: int) -> dict:
+    from sqlalchemy import func
+    from app.models.etf import ETFDailyIndicator
+    from app.models.strategy import Strategy
+    from app.services.rule_engine import get_rule_engine
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": f"策略 {strategy_id} 不存在"}
+
+    scan_date = db.query(func.max(ETFDailyIndicator.trade_date)).scalar()
+    if not scan_date:
+        return {"error": "无量化指标数据，无法给出规则建议"}
+
+    return get_rule_engine().get_rule_suggestion(
+        scan_date, db,
+        strategy_id=strategy_id,
+        base_allocation=strategy.allocation_config or {},
+    )
+
+
+@tool(name="get_strategy_evidence", description="获取策略的四类决策依据（行情评分与换仓差距/行业性价比/规则建议/相关舆情）及最近一次决策留痕。调仓前应查阅，确保决策有据可依")
+def get_strategy_evidence(db: Session, strategy_id: int) -> dict:
+    from app.models.strategy import Strategy
+    from app.services.strategy_evidence_service import get_strategy_evidence_service
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": f"策略 {strategy_id} 不存在"}
+
+    evidence = get_strategy_evidence_service().get_evidence(strategy_id, db)
+    if not evidence.get("exists"):
+        return {"error": f"策略 {strategy_id} 依据不存在"}
+    return evidence

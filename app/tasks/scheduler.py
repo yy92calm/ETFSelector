@@ -509,6 +509,16 @@ def _record_autonomous_analysis(autonomous_result, db):
 
     summary = (autonomous_result.content or "")[:500]
     today = date.today()
+
+    # 依据留痕：工具调用映射「本次引用了哪些依据」
+    from app.services.strategy_evidence_service import (
+        classify_tool_sources, get_strategy_evidence_service,
+    )
+    cited_tools = classify_tool_sources([
+        tc.get("tool") for tc in (autonomous_result.tool_calls_made or []) if tc.get("tool")
+    ])
+    sources_cited = list(cited_tools.keys())
+
     for strategy in strategies:
         debate = debate_by_sid.get(strategy.id) or {}
         analysis = {
@@ -522,6 +532,15 @@ def _record_autonomous_analysis(autonomous_result, db):
             "key_signals_summary": debate.get("key_signals_summary") or [],
             "source": "agentloop_autonomous",
         }
+        # 决策时点依据快照（失败不影响日志写入）
+        try:
+            analysis["evidence"] = {
+                "sources_cited": sources_cited,
+                "cited_tools": cited_tools,
+                "snapshot": get_strategy_evidence_service().get_snapshot(strategy.id, db),
+            }
+        except Exception as e:
+            logger.warning(f"[自主决策] 策略{strategy.id}依据快照生成失败: {e}")
         existing = db.query(AutoStrategyLog).filter_by(
             strategy_id=strategy.id, log_date=today, action_type="analyzed"
         ).first()

@@ -76,13 +76,17 @@ class RotationService:
         # 板块层面参考信号：行业盈利-估值性价比（不参与综合分排名，仅供辩论）
         self._attach_value_signals(eligible_holdings + enter_candidates, db)
 
-        debate_result = self._run_debate(eligible_holdings, enter_candidates)
+        # 规则依据：当前市场状态下的规则建议配置（与规则驱动回测同源，仅供辩论参考）
+        rule_signal = self._build_rule_signal(strategy, scan_date, db)
+
+        debate_result = self._run_debate(eligible_holdings, enter_candidates, rule_signal)
 
         if debate_result.get("decision") != "rotate" or not debate_result.get("final_swaps"):
             return {
                 "action": "hold",
                 "reason": debate_result.get("summary", "辩论裁决维持持仓"),
                 "debate": debate_result,
+                "rule_signal": rule_signal,
             }
 
         rotations = []
@@ -108,7 +112,7 @@ class RotationService:
             })
 
         if not rotations:
-            return {"action": "hold", "reason": "辩论裁决无有效替换", "debate": debate_result}
+            return {"action": "hold", "reason": "辩论裁决无有效替换", "debate": debate_result, "rule_signal": rule_signal}
 
         return {
             "action": "rotate",
@@ -116,6 +120,7 @@ class RotationService:
             "holdings_before": current_holdings,
             "scan_date": scan_date.isoformat(),
             "debate": debate_result,
+            "rule_signal": rule_signal,
         }
 
     def execute_rotation(self, strategy_id: int, rotation_plan: Dict, db: Session) -> Dict:
@@ -196,7 +201,28 @@ class RotationService:
         except Exception as e:
             logger.warning(f"[Rotation] 行业性价比信号注入失败（不影响辩论）: {e}")
 
-    def _run_debate(self, holdings: List[Dict], candidates: List[Dict]) -> Dict:
+    def _build_rule_signal(self, strategy, scan_date: date, db: Session) -> Optional[Dict]:
+        """规则依据：当前市场状态下的规则建议配置。失败或数据不足时静默降级。"""
+        try:
+            from app.services.rule_engine import get_rule_engine
+            signal = get_rule_engine().get_rule_suggestion(
+                scan_date, db,
+                strategy_id=strategy.id,
+                base_allocation=strategy.allocation_config or {},
+            )
+            if signal:
+                logger.info(
+                    f"[Rotation] 规则依据已注入: regime={signal.get('regime')} "
+                    f"来源={signal.get('rule_source')} 偏离项="
+                    f"{sum(1 for d in signal.get('deviation') or [] if abs(d.get('delta', 0)) > 0.01)}"
+                )
+            return signal
+        except Exception as e:
+            logger.warning(f"[Rotation] 规则依据注入失败（不影响辩论）: {e}")
+            return None
+
+    def _run_debate(self, holdings: List[Dict], candidates: List[Dict],
+                    rule_signal: Optional[Dict] = None) -> Dict:
         from app.agents.rotation_debate.orchestrator import RotationDebateOrchestrator
         from app.config import get_settings
 
@@ -207,7 +233,7 @@ class RotationService:
 
         try:
             debate = RotationDebateOrchestrator()
-            return debate.debate(holdings, candidates)
+            return debate.debate(holdings, candidates, rule_signal=rule_signal)
         except Exception as e:
             logger.warning(f"[Rotation] 辩论异常，降级纯量化: {e}")
             return self._fallback_quant_decision(holdings, candidates)

@@ -771,6 +771,152 @@ const Workbench = {
         }).join('');
     },
 
+    // === 策略决策依据面板 ===
+
+    async loadStrategyEvidence(sid) {
+        const el = document.getElementById(`ev-body-${sid}`);
+        if (!el) return;
+        el.innerHTML = '<div class="empty-hint">加载中...</div>';
+        try {
+            const resp = await fetch(`/api/workbench/strategy-evidence?strategy_id=${sid}`).then(r => r.json());
+            if (resp.code !== 200 || !resp.data) {
+                el.innerHTML = '<div class="empty-hint">依据加载失败</div>';
+                return;
+            }
+            this.renderStrategyEvidence(sid, resp.data);
+        } catch (e) {
+            el.innerHTML = '<div class="empty-hint" style="color:var(--danger)">依据加载失败</div>';
+        }
+    },
+
+    renderStrategyEvidence(sid, d) {
+        const el = document.getElementById(`ev-body-${sid}`);
+        if (!el) return;
+        const sub = document.getElementById(`ev-sub-${sid}`);
+        const market = d.market || null;
+        const research = d.research || null;
+        const rules = d.rules || null;
+        const senti = d.sentiment || null;
+        const dec = d.decision || null;
+        const num = v => (v == null ? '-' : v);
+        const pct = v => (v == null ? '-' : (v * 100).toFixed(0) + '%');
+        const sourceLabels = { market: '行情', research: '研究', rules: '规则', sentiment: '舆情' };
+
+        if (sub) sub.textContent = d.as_of ? `数据截至 ${d.as_of}` : '';
+
+        // 决策留痕条
+        const cited = (dec && dec.sources_cited) || [];
+        const citedHtml = cited.length
+            ? cited.map(s => `<span class="ev-cite">${sourceLabels[s] || s}</span>`).join('')
+            : '<span class="ev-cite ev-cite-none">未留痕</span>';
+        const decLine = dec
+            ? `<div class="ev-decision">
+                    <span class="ev-dec-date">${this.esc(dec.log_date || '-')}</span>
+                    <span class="ev-dec-action">${this.esc(this.zh(dec.action || '-'))}</span>
+                    <span class="ev-dec-reason" title="${this.esc(dec.reason || '')}">${this.esc(this.zhText((dec.reason || '').substring(0, 60)))}</span>
+                    <span class="ev-dec-sources">依据 ${citedHtml}</span>
+               </div>`
+            : '<div class="ev-decision"><span class="ev-dec-reason">暂无决策记录（每日管道运行后生成）</span></div>';
+
+        // 行情依据
+        let marketHtml = '<div class="empty-hint">暂无量化指标</div>';
+        if (market && market.items && market.items.length) {
+            const rows = market.items.map(i => `
+                <div class="ev-market-row" onclick="Workbench.gotoMarket('${i.etf_code}')" title="在行情视图查看">
+                    <span class="ev-mk-name">${this.esc(i.etf_name || i.etf_code)}${i.is_holding ? '<em class="sv-etf-mark sv-etf-mark--hold">持仓</em>' : '<em class="sv-etf-mark sv-etf-mark--pool">池内</em>'}</span>
+                    <span class="num">${num(i.composite_score)}</span>
+                    <span class="num">#${num(i.rank)}</span>
+                    <span class="num ${(i.momentum_5d || 0) >= 0 ? 'text-up' : 'text-down'}">${i.momentum_5d != null ? (i.momentum_5d >= 0 ? '+' : '') + i.momentum_5d + '%' : '-'}</span>
+                </div>`).join('');
+            let gapHtml = '';
+            if (market.gap != null) {
+                const cls = market.trigger ? 'ev-gap-trigger' : 'ev-gap-idle';
+                const cand = (market.candidates && market.candidates[0]) || {};
+                gapHtml = `<div class="ev-gap ${cls}">
+                    最强候选 ${this.esc(cand.etf_name || cand.etf_code || '-')} ${num(cand.composite_score)}
+                    vs 最弱持仓 ${market.weakest ? this.esc(market.weakest.etf_name || market.weakest.etf_code) : '-'} ${num(market.weakest && market.weakest.composite_score)}
+                    → 差距 <b>${market.gap}</b> 分，门槛 ${market.threshold} 分
+                    ${market.trigger ? '· 已触发换仓评估' : '· 未达换仓门槛'}
+                </div>`;
+            }
+            marketHtml = `<div class="ev-market-head"><span>标的</span><span class="num">得分</span><span class="num">排名</span><span class="num">5日</span></div>${rows}${gapHtml}`;
+        }
+
+        // 研究依据
+        let researchHtml = '<div class="empty-hint">暂无行业评分（请先回填研究数据）</div>';
+        if (research && research.items && research.items.length) {
+            researchHtml = research.items.map(i => {
+                const rank = i.rank != null && i.total != null ? `#${i.rank}/${i.total}` : '未匹配';
+                return `<div class="ev-res-row" onclick="Workbench.switchView('research')" title="在行情视图查看">
+                    <span class="ev-res-name">${this.esc(i.etf_name || i.etf_code)}${i.is_holding ? '<em class="sv-etf-mark sv-etf-mark--hold">持仓</em>' : ''}</span>
+                    <span class="ev-res-industry">${this.esc(i.industry || '未匹配行业')}</span>
+                    <span class="ev-res-rank">${rank}${i.score != null ? ` · ${Number(i.score).toFixed(1)}` : ''}</span>
+                </div>`;
+            }).join('');
+        }
+
+        // 规则依据
+        let rulesHtml = '<div class="empty-hint">暂无规则数据</div>';
+        if (rules) {
+            const dev = (rules.deviation || []).filter(x => Math.abs(x.delta) >= 0.01);
+            const devHtml = dev.length
+                ? `<table class="wb-table ev-rule-table"><thead><tr><th>标的</th><th>当前</th><th>规则建议</th><th>偏离</th></tr></thead><tbody>${dev.map(x => `
+                        <tr>
+                            <td>${this.etfLabel(x.etf_code)}</td>
+                            <td>${pct(x.current)}</td>
+                            <td>${pct(x.suggested)}</td>
+                            <td class="${x.delta > 0 ? 'text-up' : 'text-down'}">${x.delta > 0 ? '+' : ''}${(x.delta * 100).toFixed(1)}%</td>
+                        </tr>`).join('')}</tbody></table>`
+                : '<div class="ev-rule-match">规则建议与当前配置一致，无偏离</div>';
+            rulesHtml = `
+                <div class="ev-rule-head">
+                    <span class="mkt-tag mkt-tag-warn">${this.esc(rules.regime_label || rules.regime || '-')}</span>
+                    <span class="ev-rule-source">${this.esc(rules.rule_source_label || '-')}${rules.sample_count ? ` · 样本${rules.sample_count}天` : ''}</span>
+                    <button class="ev-link-btn" onclick="Workbench.switchView('rules')">规则视图</button>
+                </div>
+                ${rules.note ? `<div class="ev-rule-note">${this.esc(rules.note)}</div>` : ''}
+                ${devHtml}`;
+        }
+
+        // 舆情依据
+        let sentiHtml = '<div class="empty-hint">近7日无涉及本策略标的的舆情</div>';
+        if (senti && senti.total > 0) {
+            const score = senti.avg_score;
+            const color = score == null ? 'var(--text-secondary)' : score > 0.2 ? 'var(--danger)' : score < -0.2 ? 'var(--success)' : 'var(--warning)';
+            sentiHtml = `
+                <div class="ev-senti-head">
+                    <span class="ev-senti-count">近${senti.window_days}日 <b>${senti.total}</b> 条涉及本策略标的</span>
+                    <span class="ev-senti-score" style="color:${color}">均分 ${score != null ? (score > 0 ? '+' : '') + score : '-'}</span>
+                    <button class="ev-link-btn" onclick="Workbench.switchView('sentiment')">舆情视图</button>
+                </div>
+                ${(senti.recent || []).map(r => `<div class="ev-senti-item" onclick="Workbench.switchView('sentiment')">
+                    <span class="ev-senti-date">${(r.date || '').slice(5)}</span>
+                    <span class="ev-senti-title">${this.esc(r.title || '')}</span>
+                </div>`).join('')}`;
+        }
+
+        el.innerHTML = `
+            ${decLine}
+            <div class="ev-grid">
+                <div class="ev-card">
+                    <div class="ev-card-head">📈 行情依据 <span class="ev-card-note">量化评分 · 换仓差距</span></div>
+                    ${marketHtml}
+                </div>
+                <div class="ev-card">
+                    <div class="ev-card-head">🔬 研究依据 <span class="ev-card-note">行业盈利-估值性价比（轮动辩论同源）</span></div>
+                    ${researchHtml}
+                </div>
+                <div class="ev-card">
+                    <div class="ev-card-head">📐 规则依据 <span class="ev-card-note">历史规则统计 → 建议配置</span></div>
+                    ${rulesHtml}
+                </div>
+                <div class="ev-card">
+                    <div class="ev-card-head">📰 舆情依据 <span class="ev-card-note">涉本策略标的</span></div>
+                    ${sentiHtml}
+                </div>
+            </div>`;
+    },
+
     async toggleStrategyDetail(id) {
         const detail = document.getElementById(`ov-strat-detail-${id}`);
         const icon = document.getElementById(`ov-strat-icon-${id}`);
@@ -2014,6 +2160,13 @@ const Workbench = {
                         <div class="strat-block-alloc">${alloc}</div>
                     </div>
                     <div class="bt-inline" id="bt-panel-${s.id}" style="display:block">
+                        <div class="ev-panel">
+                            <div class="ev-header">🧩 决策依据
+                                <span class="ev-sub" id="ev-sub-${s.id}"></span>
+                                <button class="ev-refresh" onclick="event.stopPropagation();Workbench.loadStrategyEvidence(${s.id})" title="刷新依据">🔄</button>
+                            </div>
+                            <div class="ev-body" id="ev-body-${s.id}"><div class="empty-hint">加载中...</div></div>
+                        </div>
                         <div class="sh-wrap">
                             <div class="sh-panel">
                                 <div class="sh-title">当前持仓</div>
@@ -2068,6 +2221,7 @@ const Workbench = {
                 if (startEl && !startEl.value) { const d = new Date(); d.setFullYear(d.getFullYear() - 1); startEl.value = d.toISOString().slice(0, 10); }
                 if (endEl && !endEl.value) endEl.value = new Date().toISOString().slice(0, 10);
                 this.loadStrategyHoldings(s);
+                this.loadStrategyEvidence(s.id);
                 if (s.holding_start_date) this.loadActualReturn(s.id, s.holding_start_date);
             });
 
