@@ -236,6 +236,23 @@ def get_industry_ranking(db: Session, days: int = 1) -> dict:
     }
 
 
+@tool(name="get_sector_rotation", description="获取申万一级行业（31个）板块轮动全景：板块评分(0.45×相对强度+0.35×动量+0.20×趋势，≥67超配/≤33低配)、相对沪深300超额、PE/PB/股息率/成交额占比/换手，以及各行业匹配的本策略标的。板块层是选型的分层依据（低配板块个股需更强证据）")
+def get_sector_rotation(db: Session) -> dict:
+    """申万一级行业板块轮动全景（板块→选型的分层依据）"""
+    from app.services.sw_industry_service import get_sw_industry_service
+
+    view = get_sw_industry_service().get_sector_view(db)
+    if not view.get("rows"):
+        return {"error": "暂无申万板块数据（需每日管道 sw_sector 阶段同步）"}
+    return {
+        "as_of": view["as_of"],
+        "total": view["total"],
+        "overweight": view["overweight"],
+        "underweight": view["underweight"],
+        "sectors": view["rows"],
+    }
+
+
 @tool(name="get_market_regime", description="识别当前市场阶段（牛/熊/震荡及所处周期位置），基于市场情绪指数与行情统计")
 def get_market_regime(db: Session) -> dict:
     from app.services.market_environment_service import MarketEnvironmentService

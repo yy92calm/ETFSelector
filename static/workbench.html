@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ETF智能工作台</title>
-    <link rel="stylesheet" href="/static/css/workbench.css?v=38">
+    <link rel="stylesheet" href="/static/css/workbench.css?v=39">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/echarts/5.5.0/echarts.min.js"></script>
 </head>
 <body>
@@ -268,6 +268,14 @@
             </div>
             <div class="analyses-layout">
                 <div class="analyses-main">
+                    <div class="panel" style="margin-bottom:12px">
+                        <div class="panel-header">🏭 申万一级行业全景
+                            <span class="panel-sub" id="sector-rotation-sub"></span>
+                        </div>
+                        <div class="panel-body analyses-scroll" id="sector-rotation-list">
+                            <div class="empty-hint">加载中...</div>
+                        </div>
+                    </div>
                     <div class="panel">
                         <div class="panel-header">板块内样本验证
                             <span class="panel-sub">按行业分组展示，仅供验证板块成色，不构成个股推荐</span>
@@ -378,7 +386,7 @@
 </footer>
 
 <script src="/static/js/auth.js"></script>
-    <script src="/static/js/workbench.js?v=45"></script>
+    <script src="/static/js/workbench.js?v=46"></script>
 <script src="/static/js/chat.js?v=21"></script>
 <script>
 // 更新时间

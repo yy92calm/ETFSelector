@@ -62,6 +62,7 @@ class StrategyEvidenceService:
             "as_of": scan_date.isoformat() if scan_date else None,
             "market": self._section(self._market_evidence, strategy, db, scan_date),
             "research": self._section(self._research_evidence, strategy, db),
+            "sector": self._section(self._sector_evidence, strategy, db),
             "rules": self._section(self._rule_evidence, strategy, db, scan_date),
             "sentiment": self._section(self._sentiment_evidence, strategy, db),
             "decision": self._section(self._last_decision, strategy, db),
@@ -75,6 +76,7 @@ class StrategyEvidenceService:
 
         market = ev.get("market") or {}
         research = ev.get("research") or {}
+        sector = ev.get("sector") or {}
         rules = ev.get("rules") or {}
         sentiment = ev.get("sentiment") or {}
         candidates = market.get("candidates") or []
@@ -96,6 +98,18 @@ class StrategyEvidenceService:
                     {"etf_code": i["etf_code"], "industry": i.get("industry"),
                      "rank": i.get("rank"), "total": i.get("total")}
                     for i in (research.get("items") or [])[:5]
+                ],
+            },
+            "sector": {
+                "as_of": sector.get("as_of"),
+                "mode": sector.get("mode"),
+                "overweight": sector.get("overweight"),
+                "underweight": sector.get("underweight"),
+                "headwind": sector.get("headwind"),
+                "items": [
+                    {"etf_code": i["etf_code"], "sector": i.get("sector"),
+                     "score": i.get("score"), "signal": i.get("signal")}
+                    for i in (sector.get("items") or [])[:5]
                 ],
             },
             "rules": {
@@ -217,6 +231,55 @@ class StrategyEvidenceService:
         items.sort(key=lambda x: (x["rank"] is None, x["rank"] if x["rank"] is not None else 9999))
         as_of = max((i["as_of"] for i in items if i.get("as_of")), default=None)
         return {"items": items, "matched": sum(1 for i in items if i.get("industry")), "as_of": as_of}
+
+    def _sector_evidence(self, strategy: Strategy, db: Session) -> Dict:
+        """申万板块层：池内标的所属板块评分/信号 + 全市场超配/低配概览（板块→选型依据）"""
+        from app.services.sector_selection_service import get_sector_selection_service
+        from app.services.sw_industry_service import get_sw_industry_service
+
+        sw = get_sw_industry_service()
+        view = sw.get_sector_view(db)
+        universe = self._universe(strategy, db)
+        codes = sorted(universe["pool"] | universe["holding_codes"])
+        names = self._name_map(codes, db)
+        signals = sw.get_etf_sector_signals(db, {c: names.get(c) for c in codes})
+
+        items = []
+        for code in codes:
+            sig = signals.get(code) or {}
+            items.append({
+                "etf_code": code,
+                "etf_name": names.get(code, ""),
+                "is_holding": code in universe["holding_codes"],
+                "sector": sig.get("sector"),
+                "score": sig.get("score"),
+                "signal": sig.get("signal"),
+                "rank": sig.get("rank"),
+                "total": sig.get("total"),
+                "pe": sig.get("pe"),
+                "amount_share": sig.get("amount_share"),
+            })
+        items.sort(key=lambda x: (x["score"] is None, -(x["score"] or 0)))
+
+        rows = view.get("rows") or []
+        return {
+            "as_of": view.get("as_of"),
+            "mode": get_sector_selection_service().get_mode(),
+            "total": view.get("total"),
+            "overweight": view.get("overweight"),
+            "underweight": view.get("underweight"),
+            "items": items,
+            "headwind": [i["etf_code"] for i in items if i["signal"] == "underweight"],
+            "top_sectors": [
+                {"name": r["name"], "score": r["score"], "amount_share": r.get("amount_share"),
+                 "signal": r.get("signal")}
+                for r in rows[:5]
+            ],
+            "weak_sectors": [
+                {"name": r["name"], "score": r["score"], "signal": r.get("signal")}
+                for r in rows[-5:]
+            ],
+        }
 
     def _rule_evidence(self, strategy: Strategy, db: Session, scan_date: Optional[date]) -> Optional[Dict]:
         from app.services.rule_engine import get_rule_engine

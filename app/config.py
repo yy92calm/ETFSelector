@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     #   True = Ashare 失败时降级到 efinance（部署环境网络受限时使用）
     scheduled_task_allow_fallback: bool = False
 
+    # 板块层介入强度（申万一级行业，见 plans/板块轮动到选型方案.md）：
+    #   semi_hard（默认）= 低配板块候选排序降级 + 低配板块持仓优先换出 + 超配板块作辩论证据
+    #   off = 完全关闭板块层，选型逻辑与历史一致
+    sector_rotation_mode: str = "semi_hard"
+
     # 多Agent辩论
     debate_max_data_lag_days: int = 3  # 辩论前允许的数据最大滞后自然日，超过则自动同步
 

@@ -3388,3 +3388,37 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .btn-extract-rules + .btn-backtest-rule { margin-left: 6px; }
 .panel-sub.ext-ok { color: var(--accent); }
 .panel-sub.ext-warn { color: var(--warning); }
+
+/* ===== 申万板块全景（研究视图）+ 板块分层（依据面板）===== */
+.sector-table { font-size: 12px; }
+.sector-table td, .sector-table th { padding: 5px 8px; }
+.sector-rank { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.sector-name { font-weight: 600; white-space: nowrap; }
+.sector-row-strategy { background: rgba(2, 132, 199, 0.04); }
+.sector-score { min-width: 110px; }
+.sector-signal { white-space: nowrap; }
+.sector-signal > span { font-weight: 700; }
+.sector-delta { margin-left: 4px; font-size: 10px; font-style: normal; }
+.ev-neutral { color: var(--text-secondary); font-weight: 500; }
+
+.ev-sector-top {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
+    margin-bottom: 5px;
+    font-size: 11px;
+}
+.ev-sector-label { color: var(--text-secondary); font-weight: 600; flex-shrink: 0; }
+.ev-sector-chip {
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(220, 38, 38, 0.07);
+    color: var(--danger);
+}
+.ev-sector-chip--weak { background: rgba(22, 163, 74, 0.08); color: var(--success); }
+.ev-sector-chip b { font-weight: 700; }
+.ev-res-sector { font-size: 11px; color: var(--text-secondary); text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ev-res-sector b { font-weight: 700; }
+.rs-sector { font-size: 11px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rs-sector b { font-weight: 700; }

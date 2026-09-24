@@ -56,6 +56,28 @@ class RotationService:
             if self._check_min_hold_period(strategy_id, h["etf_code"], scan_date, db)
         ]
 
+        # 板块层（申万一级，半硬模式）：附加板块信号 + 低配板块分流；失败降级为仅个股动量
+        sector_meta = {"mode": "off"}
+        sector_context = ""
+        try:
+            from app.services.sector_selection_service import (
+                get_sector_selection_service, format_sector_context,
+            )
+            sector_svc = get_sector_selection_service()
+            mode = sector_svc.get_mode()
+            if mode != "off":
+                hit = sector_svc.annotate(db, eligible_holdings + enter_candidates)
+                eligible_holdings, enter_candidates, sector_meta = sector_svc.split(
+                    eligible_holdings, enter_candidates, mode
+                )
+                sector_context = format_sector_context(eligible_holdings, enter_candidates, sector_meta)
+                logger.info(
+                    f"[Rotation] 板块层: 模式={mode} 命中{hit}只 "
+                    f"逆风持仓={sector_meta['headwind_holdings']} 降级候选={len(sector_meta['downgraded'])}"
+                )
+        except Exception as e:
+            logger.warning(f"[Rotation] 板块层计算失败（降级为仅个股动量）: {e}")
+
         has_gap = any(
             enter_candidates[0]["composite_score"] - h["composite_score"] >= SCORE_GAP_THRESHOLD
             for h in eligible_holdings
@@ -71,6 +93,8 @@ class RotationService:
                     "score": h["composite_score"],
                     "rank": h.get("rank", 0),
                 } for h in sorted(holding_scores, key=lambda x: -x["composite_score"])],
+                "sector_meta": sector_meta,
+                "sector_context": sector_context,
             }
 
         # 板块层面参考信号：行业盈利-估值性价比（不参与综合分排名，仅供辩论）
@@ -79,7 +103,7 @@ class RotationService:
         # 规则依据：当前市场状态下的规则建议配置（与规则驱动回测同源，仅供辩论参考）
         rule_signal = self._build_rule_signal(strategy, scan_date, db)
 
-        debate_result = self._run_debate(eligible_holdings, enter_candidates, rule_signal)
+        debate_result = self._run_debate(eligible_holdings, enter_candidates, rule_signal, sector_context)
 
         if debate_result.get("decision") != "rotate" or not debate_result.get("final_swaps"):
             return {
@@ -87,6 +111,8 @@ class RotationService:
                 "reason": debate_result.get("summary", "辩论裁决维持持仓"),
                 "debate": debate_result,
                 "rule_signal": rule_signal,
+                "sector_meta": sector_meta,
+                "sector_context": sector_context,
             }
 
         rotations = []
@@ -112,7 +138,8 @@ class RotationService:
             })
 
         if not rotations:
-            return {"action": "hold", "reason": "辩论裁决无有效替换", "debate": debate_result, "rule_signal": rule_signal}
+            return {"action": "hold", "reason": "辩论裁决无有效替换", "debate": debate_result,
+                    "rule_signal": rule_signal, "sector_meta": sector_meta, "sector_context": sector_context}
 
         return {
             "action": "rotate",
@@ -121,6 +148,8 @@ class RotationService:
             "scan_date": scan_date.isoformat(),
             "debate": debate_result,
             "rule_signal": rule_signal,
+            "sector_meta": sector_meta,
+            "sector_context": sector_context,
         }
 
     def execute_rotation(self, strategy_id: int, rotation_plan: Dict, db: Session) -> Dict:
@@ -222,7 +251,8 @@ class RotationService:
             return None
 
     def _run_debate(self, holdings: List[Dict], candidates: List[Dict],
-                    rule_signal: Optional[Dict] = None) -> Dict:
+                    rule_signal: Optional[Dict] = None,
+                    sector_context: str = "") -> Dict:
         from app.agents.rotation_debate.orchestrator import RotationDebateOrchestrator
         from app.config import get_settings
 
@@ -233,13 +263,15 @@ class RotationService:
 
         try:
             debate = RotationDebateOrchestrator()
-            return debate.debate(holdings, candidates, rule_signal=rule_signal)
+            return debate.debate(holdings, candidates, rule_signal=rule_signal,
+                                 sector_context=sector_context)
         except Exception as e:
             logger.warning(f"[Rotation] 辩论异常，降级纯量化: {e}")
             return self._fallback_quant_decision(holdings, candidates)
 
     def _fallback_quant_decision(self, holdings: List[Dict], candidates: List[Dict]) -> Dict:
-        sorted_holdings = sorted(holdings, key=lambda x: x["composite_score"])
+        from app.services.sector_selection_service import get_sector_selection_service
+        sorted_holdings = get_sector_selection_service().ordering_key(holdings)
         sorted_candidates = sorted(candidates, key=lambda x: -x["composite_score"])
 
         swaps = []

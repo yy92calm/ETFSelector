@@ -107,7 +107,8 @@ def _job_daily_pipeline():
     _cp_svc = get_pipeline_checkpoint_service()
     _run_date = date.today()
     _stages = ["net_value", "quotes", "rebalance", "sentiment", "policy_flow",
-               "market_scan", "market_regime", "fundamental", "rotation_review", "autonomous"]
+               "market_scan", "market_regime", "sw_sector", "fundamental",
+               "rotation_review", "autonomous"]
 
     db = SessionLocal()
     try:
@@ -177,6 +178,7 @@ def _job_daily_pipeline():
     # ============================== 阶段3 ==============================
     _run_stage("market_scan", _step_market_scan)
     _run_stage("market_regime", _step_market_regime)
+    _run_stage("sw_sector", _step_sw_sector)
     _run_stage("fundamental", _step_fundamental)
     _run_stage("rotation_review", _step_rotation_review)
 
@@ -368,6 +370,26 @@ def _step_market_regime():
         logger.info(f"市场状态刻画完成: {snap}")
     except Exception as e:
         logger.error(f"市场状态刻画异常: {e}")
+        raise
+    finally:
+        db.close()
+
+
+def _step_sw_sector():
+    """STEP 6.5: 申万一级行业板块同步与评分（板块轮动模型，独立数据源独立降级）"""
+    from app.db.database import SessionLocal
+    from app.services.sw_industry_service import get_sw_industry_service
+
+    logger.info("===== [阶段3.5] 申万板块轮动 =====")
+    db = SessionLocal()
+    try:
+        summary = get_sw_industry_service().sync(db)
+        logger.info(
+            f"申万板块同步完成: 截止{summary['cutoff']} {summary['industries']}个行业 "
+            f"超配{summary['overweight']}/低配{summary['underweight']}"
+        )
+    except Exception as e:
+        logger.error(f"申万板块阶段异常（降级为最近已落库数据）: {e}")
         raise
     finally:
         db.close()

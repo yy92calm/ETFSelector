@@ -6,7 +6,7 @@ ETF配置组合系统：全市场动量轮动、AI 自主决策 Agent、自动�
 
 - **后端**: FastAPI + SQLAlchemy + SQLite
 - **前端**: 原生 HTML/CSS/JS（`static/` 目录，无构建工具）
-- **数据源**: Ashare（新浪+腾讯双核）为主，efinance 备用（`app/services/Ashare.py` / `data_sources.py`）
+- **数据源**: Ashare（新浪+腾讯双核）为主，efinance 备用（`app/services/Ashare.py` / `data_sources.py`）；板块层用申万宏源官网公开接口（`sw_industry_service.py`，站点证书链不完整，需内置中间证书 `app/resources/certs/`）
 - **LLM**: OpenAI 兼容 API，支持多供应商路由（`llm_model_aliases` 前缀匹配，见 `agent_core/provider.py`）
 - **MCP**: 外部工具服务器接入（`mcp_servers` 配置，stdio/http）
 - **定时任务**: APScheduler（工作日串行管道 + 复盘 + 行情补全 + 舆情）
@@ -20,7 +20,7 @@ app/
 ├── __init__.py          # FastAPI app 初始化、14个路由注册、鉴权中间件、lifespan
 ├── config.py            # pydantic-settings 配置（.env）
 ├── db/database.py       # SQLAlchemy engine/session/init_db（含 ALTER TABLE 兼容迁移）
-├── models/              # ORM 模型（见"数据模型"节，14 文件 22 表）
+├── models/              # ORM 模型（见"数据模型"节，15 文件 23 表）
 ├── schemas/schemas.py   # Pydantic 请求/响应 schema
 ├── routes/              # API 路由
 │   ├── etf_routes / strategy_routes / backtest_routes / net_value_routes
@@ -74,12 +74,13 @@ plans/                   # 迭代设计文档（23 个，历史决策依据）
 
 ### 每日自驱动管道（工作日 20:00，可配）
 
-10 个阶段串行，每阶段独立检查点（`pipeline_checkpoint_service`，支持断点续跑）+ `TaskExecutionLog` 记账；任一阶段失败记录失败经验但不中断整体：
+11 个阶段串行，每阶段独立检查点（`pipeline_checkpoint_service`，支持断点续跑）+ `TaskExecutionLog` 记账；任一阶段失败记录失败经验但不中断整体：
 
 ```
 阶段1: net_value 净值 → quotes 当日行情 → rebalance 再平衡
 阶段2: sentiment 舆情 → policy_flow 政策评估+资金流向
 阶段3: market_scan 全市场扫描+因子回填 → market_regime 状态刻画
+       → sw_sector 申万一级行业板块评分（独立数据源，失败降级最近落库）
        → fundamental 基本面性价比 → rotation_review 轮动辩论换仓
 阶段4: autonomous — AgentLoop.run_autonomous() LLM 自主决策
        （LLM 失败/未配置 → 降级旧 AutoStrategyExecutor 7阶段管道）
@@ -104,10 +105,14 @@ plans/                   # 迭代设计文档（23 个，历史决策依据）
 market_scanner_service: 全量ETF 5维指标（动量/趋势/量能/波动/资金流）打分排名
   ↓ 纯量化门槛：持仓分 vs 候选分差距 ≥ 5 才进入 LLM 辩论（省 token）
   ↓ failure_mode_service 过滤反复失败的 banned codes
+sector_selection_service（板块→选型，半硬，settings.sector_rotation_mode 可关）:
+  申万一级行业评分（sw_industry_service，≥67超配/≤33低配）
+  → 低配板块候选排序降级 + 低配板块持仓标记逆风优先换出（板块信号缺失时按中性）
+  → 板块上下文注入辩论（动量派/稳定派/裁决官）
 rotation_debate: MomentumAdvocate vs StabilityAdvocate → RotationJudge
   硬约束：持仓≤5、有进必出、每次最多换2只、两派分歧倾向不换
   ↓
-rotation_service.execute_rotation 落地换仓；LLM 不可用时降级纯量化
+rotation_service.execute_rotation 落地换仓；LLM 不可用时降级纯量化（逆风持仓优先换出）
 factor_performance_service: 因子 IC 跟踪 → |IC| 归一化自适应打分权重
 ```
 
@@ -142,7 +147,8 @@ ETFBasic     (1) ──→ (N) ETFQuotation      # 日K线行情
 ETFBasic     (1) ──→ (N) ETFDailyIndicator # 5维因子+综合分+排名（每日扫描）
 ChatSession  (1) ──→ (N) ChatMessage / AIActionLog
 独立快照表: MarketRegimeSnapshot / RuleSnapshot / FactorPerformance
-            StockFundamental / IndustryScore / PipelineCheckpoint / TaskExecutionLog
+            StockFundamental / IndustryScore / SwIndustryDaily（申万板块）
+            PipelineCheckpoint / TaskExecutionLog
 ```
 
 ## 主要服务清单（services/）
@@ -152,7 +158,7 @@ ChatSession  (1) ──→ (N) ChatMessage / AIActionLog
 | 数据 | `data_service` `data_sources` `Ashare` `fundamental_data_service` |
 | 策略/组合 | `strategy_service` `portfolio_service` `backtest_service` `net_value_service` |
 | AI 管道 | `auto_strategy_executor`（fallback）`auto_analysis_service` `review_service` `pipeline_checkpoint_service` |
-| 量化 | `market_scanner_service` `rotation_service` `factor_performance_service` `market_regime_service` `market_environment_service` `technical_indicator_service` |
+| 量化 | `market_scanner_service` `rotation_service` `sector_selection_service` `sw_industry_service` `factor_performance_service` `market_regime_service` `market_environment_service` `technical_indicator_service` |
 | 规则 | `rule_engine` `rule_trainer` `replay_service` `value_model_service` |
 | 风控/经验 | `risk_controller` `failure_mode_service` `experience_manager` `smart_experience_matcher` |
 | 舆情 | `sentiment_service` `policy_impact_service` `capital_flow_service` |

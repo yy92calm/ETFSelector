@@ -119,8 +119,9 @@ class TestRuleSignalInjection(unittest.TestCase):
     def test_rule_signal_passed_to_debate_and_returned(self):
         captured = {}
 
-        def fake_debate(holdings, candidates, rule_signal=None):
+        def fake_debate(holdings, candidates, rule_signal=None, sector_context=""):
             captured["rule_signal"] = rule_signal
+            captured["sector_context"] = sector_context
             captured["holdings"] = holdings
             captured["candidates"] = candidates
             return {"decision": "hold", "final_swaps": [], "summary": "维持持仓"}
@@ -256,7 +257,7 @@ class TestEvidenceService(unittest.TestCase):
     def test_snapshot_is_compact_and_complete(self):
         seed_rule_snapshot(self.db, self.s.id, "neutral", {"512800": 1.0})
         snap = self.svc.get_snapshot(self.s.id, self.db)
-        self.assertEqual(set(snap.keys()), {"as_of", "market", "research", "rules", "sentiment"})
+        self.assertEqual(set(snap.keys()), {"as_of", "market", "research", "sector", "rules", "sentiment"})
         self.assertIn("gap", snap["market"])
         self.assertIn("suggested_allocation", snap["rules"])
         self.assertNotIn("items", snap["market"])        # 明细不落盘

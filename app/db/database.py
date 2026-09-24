@@ -39,6 +39,7 @@ def init_db():
     from app.models.factor_performance import FactorPerformance  # noqa: F401
     from app.models.market_regime import MarketRegimeSnapshot  # noqa: F401
     from app.models.stock_fundamental import StockFundamental, IndustryScore  # noqa: F401
+    from app.models.sw_industry import SwIndustryDaily  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 添加新字段（兼容旧数据库）

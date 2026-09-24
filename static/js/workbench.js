@@ -482,17 +482,20 @@ const Workbench = {
         const picksEl = document.getElementById('research-picks');
         const indEl = document.getElementById('research-industries');
         const stratEl = document.getElementById('research-strategy');
+        const sectorEl = document.getElementById('sector-rotation-list');
         if (picksEl) picksEl.innerHTML = '<div class="empty-hint">加载中...</div>';
         if (indEl) indEl.innerHTML = '<div class="empty-hint">加载中...</div>';
         if (stratEl) stratEl.innerHTML = '<div class="empty-hint">加载中...</div>';
+        if (sectorEl) sectorEl.innerHTML = '<div class="empty-hint">加载中...</div>';
         await this._ensureStrategySelect();
         try {
-            const [picksResp, indResp, mapResp] = await Promise.all([
+            const [picksResp, indResp, mapResp, sectorResp] = await Promise.all([
                 fetch('/api/research/stock-picks?top_n=30').then(r => r.json()).catch(() => ({ code: 500 })),
                 fetch('/api/research/industry-ranking').then(r => r.json()).catch(() => ({ code: 500 })),
                 this._strategyId
                     ? fetch(`/api/research/strategy-mapping?strategy_id=${this._strategyId}`).then(r => r.json()).catch(() => ({ code: 500 }))
                     : Promise.resolve({ code: 200, data: { etfs: [], industries: {} } }),
+                fetch('/api/research/sector-rotation').then(r => r.json()).catch(() => ({ code: 500 })),
             ]);
             if (picksResp.code === 200) this.renderStockPicks(picksResp.data.picks || []);
             else if (picksEl) picksEl.innerHTML = '<div class="empty-hint">暂无数据（请先回填历史数据）</div>';
@@ -500,46 +503,120 @@ const Workbench = {
             this.renderResearchStrategyPanel(mapping);
             if (indResp.code === 200) this.renderIndustryRanking(indResp.data.industries || [], mapping.industries || {});
             else if (indEl) indEl.innerHTML = '<div class="empty-hint">暂无数据</div>';
+            if (sectorResp.code === 200) this.renderSectorRotation(sectorResp.data || {});
+            else if (sectorEl) sectorEl.innerHTML = '<div class="empty-hint">暂无申万板块数据（需每日管道 sw_sector 阶段同步）</div>';
         } catch (e) {
             console.error('加载研究视图失败:', e);
         }
     },
 
-    // 本策略标的板块性价比：池内ETF → 行业评分（与轮动辩论注入同源）
+    // 申万一级行业全景：评分降序 + 本策略标的归属
+    renderSectorRotation(view) {
+        const el = document.getElementById('sector-rotation-list');
+        if (!el) return;
+        const rows = view.rows || [];
+        const sub = document.getElementById('sector-rotation-sub');
+        if (!rows.length) {
+            if (sub) sub.textContent = '';
+            el.innerHTML = '<div class="empty-hint">暂无申万板块数据（需每日管道 sw_sector 阶段同步）</div>';
+            return;
+        }
+        if (sub) {
+            sub.textContent = `${view.as_of || ''} · ${view.total}个行业 · 超配${view.overweight} / 低配${view.underweight}`;
+        }
+
+        // 本策略标的归属：按板块分组 chips（来自依据层的板块段，若无则跳过）
+        const stratSectors = this._sectorBySector || {};
+        const signalMeta = {
+            overweight: { label: '超配', cls: 'text-up' },
+            underweight: { label: '低配', cls: 'text-down' },
+            neutral: { label: '中性', cls: 'ev-neutral' },
+        };
+        const rowsHtml = rows.map(r => {
+            const sm = signalMeta[r.signal] || { label: '数据不足', cls: 'ev-neutral' };
+            const chips = (stratSectors[r.name] || []).map(c =>
+                `<span class="isc-chip" onclick="event.stopPropagation();Workbench.gotoMarket('${c.code}')" title="${c.holding ? '持仓' : '池内'}">${this.etfLabel(c.code)}</span>`).join('');
+            return `<tr class="${stratSectors[r.name] ? 'sector-row-strategy' : ''}">
+                <td class="sector-rank">${r.rank}</td>
+                <td class="sector-name">${this.esc(r.name)}${chips ? `<span class="industry-strategy-chips">${chips}</span>` : ''}</td>
+                <td class="num ${(r.live_change_pct != null ? r.live_change_pct : r.markup || 0) >= 0 ? 'text-up' : 'text-down'}">${(() => { const v = (r.live_change_pct != null ? r.live_change_pct : r.markup); return v != null ? (v >= 0 ? '+' : '') + v.toFixed(2) + '%' : '-'; })()}</td>
+                <td class="num ${(r.ret60 || 0) >= 0 ? 'text-up' : 'text-down'}">${r.ret60 != null ? (r.ret60 >= 0 ? '+' : '') + (r.ret60 * 100).toFixed(1) + '%' : '-'}</td>
+                <td class="num">${r.amount_share != null ? r.amount_share.toFixed(1) + '%' : '-'}</td>
+                <td class="num">${r.pe != null ? r.pe.toFixed(1) : '-'}</td>
+                <td class="num">${r.dividend_yield != null ? r.dividend_yield.toFixed(2) + '%' : '-'}</td>
+                <td class="sector-score">
+                    <div class="score-bar-wrap">
+                        <span class="score-bar" style="width:${Math.max(0, Math.min(100, r.score || 0)).toFixed(0)}%"></span>
+                        <span class="score-val">${r.score != null ? r.score : '-'}</span>
+                    </div>
+                </td>
+                <td class="sector-signal"><span class="${sm.cls}">${sm.label}</span>${r.score_delta ? `<em class="sector-delta ${r.score_delta > 0 ? 'text-up' : 'text-down'}">${r.score_delta > 0 ? '+' : ''}${r.score_delta}</em>` : ''}</td>
+            </tr>`;
+        }).join('');
+
+        el.innerHTML = `
+            <table class="mkt-table sector-table">
+                <thead><tr>
+                    <th>#</th><th>申万一级行业</th>
+                    <th class="num">今日</th><th class="num">60日</th>
+                    <th class="num">成交占比</th><th class="num">PE</th><th class="num">股息</th>
+                    <th>评分</th><th>信号</th>
+                </tr></thead>
+                <tbody>${rowsHtml}</tbody>
+            </table>
+            <div class="research-note">评分口径：0.45×相对沪深300强度分位 + 0.35×60日动量分位 + 0.20×趋势；≥67 超配 / ≤33 低配。行情与估值为申万宏源分析日报口径（截止日见上），今日涨跌为实时值。板块层为选型的分层依据（低配板块个券需更强证据），不构成投资建议。</div>`;
+    },
+
+    // 本策略标的板块性价比：池内ETF → 行业评分（与轮动辩论同源）
     renderResearchStrategyPanel(mapping) {
         const el = document.getElementById('research-strategy');
         if (!el) return;
         const sub = document.getElementById('research-strategy-sub');
         if (!this._strategyId) {
+            this._sectorBySector = {};
             if (sub) sub.textContent = '';
             el.innerHTML = '<div class="empty-hint">选择策略后展示本策略标的的行业性价比（与轮动辩论同源信号）</div>';
             return;
         }
         const etfs = mapping.etfs || [];
         if (!etfs.length) {
+            this._sectorBySector = {};
             if (sub) sub.textContent = '';
             el.innerHTML = '<div class="empty-hint">该策略暂无标的池记录</div>';
             return;
         }
+        // 按申万板块归集（供全景表标注本策略标的）
+        const bySector = {};
+        etfs.forEach(e => {
+            if (!e.sector) return;
+            (bySector[e.sector] = bySector[e.sector] || []).push({ code: e.etf_code, holding: e.is_holding });
+        });
+        this._sectorBySector = bySector;
+
         const matched = etfs.filter(e => e.industry).length;
         if (sub) sub.textContent = matched ? `${matched}/${etfs.length} 只匹配到行业评分 · ${etfs[0].as_of || ''}` : '暂无行业评分（请先回填历史数据）';
+        const signalLabels = { overweight: '超配', underweight: '低配', neutral: '中性' };
+        const signalCls = { overweight: 'text-up', underweight: 'text-down', neutral: 'ev-neutral' };
         el.innerHTML = etfs.map(e => {
             const rank = e.rank != null && e.total != null ? `#${e.rank}/${e.total}` : '-';
             const score = e.score != null ? Number(e.score).toFixed(1) : '-';
             const mark = e.is_holding
                 ? `<em class="sv-etf-mark sv-etf-mark--hold">持仓${e.holding_pct != null ? ' ' + e.holding_pct + '%' : ''}</em>`
                 : '<em class="sv-etf-mark sv-etf-mark--pool">池内</em>';
+            const sectorLine = e.sector
+                ? `<span class="rs-sector">${this.esc(e.sector)} <b class="${signalCls[e.sector_signal] || 'ev-neutral'}">${signalLabels[e.sector_signal] || '—'}</b> ${e.sector_score != null ? e.sector_score : '-'}${e.sector_pe != null ? ` · PE ${Number(e.sector_pe).toFixed(1)}` : ''}</span>`
+                : '<span class="rs-sector ev-neutral">未匹配板块</span>';
             return `<div class="rs-item" onclick="Workbench.gotoMarket('${e.etf_code}')" title="在行情视图查看">
                 <div class="rs-main">
                     <span class="rs-name">${this.esc(e.etf_name || e.etf_code)}${mark}</span>
-                    <span class="rs-code">${e.etf_code}</span>
+                    ${sectorLine}
                 </div>
                 <div class="rs-right">
                     <span class="rs-industry">${this.esc(e.industry || '未匹配行业')}</span>
                     ${e.score != null ? `<span class="rs-score">${score}<em>${rank}</em></span>` : ''}
                 </div>
             </div>`;
-        }).join('') + '<div class="research-note">行业评分来自沪深300+中证500池的盈利-估值性价比模型，与轮动辩论注入的板块信号同源，仅供板块层面参考。</div>';
+        }).join('') + '<div class="research-note">左侧为申万一级行业板块（评分/信号，板块—选型同源），右侧为盈利-估值性价比行业排名；两者均为板块层面参考，不构成个股推荐。</div>';
     },
 
     renderStockPicks(picks) {
@@ -795,6 +872,7 @@ const Workbench = {
         const sub = document.getElementById(`ev-sub-${sid}`);
         const market = d.market || null;
         const research = d.research || null;
+        const sector = d.sector || null;
         const rules = d.rules || null;
         const senti = d.sentiment || null;
         const dec = d.decision || null;
@@ -842,17 +920,38 @@ const Workbench = {
             marketHtml = `<div class="ev-market-head"><span>标的</span><span class="num">得分</span><span class="num">排名</span><span class="num">5日</span></div>${rows}${gapHtml}`;
         }
 
-        // 研究依据
-        let researchHtml = '<div class="empty-hint">暂无行业评分（请先回填研究数据）</div>';
-        if (research && research.items && research.items.length) {
-            researchHtml = research.items.map(i => {
-                const rank = i.rank != null && i.total != null ? `#${i.rank}/${i.total}` : '未匹配';
-                return `<div class="ev-res-row" onclick="Workbench.switchView('research')" title="在行情视图查看">
-                    <span class="ev-res-name">${this.esc(i.etf_name || i.etf_code)}${i.is_holding ? '<em class="sv-etf-mark sv-etf-mark--hold">持仓</em>' : ''}</span>
-                    <span class="ev-res-industry">${this.esc(i.industry || '未匹配行业')}</span>
-                    <span class="ev-res-rank">${rank}${i.score != null ? ` · ${Number(i.score).toFixed(1)}` : ''}</span>
-                </div>`;
-            }).join('');
+        // 研究依据（申万板块分层 + 盈利-估值性价比）
+        let researchHtml = '<div class="empty-hint">暂无板块/行业评分数据</div>';
+        const sectorItems = (sector && sector.items) || [];
+        const researchItems = (research && research.items) || [];
+        if (sectorItems.length || researchItems.length) {
+            const signalLabels = { overweight: '超配', underweight: '低配', neutral: '中性' };
+            const signalCls = { overweight: 'text-up', underweight: 'text-down', neutral: 'ev-neutral' };
+            const chips = (list, weak) => (list || []).length
+                ? `<div class="ev-sector-top"><span class="ev-sector-label">${weak ? '低配板块' : '超配板块'}</span>` +
+                  list.map(s => `<span class="ev-sector-chip ${weak ? 'ev-sector-chip--weak' : ''}">${this.esc(s.name)} <b>${s.score}</b></span>`).join('') + '</div>'
+                : '';
+            const rows = sectorItems.length
+                ? sectorItems.map(i => {
+                    const r = researchItems.find(x => x.etf_code === i.etf_code) || {};
+                    const rankTxt = r.rank != null && r.total != null ? ` · 性价比 #${r.rank}/${r.total}` : '';
+                    const sig = i.signal ? `<b class="${signalCls[i.signal] || 'ev-neutral'}">${signalLabels[i.signal] || ''}</b> ` : '';
+                    const sectorTxt = i.sector
+                        ? `${this.esc(i.sector)} ${sig}${i.score != null ? i.score : '-'}`
+                        : '<span class="ev-neutral">未匹配板块</span>';
+                    return `<div class="ev-res-row" onclick="Workbench.gotoMarket('${i.etf_code}')" title="在行情视图查看">
+                        <span class="ev-res-name">${this.esc(i.etf_name || i.etf_code)}${i.is_holding ? '<em class="sv-etf-mark sv-etf-mark--hold">持仓</em>' : '<em class="sv-etf-mark sv-etf-mark--pool">池内</em>'}</span>
+                        <span class="ev-res-sector">${sectorTxt}${rankTxt}</span>
+                    </div>`;
+                }).join('')
+                : researchItems.map(i => {
+                    const rank = i.rank != null && i.total != null ? `#${i.rank}/${i.total}` : '未匹配';
+                    return `<div class="ev-res-row" onclick="Workbench.gotoMarket('${i.etf_code}')" title="在行情视图查看">
+                        <span class="ev-res-name">${this.esc(i.etf_name || i.etf_code)}${i.is_holding ? '<em class="sv-etf-mark sv-etf-mark--hold">持仓</em>' : ''}</span>
+                        <span class="ev-res-sector">${this.esc(i.industry || '未匹配行业')} ${rank}</span>
+                    </div>`;
+                }).join('');
+            researchHtml = `${chips(sector && sector.top_sectors, false)}${chips(sector && sector.weak_sectors, true)}${rows}`;
         }
 
         // 规则依据
@@ -903,7 +1002,7 @@ const Workbench = {
                     ${marketHtml}
                 </div>
                 <div class="ev-card">
-                    <div class="ev-card-head">🔬 研究依据 <span class="ev-card-note">行业盈利-估值性价比（轮动辩论同源）</span></div>
+                    <div class="ev-card-head">🔬 研究依据 <span class="ev-card-note">申万板块分层 + 盈利-估值性价比</span></div>
                     ${researchHtml}
                 </div>
                 <div class="ev-card">
@@ -1382,6 +1481,7 @@ const Workbench = {
                 'daily_pipeline.sentiment': '阶段·舆情采集',
                 'daily_pipeline.policy_flow': '阶段·政策与资金流',
                 'daily_pipeline.market_scan': '阶段·市场扫描',
+                'daily_pipeline.sw_sector': '阶段·申万板块',
                 'daily_pipeline.rotation_review': '阶段·轮动复盘',
                 'daily_pipeline.autonomous': 'AI自主决策',
             };

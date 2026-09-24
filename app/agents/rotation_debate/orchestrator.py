@@ -48,20 +48,23 @@ class RotationDebateOrchestrator:
         self.judge = RotationJudge()
 
     def debate(self, holdings: List[Dict], candidates: List[Dict],
-               macro_context: str = "", rule_signal: Optional[Dict] = None) -> Dict:
+               macro_context: str = "", rule_signal: Optional[Dict] = None,
+               sector_context: str = "") -> Dict:
         logger.info("[RotationDebate] 开始轮动辩论")
         rule_context = format_rule_context(rule_signal)
 
-        momentum_opinion = self.momentum.analyze(holdings, candidates, macro_context, rule_context)
+        momentum_opinion = self.momentum.analyze(holdings, candidates, macro_context,
+                                                 rule_context, sector_context)
         if "error" in momentum_opinion:
             logger.warning(f"[RotationDebate] 动量派失败: {momentum_opinion.get('error')}")
 
-        stability_opinion = self.stability.analyze(holdings, candidates, macro_context, rule_context)
+        stability_opinion = self.stability.analyze(holdings, candidates, macro_context,
+                                                   rule_context, sector_context)
         if "error" in stability_opinion:
             logger.warning(f"[RotationDebate] 稳定派失败: {stability_opinion.get('error')}")
 
         final = self.judge.analyze(momentum_opinion, stability_opinion, holdings, candidates,
-                                   rule_context)
+                                   rule_context, sector_context)
 
         if "error" in final:
             logger.warning(f"[RotationDebate] 裁决失败: {final.get('error')}")
