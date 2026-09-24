@@ -135,6 +135,9 @@ class TestSectorMapping(unittest.TestCase):
         self.assertEqual(match_sector("银行ETF"), "银行")
         self.assertIsNone(match_sector("沪深300ETF"))
         self.assertIsNone(match_sector(""))
+        # 真实案例：名称含「综合」不应误判为申万综合行业（该行业已刻意不设关键词）
+        self.assertIsNone(match_sector("易方达中证港股通信息技术综合ETF"))
+        self.assertEqual(match_sector("港股通医药ETF"), "医药生物")
 
 
 class TestSectorSignals(unittest.TestCase):
