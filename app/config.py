@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     #   True = Ashare 失败时降级到 efinance（部署环境网络受限时使用）
     scheduled_task_allow_fallback: bool = False
 
+    # 情绪极端条件触发复核（交易日舆情采集后判定，见 plans 舆情接入决策）：
+    #   True = 负面极端时对运行中自动策略提前跑一次轮动复核（门槛加严）
+    sentiment_review_enabled: bool = True
+    sentiment_extreme_score: float = -0.5          # 市场情绪均分 ≤ 该值视为负面极端
+    sentiment_extreme_negative_count: int = 3      # 涉策略标的负面舆情条数 ≥ 该值视为极端
+    sentiment_condition_gap_threshold: float = 3.0 # 条件触发时的换仓门槛（常规为 5.0）
+
     # 板块层介入强度（申万一级行业，见 plans/板块轮动到选型方案.md）：
     #   semi_hard（默认）= 低配板块候选排序降级 + 低配板块持仓优先换出 + 超配板块作辩论证据
     #   off = 完全关闭板块层，选型逻辑与历史一致

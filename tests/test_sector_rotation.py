@@ -245,7 +245,8 @@ class TestRotationWithSectorLayer(unittest.TestCase):
     def test_low_sector_candidate_downgraded_and_context_returned(self):
         captured = {}
 
-        def fake_debate(holdings, candidates, rule_signal=None, sector_context=""):
+        def fake_debate(holdings, candidates, rule_signal=None, sector_context="",
+                            sentiment_context=""):
             captured["candidates"] = [c["etf_code"] for c in candidates]
             captured["context"] = sector_context
             return {"decision": "hold", "final_swaps": [], "summary": "维持持仓"}
@@ -266,7 +267,8 @@ class TestRotationWithSectorLayer(unittest.TestCase):
         from unittest.mock import patch
         captured = {}
 
-        def fake_debate(holdings, candidates, rule_signal=None, sector_context=""):
+        def fake_debate(holdings, candidates, rule_signal=None, sector_context="",
+                            sentiment_context=""):
             captured["candidates"] = [c["etf_code"] for c in candidates]
             captured["context"] = sector_context
             return {"decision": "hold", "final_swaps": [], "summary": "维持"}

@@ -26,6 +26,9 @@ class StabilityAdvocate(BaseAgent):
 ## 板块轮动参考（申万一级行业）
 {sector_context}
 
+## 舆情参考（市场情绪 + 涉本策略标的）
+{sentiment_context}
+
 ## 你的任务
 从稳定性/交易成本/均值回归角度，审视候选替换是否合理。输出JSON（不要包含其他文字）：
 {{
@@ -48,17 +51,18 @@ class StabilityAdvocate(BaseAgent):
   "summary": "一句话总结稳定派观点"
 }}
 
-注意：你不是完全反对换仓，而是要求充分理由。如果某只持仓确实趋势破位（得分远低于候选），你也应该同意替换。若候选带有 industry_value 字段（行业盈利-估值性价比排名，rank 越接近 total 行业越被高估），可对"高估行业追涨"提出质疑；该信号仅是板块层面参考，不得涉及个股判断。规则参考如果与某笔换入方向相反（规则建议减持该标的），应作为反对理由的一部分明确引用。持仓处于低配板块（板块逆风）时，可作为支持换出的理由之一；候选处于低配板块时，应质疑「低配板块追涨」。"""
+注意：你不是完全反对换仓，而是要求充分理由。如果某只持仓确实趋势破位（得分远低于候选），你也应该同意替换。若候选带有 industry_value 字段（行业盈利-估值性价比排名，rank 越接近 total 行业越被高估），可对"高估行业追涨"提出质疑；该信号仅是板块层面参考，不得涉及个股判断。规则参考如果与某笔换入方向相反（规则建议减持该标的），应作为反对理由的一部分明确引用。持仓处于低配板块（板块逆风）时，可作为支持换出的理由之一；候选处于低配板块时，应质疑「低配板块追涨」。舆情负面偏空、尤其涉本策略标的出现负面条目时，可作为支持换出或降低暴露的理由。"""
 
     def analyze(self, holdings: List[Dict], candidates: List[Dict],
                 macro_context: str = "", rule_context: str = "",
-                sector_context: str = "") -> Dict:
+                sector_context: str = "", sentiment_context: str = "") -> Dict:
         prompt = self.PROMPT.format(
             holdings=json.dumps(holdings, ensure_ascii=False, indent=2),
             candidates=json.dumps(candidates, ensure_ascii=False, indent=2),
             macro_context=macro_context or "无额外宏观信息",
             rule_context=rule_context or "无规则参考",
             sector_context=sector_context or "无板块参考",
+            sentiment_context=sentiment_context or "无舆情参考",
         )
         result = self.call_llm(prompt, temperature=0.4)
         return result if result and "error" not in result else {"error": "稳定派分析失败", "stance": "conservative_hold", "acceptable_swaps": []}

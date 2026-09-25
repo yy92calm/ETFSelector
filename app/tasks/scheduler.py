@@ -271,8 +271,131 @@ def _step_collect_sentiments():
 
 @log_task_execution("sentiment_collect")
 def _job_collect_sentiments():
-    """交易时段舆情采集独立任务（10/12/14点定时执行）"""
+    """交易时段舆情采集独立任务（10/12/14点定时执行）
+
+    采集后判定情绪是否极端：负面极端时条件触发一次轮动复核（门槛加严），
+    使极端情绪不必等到 20:00 管道才被处理。
+    """
     _step_collect_sentiments()
+    _maybe_trigger_sentiment_review()
+
+
+def _maybe_trigger_sentiment_review():
+    """情绪极端 → 条件触发轮动复核（semisettings.sentiment_condition_gap_threshold 门槛）"""
+    from datetime import datetime
+    from sqlalchemy import func
+    from app.config import get_settings
+    from app.db.database import SessionLocal
+    from app.models.etf import ETFDailyIndicator
+    from app.models.strategy import Strategy
+    from app.models.task_log import TaskExecutionLog
+    from app.services.rotation_service import get_rotation_service
+    from app.services.sentiment_service import get_sentiment_service
+
+    settings = get_settings()
+    if not settings.sentiment_review_enabled:
+        return
+
+    logger.info("===== [条件触发] 情绪极端复核 =====")
+    started = datetime.utcnow()
+    db = SessionLocal()
+    try:
+        strategies = db.query(Strategy).filter(
+            Strategy.strategy_source == "auto_generated",
+            Strategy.auto_strategy_status == "running",
+        ).all()
+        scan_date = db.query(func.max(ETFDailyIndicator.trade_date)).scalar()
+        if not strategies or not scan_date:
+            return
+
+        sentiment_svc = get_sentiment_service()
+        rotation_svc = get_rotation_service()
+        triggered = []
+
+        for strategy in strategies:
+            guard = sentiment_svc.evaluate_extreme(db, strategy.id)
+            if not guard.get("extreme"):
+                logger.info(f"策略{strategy.id} 情绪未达极端（均分{guard.get('market_score')}），跳过条件复核")
+                continue
+            logger.info(f"策略{strategy.id} 情绪极端触发复核: {guard['reasons']}")
+            plan = rotation_svc.evaluate_rotation(
+                strategy.id, scan_date, db,
+                gap_threshold=settings.sentiment_condition_gap_threshold,
+            )
+            result = None
+            if plan.get("action") == "rotate":
+                result = rotation_svc.execute_rotation(strategy.id, plan, db)
+                logger.info(f"策略{strategy.id} 条件复核执行: {result.get('status')}")
+            else:
+                logger.info(f"策略{strategy.id} 条件复核维持: {plan.get('reason', '')}")
+            _record_condition_review(strategy, plan, guard, result, db)
+            triggered.append({
+                "strategy_id": strategy.id,
+                "action": plan.get("action"),
+                "reasons": guard.get("reasons"),
+            })
+
+        db.add(TaskExecutionLog(
+            task_name="sentiment_condition_review",
+            status="success",
+            started_at=started,
+            finished_at=datetime.utcnow(),
+            duration_seconds=(datetime.utcnow() - started).total_seconds(),
+            result_summary={"checked": len(strategies), "triggered": len(triggered), "details": triggered},
+        ))
+        db.commit()
+    except Exception as e:
+        logger.error(f"情绪条件复核异常（不影响舆情采集）: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _record_condition_review(strategy, plan, guard, result, db):
+    """条件触发决策留痕：写入/更新当日 analyzed 记录（20:00 管道当日会再覆盖更新）"""
+    from datetime import date
+
+    from app.models.auto_strategy_log import AutoStrategyLog
+    from app.services.strategy_evidence_service import get_strategy_evidence_service
+
+    action_map = {"rotate": "rebalance", "hold": "hold", "skip": "hold"}
+    cited = ["market", "sentiment"]
+    if (plan.get("sector_meta") or {}).get("mode") != "off":
+        cited.append("research")
+    if plan.get("rule_signal"):
+        cited.append("rules")
+
+    analysis = {
+        "suggested_action": action_map.get(plan.get("action"), "hold"),
+        "suggested_allocation": (result or {}).get("new_allocation") or plan.get("suggested_allocation"),
+        "action_reason": "情绪条件触发：" + "；".join(guard.get("reasons") or []) +
+                         "｜" + str(plan.get("reason") or plan.get("summary") or "条件复核完成"),
+        "key_signals_summary": guard.get("reasons") or [],
+        "source": "sentiment_condition",
+        "trigger": "condition",
+        "gap_threshold": plan.get("gap_threshold"),
+    }
+    try:
+        analysis["evidence"] = {
+            "sources_cited": cited,
+            "snapshot": get_strategy_evidence_service().get_snapshot(strategy.id, db),
+        }
+    except Exception as e:
+        logger.warning(f"[条件复核] 策略{strategy.id}依据快照生成失败: {e}")
+
+    today = date.today()
+    existing = db.query(AutoStrategyLog).filter_by(
+        strategy_id=strategy.id, log_date=today, action_type="analyzed"
+    ).first()
+    if existing:
+        existing.analysis_result = analysis
+        existing.status = "success"
+    else:
+        db.add(AutoStrategyLog(
+            strategy_id=strategy.id, log_date=today,
+            status="success", action_type="analyzed", analysis_result=analysis,
+        ))
+    db.commit()
 
 
 def _step_policy_impact():

@@ -46,6 +46,49 @@ def classify_tool_sources(tool_names: List[str]) -> Dict[str, List[str]]:
     return result
 
 
+def _sentiment_label(score: Optional[float]) -> str:
+    if score is None:
+        return "无数据"
+    return "偏空" if score < -0.2 else "偏多" if score > 0.2 else "中性"
+
+
+def format_sentiment_context(evidence: Optional[Dict]) -> str:
+    """把舆情依据渲染成辩论材料中的「舆情参考」文本段（市场级 + 涉本策略标的）"""
+    if not evidence or not (evidence.get("market_total") or evidence.get("total")):
+        return "无舆情参考（当日无相关采集数据）"
+
+    market_total = evidence.get("market_total")
+    market_score = evidence.get("market_avg_score")
+    lines = [
+        f"市场舆情：近{evidence.get('window_days')}日 {market_total} 条，均分 "
+        f"{market_score if market_score is not None else '-'}（{_sentiment_label(market_score)}），"
+        f"截至 {evidence.get('as_of')}"
+    ]
+
+    related_total = evidence.get("total") or 0
+    if related_total:
+        r_score = evidence.get("avg_score")
+        lines.append(
+            f"涉本策略标的：{related_total} 条，均分 {r_score if r_score is not None else '-'}"
+            f"（{_sentiment_label(r_score)}）"
+        )
+        lines.append("相关条目：" + "；".join(
+            f"{r.get('date')} {str(r.get('title') or '')[:28]}"
+            + (f"（关联 {'、'.join(r['etf_codes'])}）" if r.get("etf_codes") else "")
+            for r in (evidence.get("recent") or [])[:3]
+        ))
+    else:
+        lines.append("涉本策略标的：无（采集端未建立 ETF 关联，按市场级情绪参考）")
+
+    heads = evidence.get("market_recent") or []
+    if heads:
+        lines.append("市场头条：" + "；".join(
+            f"{h.get('date')} {str(h.get('title') or '')[:24]}" for h in heads[:3]
+        ))
+    lines.append("口径：情绪均分 >0.2 偏多 / <-0.2 偏空；负面偏空时弱持仓优先处置，正面偏多不作为追涨依据。")
+    return "\n".join(lines)
+
+
 class StrategyEvidenceService:
     """策略决策依据聚合（只读）"""
 
@@ -64,7 +107,7 @@ class StrategyEvidenceService:
             "research": self._section(self._research_evidence, strategy, db),
             "sector": self._section(self._sector_evidence, strategy, db),
             "rules": self._section(self._rule_evidence, strategy, db, scan_date),
-            "sentiment": self._section(self._sentiment_evidence, strategy, db),
+            "sentiment": self._section(self.get_sentiment_evidence, strategy, db),
             "decision": self._section(self._last_decision, strategy, db),
         }
 
@@ -292,7 +335,7 @@ class StrategyEvidenceService:
             base_allocation=strategy.allocation_config or {},
         )
 
-    def _sentiment_evidence(self, strategy: Strategy, db: Session) -> Dict:
+    def get_sentiment_evidence(self, strategy: Strategy, db: Session) -> Dict:
         universe = self._universe(strategy, db)
         codes = universe["pool"] | universe["holding_codes"]
         latest_date = db.query(func.max(SentimentData.data_date)).scalar()
@@ -308,9 +351,11 @@ class StrategyEvidenceService:
         )
         related = [r for r in rows if any(c in codes for c in (r.related_etfs or []))]
         scores = [r.sentiment_score for r in related if r.sentiment_score is not None]
+        market_scores = [r.sentiment_score for r in rows if r.sentiment_score is not None]
         return {
             "as_of": latest_date.isoformat(),
             "window_days": SENTIMENT_LOOKBACK_DAYS,
+            # 涉本策略标的（标的级；采集端未做 ETF 关联时可能为 0）
             "total": len(related),
             "avg_score": round(sum(scores) / len(scores), 3) if scores else None,
             "recent": [{
@@ -319,6 +364,15 @@ class StrategyEvidenceService:
                 "label": r.sentiment_label,
                 "etf_codes": [c for c in (r.related_etfs or []) if c in codes],
             } for r in related[:3]],
+            # 市场级（全量窗口）
+            "market_total": len(rows),
+            "market_avg_score": round(sum(market_scores) / len(market_scores), 3) if market_scores else None,
+            "market_recent": [{
+                "date": r.data_date.isoformat(),
+                "title": r.title,
+                "label": r.sentiment_label,
+                "score": r.sentiment_score,
+            } for r in rows[:3]],
         }
 
     def _last_decision(self, strategy: Strategy, db: Session) -> Optional[Dict]:

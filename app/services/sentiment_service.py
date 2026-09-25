@@ -330,6 +330,60 @@ class SentimentService:
             "sentiments": [s.to_dict() for s in sentiments[:10]],
         }
     
+    def evaluate_extreme(self, db: Session, strategy_id: int, target_date: date = None) -> Dict:
+        """情绪极端判定（条件触发复核用）
+
+        触发条件（任一命中）：
+          - 市场级负面极端：当日舆情均分 ≤ settings.sentiment_extreme_score
+          - 标的级负面集中：涉本策略池/持仓的负面舆情条数 ≥ settings.sentiment_extreme_negative_count
+        返回 {extreme, reasons, market_score, related_negative, date, total}
+        """
+        from sqlalchemy import func
+        from app.models.strategy import Strategy
+        from app.services.portfolio_service import get_portfolio_service
+
+        if target_date is None:
+            target_date = db.query(func.max(SentimentData.data_date)).scalar()
+        if target_date is None:
+            return {"extreme": False, "reasons": [], "market_score": None,
+                    "related_negative": 0, "date": None, "total": 0}
+
+        summary = self.get_sentiment_summary(target_date, db)
+        market_score = summary.get("avg_score")
+
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+        codes = set()
+        if strategy:
+            universe = get_portfolio_service().get_strategy_universe(strategy_id, db)
+            codes = universe["pool"] | universe["holding_codes"]
+
+        related_negative = 0
+        if codes:
+            rows = db.query(SentimentData).filter(
+                SentimentData.data_date == target_date,
+                SentimentData.sentiment_label == "negative",
+            ).all()
+            related_negative = sum(
+                1 for r in rows if any(c in codes for c in (r.related_etfs or []))
+            )
+
+        reasons = []
+        if market_score is not None and market_score <= settings.sentiment_extreme_score:
+            reasons.append(f"市场情绪负面极端（均分 {market_score} ≤ {settings.sentiment_extreme_score}）")
+        if related_negative >= settings.sentiment_extreme_negative_count:
+            reasons.append(
+                f"涉本策略标的负面舆情 {related_negative} 条 ≥ {settings.sentiment_extreme_negative_count}"
+            )
+
+        return {
+            "extreme": bool(reasons),
+            "reasons": reasons,
+            "market_score": market_score,
+            "related_negative": related_negative,
+            "date": target_date.isoformat(),
+            "total": summary.get("total", 0),
+        }
+
     def _parse_time(self, time_str) -> datetime:
         """解析时间字符串"""
         if not time_str:
@@ -385,3 +439,12 @@ class SentimentService:
         except:
             pass
         return {}
+
+_service = None
+
+
+def get_sentiment_service() -> SentimentService:
+    global _service
+    if _service is None:
+        _service = SentimentService()
+    return _service

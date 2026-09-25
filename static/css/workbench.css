@@ -3422,3 +3422,4 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .ev-res-sector b { font-weight: 700; }
 .rs-sector { font-size: 11px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rs-sector b { font-weight: 700; }
+.ev-senti-market { font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; }

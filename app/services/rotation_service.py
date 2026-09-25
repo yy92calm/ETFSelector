@@ -20,7 +20,10 @@ SCORE_GAP_THRESHOLD = 5.0
 class RotationService:
     """轮动决策：量化筛选候选 → 多Agent辩论 → 裁决执行"""
 
-    def evaluate_rotation(self, strategy_id: int, scan_date: date, db: Session) -> Dict:
+    def evaluate_rotation(self, strategy_id: int, scan_date: date, db: Session,
+                          gap_threshold: Optional[float] = None) -> Dict:
+        """评估轮动（gap_threshold 可覆盖换仓门槛：情绪条件触发时加严）"""
+        threshold = SCORE_GAP_THRESHOLD if gap_threshold is None else gap_threshold
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy or not strategy.allocation_config:
             return {"action": "skip", "reason": "策略不存在或未配置"}
@@ -79,7 +82,7 @@ class RotationService:
             logger.warning(f"[Rotation] 板块层计算失败（降级为仅个股动量）: {e}")
 
         has_gap = any(
-            enter_candidates[0]["composite_score"] - h["composite_score"] >= SCORE_GAP_THRESHOLD
+            enter_candidates[0]["composite_score"] - h["composite_score"] >= threshold
             for h in eligible_holdings
         ) if enter_candidates and eligible_holdings else False
 
@@ -95,6 +98,7 @@ class RotationService:
                 } for h in sorted(holding_scores, key=lambda x: -x["composite_score"])],
                 "sector_meta": sector_meta,
                 "sector_context": sector_context,
+                "gap_threshold": threshold,
             }
 
         # 板块层面参考信号：行业盈利-估值性价比（不参与综合分排名，仅供辩论）
@@ -103,7 +107,11 @@ class RotationService:
         # 规则依据：当前市场状态下的规则建议配置（与规则驱动回测同源，仅供辩论参考）
         rule_signal = self._build_rule_signal(strategy, scan_date, db)
 
-        debate_result = self._run_debate(eligible_holdings, enter_candidates, rule_signal, sector_context)
+        # 舆情依据：市场情绪 + 涉本策略标的舆情（与板块/规则同级注入辩论）
+        sentiment_context = self._build_sentiment_context(strategy, db)
+
+        debate_result = self._run_debate(eligible_holdings, enter_candidates, rule_signal,
+                                         sector_context, sentiment_context)
 
         if debate_result.get("decision") != "rotate" or not debate_result.get("final_swaps"):
             return {
@@ -113,6 +121,7 @@ class RotationService:
                 "rule_signal": rule_signal,
                 "sector_meta": sector_meta,
                 "sector_context": sector_context,
+                "gap_threshold": threshold,
             }
 
         rotations = []
@@ -139,7 +148,8 @@ class RotationService:
 
         if not rotations:
             return {"action": "hold", "reason": "辩论裁决无有效替换", "debate": debate_result,
-                    "rule_signal": rule_signal, "sector_meta": sector_meta, "sector_context": sector_context}
+                    "rule_signal": rule_signal, "sector_meta": sector_meta,
+                    "sector_context": sector_context, "gap_threshold": threshold}
 
         return {
             "action": "rotate",
@@ -150,6 +160,7 @@ class RotationService:
             "rule_signal": rule_signal,
             "sector_meta": sector_meta,
             "sector_context": sector_context,
+            "gap_threshold": threshold,
         }
 
     def execute_rotation(self, strategy_id: int, rotation_plan: Dict, db: Session) -> Dict:
@@ -250,9 +261,28 @@ class RotationService:
             logger.warning(f"[Rotation] 规则依据注入失败（不影响辩论）: {e}")
             return None
 
+    def _build_sentiment_context(self, strategy, db: Session) -> str:
+        """舆情依据文本（失败静默降级为空）"""
+        try:
+            from app.services.strategy_evidence_service import (
+                format_sentiment_context, get_strategy_evidence_service,
+            )
+            evidence = get_strategy_evidence_service().get_sentiment_evidence(strategy, db)
+            text = format_sentiment_context(evidence)
+            if evidence and evidence.get("total"):
+                logger.info(
+                    f"[Rotation] 舆情依据已注入: {evidence['total']}条 "
+                    f"均分{evidence.get('avg_score')} 涉标的{len(evidence.get('recent') or [])}条"
+                )
+            return text
+        except Exception as e:
+            logger.warning(f"[Rotation] 舆情依据注入失败（不影响辩论）: {e}")
+            return ""
+
     def _run_debate(self, holdings: List[Dict], candidates: List[Dict],
                     rule_signal: Optional[Dict] = None,
-                    sector_context: str = "") -> Dict:
+                    sector_context: str = "",
+                    sentiment_context: str = "") -> Dict:
         from app.agents.rotation_debate.orchestrator import RotationDebateOrchestrator
         from app.config import get_settings
 
@@ -264,7 +294,8 @@ class RotationService:
         try:
             debate = RotationDebateOrchestrator()
             return debate.debate(holdings, candidates, rule_signal=rule_signal,
-                                 sector_context=sector_context)
+                                 sector_context=sector_context,
+                                 sentiment_context=sentiment_context)
         except Exception as e:
             logger.warning(f"[Rotation] 辩论异常，降级纯量化: {e}")
             return self._fallback_quant_decision(holdings, candidates)

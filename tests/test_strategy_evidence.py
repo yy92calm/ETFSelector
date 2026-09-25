@@ -119,7 +119,8 @@ class TestRuleSignalInjection(unittest.TestCase):
     def test_rule_signal_passed_to_debate_and_returned(self):
         captured = {}
 
-        def fake_debate(holdings, candidates, rule_signal=None, sector_context=""):
+        def fake_debate(holdings, candidates, rule_signal=None, sector_context="",
+                            sentiment_context=""):
             captured["rule_signal"] = rule_signal
             captured["sector_context"] = sector_context
             captured["holdings"] = holdings

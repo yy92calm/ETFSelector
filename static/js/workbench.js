@@ -978,17 +978,35 @@ const Workbench = {
         }
 
         // 舆情依据
-        let sentiHtml = '<div class="empty-hint">近7日无涉及本策略标的的舆情</div>';
-        if (senti && senti.total > 0) {
+        let sentiHtml = '<div class="empty-hint">近7日无舆情数据</div>';
+        if (senti && senti.total === 0 && senti.market_total > 0) {
+            // 真实场景：采集端未建立 ETF 关联，只展示市场级情绪
+            const mColor = senti.market_avg_score == null ? 'var(--text-secondary)' : senti.market_avg_score > 0.2 ? 'var(--danger)' : senti.market_avg_score < -0.2 ? 'var(--success)' : 'var(--warning)';
+            sentiHtml = `
+                <div class="ev-senti-head">
+                    <span class="ev-senti-count">近${senti.window_days}日 <b>0</b> 条涉及本策略标的</span>
+                    <span class="ev-senti-score" style="color:${mColor}">市场均分 ${senti.market_avg_score != null ? (senti.market_avg_score > 0 ? '+' : '') + senti.market_avg_score : '-'}</span>
+                    <button class="ev-link-btn" onclick="Workbench.switchView('sentiment')">舆情视图</button>
+                </div>
+                <div class="ev-senti-market">市场级近${senti.window_days}日 ${senti.market_total} 条（采集端未建立 ETF 关联，按市场情绪参考）</div>
+                ${(senti.market_recent || []).map(r => `<div class="ev-senti-item" onclick="Workbench.switchView('sentiment')">
+                    <span class="ev-senti-date">${(r.date || '').slice(5)}</span>
+                    <span class="ev-senti-title">${this.esc(r.title || '')}</span>
+                </div>`).join('')}`;
+        } else if (senti && senti.total > 0) {
             const score = senti.avg_score;
             const color = score == null ? 'var(--text-secondary)' : score > 0.2 ? 'var(--danger)' : score < -0.2 ? 'var(--success)' : 'var(--warning)';
+            const marketLine = senti.market_total
+                ? `<div class="ev-senti-market">市场级：近${senti.window_days}日 ${senti.market_total} 条 · 均分 ${senti.market_avg_score != null ? senti.market_avg_score : '-'}</div>`
+                : '';
             sentiHtml = `
                 <div class="ev-senti-head">
                     <span class="ev-senti-count">近${senti.window_days}日 <b>${senti.total}</b> 条涉及本策略标的</span>
                     <span class="ev-senti-score" style="color:${color}">均分 ${score != null ? (score > 0 ? '+' : '') + score : '-'}</span>
                     <button class="ev-link-btn" onclick="Workbench.switchView('sentiment')">舆情视图</button>
                 </div>
-                ${(senti.recent || []).map(r => `<div class="ev-senti-item" onclick="Workbench.switchView('sentiment')">
+                ${marketLine}
+                ${((senti.recent && senti.recent.length) ? senti.recent : (senti.market_recent || [])).map(r => `<div class="ev-senti-item" onclick="Workbench.switchView('sentiment')">
                     <span class="ev-senti-date">${(r.date || '').slice(5)}</span>
                     <span class="ev-senti-title">${this.esc(r.title || '')}</span>
                 </div>`).join('')}`;
@@ -1482,6 +1500,7 @@ const Workbench = {
                 'daily_pipeline.policy_flow': '阶段·政策与资金流',
                 'daily_pipeline.market_scan': '阶段·市场扫描',
                 'daily_pipeline.sw_sector': '阶段·申万板块',
+                'sentiment_condition_review': '情绪条件复核',
                 'daily_pipeline.rotation_review': '阶段·轮动复盘',
                 'daily_pipeline.autonomous': 'AI自主决策',
             };
