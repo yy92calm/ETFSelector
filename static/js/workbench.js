@@ -2265,6 +2265,12 @@ const Workbench = {
                 const pendingBadge = s.pending_allocation
                     ? `<span class="s-badge s-pending" title="提交于 ${s.pending_set_date || '-'}，下一交易日生效">调仓待生效</span>`
                     : '';
+                // 自动执行状态（automatic 策略：running/paused；暂停时给出原因，避免"活跃"误读）
+                const autoBadge = (s.strategy_source === 'auto_generated' || s.strategy_type === 'auto')
+                    ? (s.auto_strategy_status === 'running'
+                        ? '<span class="s-badge s-auto-on" title="自动执行中：每日管道会做轮动复盘与自主决策">自动执行中</span>'
+                        : `<span class="s-badge s-auto-off" title="${this.esc(s.paused_reason || '自动执行已暂停')}${s.paused_date ? '（' + s.paused_date + '）' : ''}">自动执行已暂停</span>`)
+                    : '';
                 return `
                 <div class="strat-block expanded" id="strat-block-${s.id}">
                     <div class="strat-block-head" onclick="Workbench.toggleBacktest(${s.id})">
@@ -2272,6 +2278,7 @@ const Workbench = {
                             <span class="strat-expand-icon" id="strat-icon-${s.id}">▾</span>
                             <span class="strat-block-name">${this.esc(s.name)}</span>
                             ${statusBadge}
+                            ${autoBadge}
                             ${pendingBadge}
                             <span class="strat-block-type">${s.strategy_type || '-'}</span>
                             ${s.holding_start_date ? `<span class="strat-hold-date" title="持仓起始日，用于跟踪实际收益">建仓 ${s.holding_start_date}</span>` : ''}

@@ -3423,3 +3423,5 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .rs-sector { font-size: 11px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rs-sector b { font-weight: 700; }
 .ev-senti-market { font-size: 11px; color: var(--text-secondary); margin-bottom: 4px; }
+.s-auto-on { background: rgba(2, 132, 199, 0.1); color: var(--accent); }
+.s-auto-off { background: rgba(217, 119, 6, 0.12); color: var(--warning); }
