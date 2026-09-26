@@ -45,6 +45,7 @@ def pause_strategy(db: Session, strategy_id: int, reason: str = "手动暂停") 
     strategy.auto_strategy_status = "paused"
     strategy.paused_reason = reason
     strategy.paused_date = date.today()
+    strategy.paused_cooldown_days = None   # 人工/LLM 暂停不自动恢复
     db.commit()
 
     return {
@@ -67,6 +68,7 @@ def resume_strategy(db: Session, strategy_id: int) -> dict:
     strategy.auto_strategy_status = "running"
     strategy.paused_reason = None
     strategy.paused_date = None
+    strategy.paused_cooldown_days = None
     db.commit()
 
     return {
