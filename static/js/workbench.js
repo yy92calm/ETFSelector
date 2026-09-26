@@ -848,6 +848,21 @@ const Workbench = {
         }).join('');
     },
 
+    // === 策略恢复运行 ===
+    async resumeStrategy(id) {
+        if (!confirm(`恢复策略 ${id} 的自动执行？\n恢复后每日管道会重新参与轮动复盘与自主决策。`)) return;
+        try {
+            const resp = await fetch(`/api/auto-strategy/resume?strategy_id=${id}`, { method: 'POST' }).then(r => r.json());
+            if (resp.code === 200) {
+                this.loadStrategies();
+            } else {
+                alert('恢复失败: ' + (resp.message || ''));
+            }
+        } catch (e) {
+            alert('恢复请求失败');
+        }
+    },
+
     // === 策略决策依据面板 ===
 
     async loadStrategyEvidence(sid) {
@@ -884,8 +899,10 @@ const Workbench = {
 
         // 决策留痕条
         const cited = (dec && dec.sources_cited) || [];
-        const citedHtml = cited.length
+        const expUsed = (dec && dec.experience_used) || 0;
+        const citedHtml = (cited.length || expUsed)
             ? cited.map(s => `<span class="ev-cite">${sourceLabels[s] || s}</span>`).join('')
+              + (expUsed ? `<span class="ev-cite">经验×${expUsed}</span>` : '')
             : '<span class="ev-cite ev-cite-none">未留痕</span>';
         const decLine = dec
             ? `<div class="ev-decision">
@@ -1030,6 +1047,106 @@ const Workbench = {
                 <div class="ev-card">
                     <div class="ev-card-head">📰 舆情依据 <span class="ev-card-note">涉本策略标的</span></div>
                     ${sentiHtml}
+                </div>
+            </div>`;
+    },
+
+    async loadStrategyEvolution(sid) {
+        const el = document.getElementById(`evo-body-${sid}`);
+        if (!el) return;
+        el.innerHTML = '<div class="empty-hint">加载中...</div>';
+        try {
+            const [riskResp, expResp, evoResp] = await Promise.all([
+                fetch(`/api/auto-strategy/enhanced/risk-dashboard?strategy_id=${sid}`).then(r => r.json()).catch(() => ({ code: 500 })),
+                fetch(`/api/auto-strategy/experiences?strategy_id=${sid}`).then(r => r.json()).catch(() => ({ code: 500 })),
+                fetch(`/api/auto-strategy/evolved-prompt?strategy_id=${sid}`).then(r => r.json()).catch(() => ({ code: 500 })),
+            ]);
+            this.renderStrategyEvolution(sid,
+                riskResp.code === 200 ? riskResp.data : null,
+                expResp.code === 200 ? (expResp.data.experiences || []) : [],
+                evoResp.code === 200 ? evoResp.data : null);
+        } catch (e) {
+            el.innerHTML = '<div class="empty-hint" style="color:var(--danger)">加载失败</div>';
+        }
+    },
+
+    renderStrategyEvolution(sid, risk, experiences, evolved) {
+        const el = document.getElementById(`evo-body-${sid}`);
+        if (!el) return;
+        const sub = document.getElementById(`evo-sub-${sid}`);
+
+        // 风控条
+        let riskHtml = '';
+        if (risk) {
+            const levelMeta = {
+                low: { label: '低', cls: 'risk-low' }, medium: { label: '中', cls: 'risk-mid' },
+                high: { label: '高', cls: 'risk-high' }, critical: { label: '危急', cls: 'risk-critical' },
+            };
+            const lm = levelMeta[risk.overall_risk_level] || { label: risk.overall_risk_level || '-', cls: 'risk-mid' };
+            const cb = risk.circuit_breaker || {};
+            const dd = risk.drawdown_protection || {};
+            const ddBadge = { normal: '正常', warning: '预警', alert: '警戒', critical: '临界' }[dd.status] || dd.status || '-';
+            const ddCls = dd.status === 'normal' ? 'risk-low' : dd.status === 'warning' ? 'risk-mid' : 'risk-high';
+            const chips = [
+                `<span class="risk-chip ${lm.cls}">整体风险 ${lm.label}</span>`,
+                `<span class="risk-chip ${cb.status === 'triggered' ? 'risk-high' : 'risk-low'}" title="${this.esc(cb.reason || cb.message || '')}">熔断 ${cb.status === 'triggered' ? '触发' : '正常'}</span>`,
+                `<span class="risk-chip ${ddCls}" title="${this.esc(dd.message || '')}">回撤 ${ddBadge}${dd.drawdown_pct != null ? ' ' + Math.abs(dd.drawdown_pct) + '%' : ''}</span>`,
+            ];
+            (risk.risk_alerts || []).slice(0, 3).forEach(a => chips.push(`<span class="risk-chip risk-high">${this.esc(String(a).slice(0, 40))}</span>`));
+            riskHtml = `<div class="risk-strip">${chips.join('')}</div>`;
+        }
+
+        // 经验库
+        const typeMeta = {
+            failure: { label: '失败教训', cls: 'exp-failure' },
+            success: { label: '成功经验', cls: 'exp-success' },
+            insight: { label: '洞察', cls: 'exp-insight' },
+        };
+        let expHtml = '<div class="empty-hint">暂无经验（每周复盘后积累）</div>';
+        if (experiences.length) {
+            expHtml = experiences.map(e => {
+                const tm = typeMeta[e.experience_type] || { label: e.experience_type, cls: 'exp-insight' };
+                const eff = e.effectiveness_score != null ? Number(e.effectiveness_score) : 0;
+                const tags = (e.scenario_tags || []).slice(0, 3).map(t => `<span class="exp-tag">${this.esc(t)}</span>`).join('');
+                return `<div class="exp-item" onclick="this.classList.toggle('exp-open')">
+                    <div class="exp-head">
+                        <span class="exp-type ${tm.cls}">${tm.label}</span>
+                        <span class="exp-title">${this.esc(e.title || '')}</span>
+                        <span class="exp-eff" title="有效性评分（应用后组合表现，关联性参考）">${eff.toFixed(1)}</span>
+                    </div>
+                    <div class="exp-meta">
+                        应用${e.application_count || 0}次 · 权重${(e.weight != null ? e.weight : 1).toFixed(2)} · ${e.is_validated ? '已验证' : '待验证'}
+                        ${e.expires_date ? ` · 至${String(e.expires_date).slice(5)}` : ''}
+                    </div>
+                    <div class="exp-detail">
+                        ${e.key_insight ? `<div class="exp-insight-line">${this.esc(e.key_insight)}</div>` : ''}
+                        ${e.description ? `<div class="exp-desc">${this.esc(e.description)}</div>` : ''}
+                        ${tags ? `<div class="exp-tags">${tags}</div>` : ''}
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        // 进化提示词
+        let evoHtml = '<div class="empty-hint">尚未生成（复盘时由 LLM 改写）</div>';
+        if (evolved && evolved.prompt_text) {
+            const srcLabels = { weekly: '周复盘', monthly: '月复盘', manual: '手动', daily_pipeline: '每日管道' };
+            evoHtml = `
+                <div class="evo-meta">v${evolved.version} · ${srcLabels[evolved.source_type] || evolved.source_type || '-'} · ${(evolved.updated_at || '').slice(0, 16).replace('T', ' ')}</div>
+                <div class="evo-text">${this.esc(evolved.prompt_text)}</div>`;
+        }
+
+        if (sub) sub.textContent = `经验 ${experiences.length} 条${evolved && evolved.prompt_text ? ` · 提示词 v${evolved.version}` : ''}`;
+        el.innerHTML = `
+            ${riskHtml}
+            <div class="evo-grid">
+                <div class="ev-card">
+                    <div class="ev-card-head">🧠 经验库 <span class="ev-card-note">复盘积累 · 点击展开详情</span></div>
+                    ${expHtml}
+                </div>
+                <div class="ev-card">
+                    <div class="ev-card-head">✨ 进化提示词 <span class="ev-card-note">注入每轮决策上下文</span></div>
+                    ${evoHtml}
                 </div>
             </div>`;
     },
@@ -2273,6 +2390,12 @@ const Workbench = {
                     : '';
                 return `
                 <div class="strat-block expanded" id="strat-block-${s.id}">
+                    ${(s.auto_strategy_status && s.auto_strategy_status !== 'running' && (s.strategy_source === 'auto_generated' || s.strategy_type === 'auto')) ? `
+                    <div class="strat-paused-strip">
+                        <span class="sps-icon">⏸</span>
+                        <span class="sps-text">自动执行已暂停：${this.esc(s.paused_reason || '未记录原因')}${s.paused_date ? `（${s.paused_date}）` : ''}</span>
+                        <button class="sps-btn" onclick="event.stopPropagation();Workbench.resumeStrategy(${s.id})">恢复运行</button>
+                    </div>` : ''}
                     <div class="strat-block-head" onclick="Workbench.toggleBacktest(${s.id})">
                         <div class="strat-block-left">
                             <span class="strat-expand-icon" id="strat-icon-${s.id}">▾</span>
@@ -2292,6 +2415,13 @@ const Workbench = {
                                 <button class="ev-refresh" onclick="event.stopPropagation();Workbench.loadStrategyEvidence(${s.id})" title="刷新依据">🔄</button>
                             </div>
                             <div class="ev-body" id="ev-body-${s.id}"><div class="empty-hint">加载中...</div></div>
+                        </div>
+                        <div class="ev-panel">
+                            <div class="ev-header">🧠 进化与风控
+                                <span class="ev-sub" id="evo-sub-${s.id}"></span>
+                                <button class="ev-refresh" onclick="event.stopPropagation();Workbench.loadStrategyEvolution(${s.id})" title="刷新">🔄</button>
+                            </div>
+                            <div class="ev-body" id="evo-body-${s.id}"><div class="empty-hint">加载中...</div></div>
                         </div>
                         <div class="sh-wrap">
                             <div class="sh-panel">
@@ -2348,6 +2478,7 @@ const Workbench = {
                 if (endEl && !endEl.value) endEl.value = new Date().toISOString().slice(0, 10);
                 this.loadStrategyHoldings(s);
                 this.loadStrategyEvidence(s.id);
+                this.loadStrategyEvolution(s.id);
                 if (s.holding_start_date) this.loadActualReturn(s.id, s.holding_start_date);
             });
 
@@ -2970,12 +3101,26 @@ const Workbench = {
                         <div class="ac-reason">${this.esc(this.zhText(a.action_reason || ''))}</div>
                         ${signals.length ? '<div class="ac-signals">' + signals.map(s => `<div class="ac-signal">${this.esc(this.zhText(s))}</div>`).join('') + '</div>' : ''}
                     </div>
+                    ${this.renderEvidenceTags(a.evidence)}
                     <div class="ac-footer">
                         <span class="ac-meta">技术:${this.esc(this.zh(a.technical_trend))} 情绪:${this.esc(this.zh(a.sentiment))} 宏观:${this.esc(this.zh(a.macro_phase))}</span>
                     </div>
                 </div>
             `;
         }).join('');
+    },
+
+    renderEvidenceTags(evidence) {
+        if (!evidence) return '';
+        const labels = { market: '行情', research: '研究', rules: '规则', sentiment: '舆情' };
+        const cited = evidence.sources_cited || [];
+        const expUsed = evidence.experience_used || 0;
+        if (!cited.length && !expUsed) return '<div class="ac-evidence"><span class="ac-ev-label">依据</span><span class="ac-ev-none">未留痕</span></div>';
+        return `<div class="ac-evidence">
+            <span class="ac-ev-label">依据</span>
+            ${cited.map(s => `<span class="ac-ev-tag">${labels[s] || this.esc(s)}</span>`).join('')}
+            ${expUsed ? `<span class="ac-ev-tag">经验×${expUsed}</span>` : ''}
+        </div>`;
     },
 
     explainRule(rule) {

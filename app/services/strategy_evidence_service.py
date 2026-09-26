@@ -405,6 +405,7 @@ class StrategyEvidenceService:
             "key_signals": ar.get("key_signals_summary") or [],
             "risk_level": (ar.get("risk_alert") or {}).get("level"),
             "sources_cited": list(evidence.get("sources_cited") or []),
+            "experience_used": evidence.get("experience_used") or 0,
             "snapshot": evidence.get("snapshot"),
         }
 

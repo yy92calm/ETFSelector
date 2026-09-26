@@ -201,6 +201,25 @@ def get_experiences(strategy_id: int, db: Session = Depends(get_db)):
     })
 
 
+@router.get("/evolved-prompt", response_model=APIResponse)
+def get_evolved_prompt(strategy_id: int, db: Session = Depends(get_db)):
+    """获取策略级进化提示词（复盘后由 LLM 改写，注入每轮决策上下文）"""
+    from app.models.strategy import StrategyEvolvedPrompt
+
+    row = db.query(StrategyEvolvedPrompt).filter(
+        StrategyEvolvedPrompt.strategy_id == strategy_id
+    ).first()
+    if not row:
+        return APIResponse(data=None)
+    return APIResponse(data={
+        "strategy_id": row.strategy_id,
+        "version": row.version,
+        "prompt_text": row.prompt_text,
+        "source_type": row.source_type,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    })
+
+
 @router.post("/trigger-collect", response_model=APIResponse)
 def trigger_sentiment_collect(db: Session = Depends(get_db)):
     """手动触发舆情采集"""
@@ -372,8 +391,11 @@ def resume_auto_strategy(strategy_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="策略不存在")
     
     strategy.auto_strategy_status = 'running'
+    strategy.paused_reason = None
+    strategy.paused_date = None
+    strategy.paused_cooldown_days = None
     db.commit()
-    
+
     return APIResponse(message="策略已恢复")
 
 

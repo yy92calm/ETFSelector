@@ -275,6 +275,7 @@ def get_daily_analysis(
             "volatility_regime": (ar.get("volatility_report") or {}).get("regime"),
             "agreement_level": ar.get("agreement_level"),
             "key_signals": ar.get("key_signals_summary", []),
+            "evidence": ar.get("evidence"),
             "rebalance_timing": ar.get("rebalance_timing"),
             "technical_report": ar.get("technical_report"),
             "sentiment_report": ar.get("sentiment_report"),
