@@ -116,6 +116,21 @@ rotation_service.execute_rotation 落地换仓；LLM 不可用时降级纯量化
 factor_performance_service: 因子 IC 跟踪 → |IC| 归一化自适应打分权重
 ```
 
+### 经验积累闭环（生成 → 应用 → 评估 → 固化）
+
+```
+生成: 复盘（周三/周日 21:00，覆盖含暂停的全部 auto 策略）→ LLM 读期间交易/快照/成败案例/情绪模式
+      → Experience(success/failure/insight, 90天过期, weight=1.0)
+      + 异常检测（大额亏损按【日环比】/连续失败/回撤突增）→ 纠正性经验 + 失败模式库(record_failure)
+      + 管道阶段失败 → 系统级 failure 经验
+应用: 自主决策前 prompt 要求查阅 get_experience_insights / smart_match_experiences
+      → 决策留痕 evidence.experience_used + ExperienceUsageRecord(decision_made.source=explicit/implicit)
+评估: 5 个交易日后按组合收益 → positive/negative/neutral（关联性而非因果性）
+有效性: 应用≥3次 → success_rate → effectiveness_score；<6 标记待审
+生命周期: 权重 0.1/月衰减（下限0.3）、90天过期、effectiveness<3 停用
+固化: rule_trainer → RuleSnapshot（供 rule_engine/回测/辩论）＋ 提示词进化 StrategyEvolvedPrompt
+```
+
 ### 规则学习与回放
 
 ```

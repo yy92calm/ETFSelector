@@ -23,6 +23,56 @@ class ExperienceManager:
         "failure_priority_boost": 2.0,
     }
     
+    def record_usage(self, strategy_id: int, db: Session, experience_ids: List[int] = None,
+                     decision: Dict = None, source: str = "explicit",
+                     market_condition: Dict = None) -> int:
+        """记录经验应用（当日幂等）：写 ExperienceUsageRecord 并累加 application_count
+
+        source: explicit=决策时显式查阅（工具返回的经验 id）/ implicit=按活跃经验兜底记录
+        返回新写入的记录数。
+        """
+        from app.models.experience import Experience as _Exp
+
+        ids = [int(i) for i in (experience_ids or []) if i is not None]
+        if not ids:
+            ids = [
+                e.id for e in db.query(_Exp).filter(
+                    _Exp.strategy_id == strategy_id,
+                    _Exp.is_active == True,  # noqa: E712
+                    _Exp.expires_date >= date.today(),
+                ).order_by(_Exp.weight.desc()).limit(5).all()
+            ]
+            source = "implicit"
+        if not ids:
+            return 0
+
+        today = date.today()
+        recorded = 0
+        for exp_id in ids:
+            exists = db.query(ExperienceUsageRecord).filter(
+                ExperienceUsageRecord.experience_id == exp_id,
+                ExperienceUsageRecord.strategy_id == strategy_id,
+                ExperienceUsageRecord.usage_date == today,
+            ).first()
+            if exists:
+                continue
+            db.add(ExperienceUsageRecord(
+                experience_id=exp_id,
+                strategy_id=strategy_id,
+                usage_date=today,
+                market_condition=market_condition,
+                decision_made={"source": source, **(decision or {})},
+            ))
+            exp = db.query(_Exp).filter(_Exp.id == exp_id).first()
+            if exp:
+                exp.application_count = (exp.application_count or 0) + 1
+            recorded += 1
+
+        if recorded:
+            db.commit()
+            logger.info(f"[经验] 策略{strategy_id} 记录应用 {recorded} 条（{source}）")
+        return recorded
+
     def evaluate_experience_usages(self, strategy_id: int, db: Session):
         """评估待验证的经验应用记录，计算收益和结果
 
@@ -287,3 +337,12 @@ class ExperienceManager:
         logger.info(f"强化{boosted_count}条失败经验权重")
         
         return boosted_count
+
+_service = None
+
+
+def get_experience_manager() -> ExperienceManager:
+    global _service
+    if _service is None:
+        _service = ExperienceManager()
+    return _service

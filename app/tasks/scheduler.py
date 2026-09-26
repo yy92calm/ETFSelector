@@ -599,6 +599,32 @@ def _step_rotation_review():
         db.close()
 
 
+def _run_anomaly_reviews(db):
+    """异常检测与条件触发复盘：大额亏损/连续失败/回撤突增 → 纠正性经验 + 失败模式
+
+    覆盖全部自动策略（含暂停：暂停期同样需要沉淀失败经验）。
+    """
+    from app.models.strategy import Strategy
+    from app.services.review_service import ReviewService
+
+    svc = ReviewService()
+    auto_strategies = db.query(Strategy).filter(
+        Strategy.strategy_source == "auto_generated"
+    ).all()
+    for strategy in auto_strategies:
+        try:
+            anomalies = svc.detect_anomalies(strategy.id, db)
+            if not anomalies:
+                continue
+            for anomaly in anomalies[:2]:   # 单次最多处理两类异常，控制 LLM 成本
+                logger.info(f"策略{strategy.id} 检测到异常[{anomaly['type']}]: {anomaly['message']}")
+                result = svc.trigger_anomaly_review(strategy.id, anomaly, db)
+                title = (result.get("corrective_experience") or {}).get("title", "")
+                logger.info(f"策略{strategy.id} 异常复盘完成: {title}")
+        except Exception as e:
+            logger.error(f"策略{strategy.id}异常复盘失败: {e}")
+
+
 def _step_autonomous_decision():
     """
     STEP 8: LLM自主决策（感知→推理→行动）
@@ -673,6 +699,25 @@ def _record_autonomous_analysis(autonomous_result, db):
     ])
     sources_cited = list(cited_tools.keys())
 
+    # 经验应用留痕：从工具调用中提取「本次参考了哪些经验」（按策略归集）
+    from app.services.experience_manager import get_experience_manager
+    exp_ids_by_sid: dict = {}
+    for tc in (autonomous_result.tool_calls_made or []):
+        tool = tc.get("tool")
+        result = tc.get("result") or {}
+        if not isinstance(result, dict):
+            continue
+        sid = (tc.get("arguments") or {}).get("strategy_id")
+        if sid is None:
+            continue
+        ids = []
+        if tool == "get_experience_insights":
+            ids = [e.get("id") for e in (result.get("top_experiences") or [])]
+        elif tool == "smart_match_experiences":
+            ids = [e.get("id") for e in (result.get("matched_experiences") or [])]
+        if ids:
+            exp_ids_by_sid.setdefault(int(sid), []).extend(i for i in ids if i is not None)
+
     for strategy in strategies:
         debate = debate_by_sid.get(strategy.id) or {}
         analysis = {
@@ -686,11 +731,24 @@ def _record_autonomous_analysis(autonomous_result, db):
             "key_signals_summary": debate.get("key_signals_summary") or [],
             "source": "agentloop_autonomous",
         }
+        # 经验应用记录（供效果评估→有效性→生命周期闭环；无显式查阅时按活跃经验兜底）
+        experience_used = 0
+        try:
+            experience_used = get_experience_manager().record_usage(
+                strategy.id, db,
+                experience_ids=exp_ids_by_sid.get(strategy.id),
+                decision={"action": analysis.get("suggested_action"),
+                          "allocation": analysis.get("suggested_allocation")},
+            )
+        except Exception as e:
+            logger.warning(f"[自主决策] 策略{strategy.id}经验应用记录失败: {e}")
+
         # 决策时点依据快照（失败不影响日志写入）
         try:
             analysis["evidence"] = {
                 "sources_cited": sources_cited,
                 "cited_tools": cited_tools,
+                "experience_used": experience_used,
                 "snapshot": get_strategy_evidence_service().get_snapshot(strategy.id, db),
             }
         except Exception as e:
@@ -735,12 +793,16 @@ def _job_weekly_review():
     db = SessionLocal()
     try:
         svc = ReviewService()
+        # 暂停的策略同样需要复盘（暂停期恰恰最需要总结经验）；不再按 running 过滤
         auto_strategies = db.query(Strategy).filter(
             Strategy.strategy_source == 'auto_generated',
-            Strategy.auto_strategy_status == 'running'
         ).all()
 
+        if not auto_strategies:
+            logger.info("无自动策略，复盘跳过")
         for strategy in auto_strategies:
+            if strategy.auto_strategy_status != "running":
+                logger.info(f"策略{strategy.id}处于 {strategy.auto_strategy_status}，仍执行复盘（暂停期经验同样需要沉淀）")
             result = svc.trigger_review(strategy.id, 'weekly', db)
             logger.info(f"策略{strategy.id}每周复盘: {result}")
     except Exception as e:

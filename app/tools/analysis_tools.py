@@ -245,8 +245,19 @@ def smart_match_experiences(db: Session, strategy_id: int) -> dict:
     matcher = SmartExperienceMatcher()
     scenario = matcher.get_current_market_scenario(_latest_trade_date(db), db)
     matched = matcher.match_experiences_by_scenario(strategy_id, scenario, db)
+    # 转纯字典（含 id，供决策留痕记录「本次参考了哪些经验」）
+    items = [{
+        "id": m["experience"].id,
+        "title": m["experience"].title,
+        "experience_type": m["experience"].experience_type,
+        "key_insight": m["experience"].key_insight,
+        "result": m["experience"].result,
+        "scenario_similarity": m.get("scenario_similarity"),
+        "adjusted_weight": m.get("adjusted_weight"),
+        "tags_matched": m.get("tags_matched"),
+    } for m in matched if m.get("experience") is not None]
     return {
         "current_scenario": scenario,
-        "matched_experiences": matched[:10],
-        "total_matched": len(matched),
+        "matched_experiences": items[:10],
+        "total_matched": len(items),
     }

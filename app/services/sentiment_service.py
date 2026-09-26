@@ -30,12 +30,12 @@ class SentimentService:
 {available_etfs}
 
 请返回JSON格式（不要包含其他文字）：
-{
+{{
   "sentiment_score": 0.5,
   "sentiment_label": "positive",
   "related_etfs": [],
   "key_factors": ["政策利好"]
-}
+}}
 
 字段说明：
 - sentiment_score: -1到1的情感分数，正面为正数，负面为负数

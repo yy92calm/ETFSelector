@@ -56,13 +56,13 @@ class ReviewService:
 
 输出JSON数组格式（不要包含其他文字）：
 [
-  {
+  {{
     "experience_type": "failure",
     "scenario_tags": ["高通胀", "政策收紧"],
     "title": "高通胀环境下债券配置风险",
     "description": "在高通胀环境下...",
     "key_insight": "通胀预期上升时应减少固收配置"
-  }
+  }}
 ]
 
 注意：
@@ -427,14 +427,20 @@ class ReviewService:
             return anomalies
         
         large_loss_threshold = self.REVIEW_CONFIG["anomaly_thresholds"]["large_loss"]
-        for i, snapshot in enumerate(snapshots[:5]):
-            if snapshot.profit_pct and snapshot.profit_pct < large_loss_threshold:
+        # 单日大幅亏损：用相邻快照的资产环比（profit_pct 是累计收益，不能直接用于单日判断）
+        for i in range(min(len(snapshots) - 1, 5)):
+            latest_asset = snapshots[i].total_asset
+            prev_asset = snapshots[i + 1].total_asset
+            if not latest_asset or not prev_asset:
+                continue
+            day_return = (latest_asset - prev_asset) / prev_asset
+            if day_return < large_loss_threshold:
                 anomalies.append({
                     "type": "large_loss",
                     "severity": "high",
-                    "date": snapshot.trade_date.isoformat(),
-                    "loss_pct": round(snapshot.profit_pct * 100, 2),
-                    "message": f"单日大幅亏损{abs(snapshot.profit_pct):.2%}",
+                    "date": snapshots[i].trade_date.isoformat(),
+                    "loss_pct": round(day_return * 100, 2),
+                    "message": f"单日大幅亏损{abs(day_return):.2%}",
                 })
         
         consecutive_failures = 0
