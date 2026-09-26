@@ -42,6 +42,16 @@ def init_db():
     from app.models.sw_industry import SwIndustryDaily  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
+    # 策略暂停冷却字段（熔断自动恢复用）
+    try:
+        with engine.connect() as conn:
+            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(strategy)"))}
+            if "paused_cooldown_days" not in cols:
+                conn.execute(text("ALTER TABLE strategy ADD COLUMN paused_cooldown_days INTEGER"))
+                conn.commit()
+    except Exception as e:
+        print(f"迁移 paused_cooldown_days 失败: {e}")
+
     # 添加新字段（兼容旧数据库）
     try:
         with engine.connect() as conn:

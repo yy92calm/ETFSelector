@@ -243,6 +243,15 @@ def _step_run_strategies():
     logger.info("===== [阶段1] 组合再平衡 =====")
     db = SessionLocal()
     try:
+        # 熔断冷却到期 → 自动恢复运行（在轮动复盘之前，恢复的策略当日即可参与决策）
+        try:
+            from app.services.risk_controller import get_risk_controller
+            resumed = get_risk_controller().resume_if_cooldown_expired(db)
+            if resumed:
+                logger.info(f"冷却到期自动恢复策略: {[r['strategy_id'] for r in resumed]}")
+        except Exception as e:
+            logger.error(f"冷却自动恢复异常（不影响再平衡）: {e}")
+
         svc = get_portfolio_service()
         svc.run_all_active_strategies(db)
         logger.info("组合再平衡完成")

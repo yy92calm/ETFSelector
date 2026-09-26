@@ -68,16 +68,19 @@ class RiskController:
                 "cooldown_days": config["cooldown_days"],
             }
         
+        # 单日亏损：与前一交易日资产比较（profit_pct 是累计收益，不能用于单日判断）
         latest_snapshot = snapshots[0]
-        if latest_snapshot.profit_pct and latest_snapshot.profit_pct < config["single_day_loss_threshold"] * 100:
-            return {
-                "status": "triggered",
-                "type": "single_day_loss",
-                "reason": f"单日亏损{latest_snapshot.profit_pct:.2f}%",
-                "action": "pause_strategy",
-                "cooldown_days": config["cooldown_days"],
-            }
-        
+        if len(snapshots) >= 2 and snapshots[1].total_asset and latest_snapshot.total_asset:
+            day_return = (latest_snapshot.total_asset - snapshots[1].total_asset) / snapshots[1].total_asset
+            if day_return < config["single_day_loss_threshold"]:
+                return {
+                    "status": "triggered",
+                    "type": "single_day_loss",
+                    "reason": f"单日亏损{day_return:.2%}（{snapshots[1].trade_date}→{latest_snapshot.trade_date}）",
+                    "action": "pause_strategy",
+                    "cooldown_days": config["cooldown_days"],
+                }
+
         if latest_snapshot.total_asset and strategy.initial_capital:
             total_return = (latest_snapshot.total_asset - strategy.initial_capital) / strategy.initial_capital
             if total_return < config["total_loss_threshold"]:
@@ -91,6 +94,42 @@ class RiskController:
         
         return {"status": "normal", "message": "未触发熔断条件"}
     
+    def resume_if_cooldown_expired(self, db: Session) -> List[Dict]:
+        """冷却到期自动恢复（仅风控熔断暂停的策略；人工/LLM 暂停因无冷却天数字段不自动恢复）"""
+        today = date.today()
+        rows = db.query(Strategy).filter(
+            Strategy.auto_strategy_status == "paused",
+            Strategy.paused_cooldown_days.isnot(None),
+        ).all()
+
+        resumed: List[Dict] = []
+        for strategy in rows:
+            if not strategy.paused_date:
+                continue
+            elapsed = (today - strategy.paused_date).days
+            if elapsed < strategy.paused_cooldown_days:
+                continue
+            resumed.append({
+                "strategy_id": strategy.id,
+                "name": strategy.name,
+                "paused_date": strategy.paused_date.isoformat(),
+                "cooldown_days": strategy.paused_cooldown_days,
+                "reason": strategy.paused_reason,
+            })
+            strategy.auto_strategy_status = "running"
+            strategy.paused_reason = None
+            strategy.paused_date = None
+            strategy.paused_cooldown_days = None
+
+        if resumed:
+            db.commit()
+            for item in resumed:
+                logger.info(
+                    f"[风控] 策略{item['strategy_id']} 冷却期满（{item['paused_date']} + "
+                    f"{item['cooldown_days']}天）已自动恢复运行，原暂停原因: {item['reason']}"
+                )
+        return resumed
+
     def apply_drawdown_protection(self, strategy_id: int, db: Session) -> Dict:
         """应用回撤保护"""
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
@@ -394,9 +433,19 @@ class RiskController:
                 strategy.auto_strategy_status = "paused"
                 strategy.paused_reason = circuit_breaker.get("reason")
                 strategy.paused_date = date.today()
+                strategy.paused_cooldown_days = circuit_breaker.get("cooldown_days")
                 db.commit()
                 
                 logger.warning(f"策略{strategy_id}因{circuit_breaker['reason']}已暂停")
                 return True
         
         return False
+
+_service = None
+
+
+def get_risk_controller() -> RiskController:
+    global _service
+    if _service is None:
+        _service = RiskController()
+    return _service

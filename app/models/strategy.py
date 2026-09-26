@@ -58,6 +58,7 @@ class Strategy(Base):
 
     # 风控暂停记录
     paused_reason = Column(String(200), nullable=True, comment="策略暂停原因")
+    paused_cooldown_days = Column(Integer, nullable=True, comment="熔断冷却天数（到期自动恢复；人工/LLM 暂停为空）")
     paused_date = Column(Date, nullable=True, comment="策略暂停日期")
 
     def __repr__(self):
