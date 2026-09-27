@@ -170,6 +170,11 @@ class TestRotationSentimentInjection(unittest.TestCase):
         plan, captured = self._run(gap_threshold=3.0)
         self.assertEqual(captured.get("sentiment"), "市场舆情：偏空")
 
+    def test_hold_plan_carries_sentiment_context(self):
+        """hold 路径同样携带舆情材料（供决策留痕与依据展示）"""
+        plan, _ = self._run()
+        self.assertEqual(plan.get("sentiment_context"), "市场舆情：偏空")
+
     def test_gap_threshold_override_changes_gate(self):
         """差距 4 分：常规门槛直接 hold（未进辩论），加严门槛（3 分）进入辩论"""
         plan_default, _ = self._run()

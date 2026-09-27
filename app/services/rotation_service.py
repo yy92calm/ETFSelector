@@ -93,6 +93,9 @@ class RotationService:
         except Exception as e:
             logger.warning(f"[Rotation] 板块层计算失败（降级为仅个股动量）: {e}")
 
+        # 舆情依据：市场情绪 + 涉本策略标的舆情（与板块/规则同级，hold 路径也留痕）
+        sentiment_context = self._build_sentiment_context(strategy, db)
+
         has_gap = any(
             enter_candidates[0]["composite_score"] - h["composite_score"] >= threshold
             for h in eligible_holdings
@@ -120,6 +123,7 @@ class RotationService:
                 } for h in sorted(holding_scores, key=lambda x: -x["composite_score"])],
                 "sector_meta": sector_meta,
                 "sector_context": sector_context,
+                "sentiment_context": sentiment_context,
                 "gap_threshold": threshold,
             }
 
@@ -128,9 +132,6 @@ class RotationService:
 
         # 规则依据：当前市场状态下的规则建议配置（与规则驱动回测同源，仅供辩论参考）
         rule_signal = self._build_rule_signal(strategy, scan_date, db, base_allocation)
-
-        # 舆情依据：市场情绪 + 涉本策略标的舆情（与板块/规则同级注入辩论）
-        sentiment_context = self._build_sentiment_context(strategy, db)
 
         debate_result = self._run_debate(eligible_holdings, enter_candidates, rule_signal,
                                          sector_context, sentiment_context)
@@ -143,6 +144,7 @@ class RotationService:
                 "rule_signal": rule_signal,
                 "sector_meta": sector_meta,
                 "sector_context": sector_context,
+                "sentiment_context": sentiment_context,
                 "gap_threshold": threshold,
             }
 
@@ -182,6 +184,7 @@ class RotationService:
             "rule_signal": rule_signal,
             "sector_meta": sector_meta,
             "sector_context": sector_context,
+            "sentiment_context": sentiment_context,
             "gap_threshold": threshold,
             "ignore_min_hold": ignore_min_hold,
         }
