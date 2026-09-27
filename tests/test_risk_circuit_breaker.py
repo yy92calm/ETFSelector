@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta
 
 from tests.test_value_model import make_db
 
-TODAY = date(2026, 9, 25)
+TODAY = date.today()
 
 
 def seed_strategy(db, sid=1, initial=1000000.0, status="running",

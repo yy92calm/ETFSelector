@@ -33,7 +33,10 @@ class RotationService:
         if not strategy or not strategy.allocation_config:
             return {"action": "skip", "reason": "策略不存在或未配置"}
 
-        current_holdings = list(strategy.allocation_config.keys())
+        # 评估基准与执行基准一致：有待生效配置时以它为准（execute_rotation 同样 pending-first）
+        from app.services.strategy_service import get_strategy_service
+        base_allocation = get_strategy_service().get_effective_target_allocation(strategy)
+        current_holdings = list(base_allocation.keys())
         scanner = get_market_scanner_service()
 
         holding_scores = scanner.get_holding_scores(scan_date, current_holdings, db)
@@ -124,7 +127,7 @@ class RotationService:
         self._attach_value_signals(eligible_holdings + enter_candidates, db)
 
         # 规则依据：当前市场状态下的规则建议配置（与规则驱动回测同源，仅供辩论参考）
-        rule_signal = self._build_rule_signal(strategy, scan_date, db)
+        rule_signal = self._build_rule_signal(strategy, scan_date, db, base_allocation)
 
         # 舆情依据：市场情绪 + 涉本策略标的舆情（与板块/规则同级注入辩论）
         sentiment_context = self._build_sentiment_context(strategy, db)
@@ -261,14 +264,15 @@ class RotationService:
         except Exception as e:
             logger.warning(f"[Rotation] 行业性价比信号注入失败（不影响辩论）: {e}")
 
-    def _build_rule_signal(self, strategy, scan_date: date, db: Session) -> Optional[Dict]:
+    def _build_rule_signal(self, strategy, scan_date: date, db: Session,
+                           base_allocation: Optional[Dict] = None) -> Optional[Dict]:
         """规则依据：当前市场状态下的规则建议配置。失败或数据不足时静默降级。"""
         try:
             from app.services.rule_engine import get_rule_engine
             signal = get_rule_engine().get_rule_suggestion(
                 scan_date, db,
                 strategy_id=strategy.id,
-                base_allocation=strategy.allocation_config or {},
+                base_allocation=base_allocation or strategy.allocation_config or {},
             )
             if signal:
                 logger.info(
