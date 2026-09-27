@@ -82,6 +82,7 @@ const Workbench = {
             .replace(/\bskipped\b/g, '跳过')
             .replace(/\banalyzed\b/g, '已分析')
             .replace(/\badjusted\b/g, '已调整')
+            .replace(/\bsuggested\b/g, '已建议')
             .replace(/strong_bullish/g, '强势看多')
             .replace(/strong_bearish/g, '强势看空')
             .replace(/overall_trend/g, '技术趋势')
@@ -1156,7 +1157,7 @@ const Workbench = {
                 return `<div class="sug-item">
                     <div class="sug-head">
                         <span class="sug-badge ${sm.cls}">${sm.label}</span>
-                        <span class="sug-src">${({ agentloop: 'AI自主决策', chat: '对话', manual: '人工' })[sg.source] || sg.source}</span>
+                        <span class="sug-src">${({ agentloop: 'AI自主决策', chat: '对话', manual: '人工', fallback: '降级管道（未用LLM）' })[sg.source] || sg.source}</span>
                         <span class="sug-time">${when ? when.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</span>
                     </div>
                     <div class="sug-alloc">${this.esc(alloc)}</div>

@@ -128,61 +128,60 @@ class AutoStrategyExecutor:
 
         pipeline["stages"].append({"stage": "check_change", "status": "passed", "change_pct": round(change_pct, 4)})
 
-        # ---------- 阶段 7：写入待生效配置（t+1 生效，事务保护）----------
-        # 当日快照与持仓不受影响，下一交易日按新配置执行交易
-        old_allocation_copy = strategy.allocation_config.copy()
-        old_pending_copy = strategy.pending_allocation
-        old_pending_date = strategy.pending_set_date
-        old_adjustment_count = strategy.auto_adjustment_count
-
+        # ---------- 阶段 7：提交调仓建议（降级管道只建议，不写配置）----------
+        # 单一换仓通道：实际换仓统一由轮动通道裁决；降级模式（未使用 LLM）只记录建议并明确标注
         try:
-            from app.services.strategy_service import get_strategy_service
-            mode = get_strategy_service().stage_allocation_change(strategy, suggested, db)
-            strategy.auto_adjustment_count += 1
+            from app.services.allocation_suggestion_service import get_allocation_suggestion_service
+            suggestion = get_allocation_suggestion_service().create(
+                db, strategy_id, suggested,
+                reason="【降级模式·未使用 LLM】多Agent辩论结论：%s"
+                       % str(analysis.get("action_reason") or analysis.get("summary") or "")[:300],
+                source="fallback",
+            )
+            if suggestion.get("error"):
+                raise RuntimeError(suggestion["error"])
+
             strategy.last_auto_analysis_date = execution_date
-
-            pipeline["stages"].append({"stage": "trade_execution", "status": "passed", "effective": mode})
-
+            pipeline["stages"].append({
+                "stage": "allocation_suggestion", "status": "passed",
+                "suggestion_id": suggestion.get("suggestion_id"),
+            })
             db.commit()
 
             from app.memory.memory_log import MemoryLog
             mem = MemoryLog(strategy_id)
             mem.record_decision(analysis)
 
-            self._log_execution(strategy_id, execution_date, "adjusted", {
+            self._log_execution(strategy_id, execution_date, "suggested", {
                 "old_allocation": old_allocation,
-                "new_allocation": suggested,
+                "suggested_allocation": suggested,
                 "analysis": analysis,
                 "change_pct": round(change_pct, 4),
+                "suggestion_id": suggestion.get("suggestion_id"),
+                "llm_used": False,
             }, db)
 
             self._record_experience_usage(strategy_id, analysis, db)
 
-            pipeline["status"] = "adjusted"
-            effective_note = "下一交易日生效" if mode == "pending" else "立即生效"
-            pipeline["overall_message"] = f"策略调整已提交（{effective_note}），变化幅度{change_pct:.2%}"
+            pipeline["status"] = "suggested"
+            pipeline["overall_message"] = (
+                f"降级模式（未使用 LLM）已提交调仓建议#{suggestion.get('suggestion_id')}，"
+                f"变化幅度{change_pct:.2%}，待轮动通道裁决后下一交易日生效"
+            )
             pipeline["old_allocation"] = old_allocation
-            pipeline["new_allocation"] = suggested
+            pipeline["suggested_allocation"] = suggested
             pipeline["change_pct"] = round(change_pct, 4)
+            pipeline["suggestion_id"] = suggestion.get("suggestion_id")
 
             logger.info(f"全管道执行完成 策略{strategy_id}: {pipeline['overall_message']}")
         except Exception as e:
-            strategy.allocation_config = old_allocation_copy
-            strategy.pending_allocation = old_pending_copy
-            strategy.pending_set_date = old_pending_date
-            strategy.auto_adjustment_count = old_adjustment_count
-            strategy.last_auto_analysis_date = None
-
             db.rollback()
-
             self._log_execution(strategy_id, execution_date, "failed", {
                 "reason": str(e), "analysis": analysis,
             }, db)
-
-            pipeline["stages"].append({"stage": "commit", "status": "rolled_back", "reason": str(e)})
+            pipeline["stages"].append({"stage": "allocation_suggestion", "status": "failed", "reason": str(e)})
             pipeline["status"] = "failed"
-            pipeline["overall_message"] = f"策略调整提交失败: {str(e)}"
-
+            pipeline["overall_message"] = f"调仓建议提交失败: {str(e)}"
             logger.error(f"全管道执行失败 策略{strategy_id}: {e}")
             return pipeline
 
@@ -376,7 +375,8 @@ class AutoStrategyExecutor:
             Strategy.auto_strategy_status == "running",
         ).all()
 
-        results = {"total": len(strategies), "adjusted": 0, "hold": 0, "skipped": 0, "failed": 0}
+        results = {"total": len(strategies), "suggested": 0, "adjusted": 0, "hold": 0,
+                   "skipped": 0, "failed": 0}
 
         for strategy in strategies:
             result = self.execute_full_pipeline(strategy.id, execution_date, db)

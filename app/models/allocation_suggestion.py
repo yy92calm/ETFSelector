@@ -22,7 +22,7 @@ class AllocationSuggestion(Base):
     strategy_id = Column(Integer, ForeignKey("strategy.id"), nullable=False, index=True)
 
     source = Column(String(20), nullable=False, default="agentloop",
-                    comment="来源: agentloop（自主决策）/ chat（对话）/ manual（人工）")
+                    comment="来源: agentloop（自主决策）/ fallback（降级管道·未使用LLM）/ chat（对话）/ manual（人工）")
     suggested_allocation = Column(JSON, nullable=False, comment="建议配置 {etf_code: weight}（总和1.0）")
     reason = Column(Text, nullable=True, comment="建议理由")
 

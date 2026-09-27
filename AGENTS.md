@@ -247,6 +247,7 @@ ChatSession  (1) ──→ (N) ChatMessage / AIActionLog
 #### 策略引擎
 - **单一换仓通道**：`allocation_config`/`pending_allocation` 只允许由 `rotation_service.execute_rotation`（轮动通道）或人工 API 写入；
   LLM 工具一律只写「建议」（`suggest_allocation_change`，表 `allocation_suggestion`），由轮动通道辩论裁决后采纳/驳回并回执留痕。
+- **降级管道也只建议**：LLM 不可用时的 `auto_strategy_executor` 阶段7 改为提交建议（`source=fallback`，reason 前缀「【降级模式·未使用 LLM】」），不写配置、不累加调整次数。
 - 配置比例 `allocation_config` 总和必须为 1.0（容差 0.01）。
 - 买卖以 100 股整数倍取整（`compute_adjustment`）。
 - 回测与实盘共用 `compute_adjustment` 和 `PortfolioContext`，修改时两边都要验证。

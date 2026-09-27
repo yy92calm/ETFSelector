@@ -57,7 +57,7 @@ class AllocationSuggestionService:
 
         row = AllocationSuggestion(
             strategy_id=strategy_id,
-            source=source if source in ("agentloop", "chat", "manual") else "agentloop",
+            source=source if source in ("agentloop", "chat", "manual", "fallback") else "agentloop",
             suggested_allocation=allocation,
             reason=(reason or "")[:1000],
             status="pending",

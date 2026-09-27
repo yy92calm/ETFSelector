@@ -209,5 +209,46 @@ class TestRotationConsumesSuggestion(unittest.TestCase):
         self.assertIn("差距不足", plan["reason"])
 
 
+class TestFallbackPipelineOnlySuggests(unittest.TestCase):
+    """降级管道（未使用 LLM）：只生成建议并标注，不写配置"""
+
+    def setUp(self):
+        self.db = make_db()
+        seed_strategy(self.db, pool={"512480": 1.0})
+        seed_etf(self.db, "512480", "半导体ETF")
+        seed_etf(self.db, "511800", "货币ETF")
+
+    def test_fallback_writes_suggestion_not_config(self):
+        from app.services.auto_strategy_executor import AutoStrategyExecutor
+        from app.models.strategy import Strategy
+        from app.models.allocation_suggestion import AllocationSuggestion
+
+        executor = AutoStrategyExecutor()
+        # 单标的最大变化 8% < SAFETY_LIMITS.max_allocation_change(10%)，确保走到阶段7
+        analysis = {"suggested_allocation": {"512480": 0.92, "511800": 0.08},
+                    "action_reason": "降低半导体暴露", "suggested_action": "rebalance",
+                    "risk_alert": {"level": "low"}, "key_signals_summary": []}
+
+        executor._run_risk_checks = lambda sid, d: {"stage": {"stage": "risk", "status": "passed"}, "status": "passed"}
+        executor._run_analysis = lambda sid, day, d, skip: {"stage": {"stage": "analysis", "status": "passed"},
+                                                            "status": "passed", "analysis": analysis}
+        executor._validate_etf_codes = lambda alloc, d: {"passed": True,
+                                                          "stage": {"stage": "validate_etf", "status": "passed"}}
+        executor._log_execution = lambda *a, **k: None
+        executor._record_experience_usage = lambda *a, **k: None
+
+        pipeline = executor.execute_full_pipeline(1, DAY, self.db)
+
+        self.assertEqual(pipeline["status"], "suggested")
+        self.assertIn("未使用 LLM", pipeline["overall_message"])
+        strategy = self.db.query(Strategy).filter(Strategy.id == 1).first()
+        self.assertEqual(strategy.allocation_config, {"512480": 1.0})    # 配置未变
+        self.assertIsNone(strategy.pending_allocation)                   # 待生效未写
+        rows = self.db.query(AllocationSuggestion).all()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].source, "fallback")
+        self.assertIn("未使用 LLM", rows[0].reason)
+
+
 if __name__ == "__main__":
     unittest.main()
