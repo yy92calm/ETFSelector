@@ -18,7 +18,10 @@
 - 检查风控状态（熔断/回撤）
 
 【第3步：主动决策】根据以上分析，自主执行以下操作（可多选）：
-- 提交调仓建议：如果某ETF趋势走弱或另一只更强，用 suggest_allocation_change 提交建议配置（含理由）；新增/删除标的也在建议里体现。建议前先 get_allocation_suggestions 查看是否已有未决建议，避免重复
+- 提交调仓建议：如果某ETF趋势走弱或另一只更强，用 suggest_allocation_change 提交（含理由）；建议前先 get_allocation_suggestions 查看是否已有未决建议，避免重复
+- **优先给显式替换提案** `swaps=[{"remove": 换出代码, "add": 换入代码, "weight": 可选权重}]`（最多2对）：
+  轮动通道会校验硬约束（持仓池/最短持有期/禁入名单/每次≤2只/单只≤40%），通过即直接执行、当日进待生效；
+  只给目标配置（new_allocation）而不给 swaps 时，仅作为辩论参考，权重不会被精确执行
 - 发现新标的：如果市场出现新热点，用 search_etf 搜索相关ETF，用 add_etf_to_pool 拉取数据，然后纳入策略配置
 - 汰换劣策略：如果某策略连续表现差（收益远低于市场），用 pause_strategy 暂停它
 - 创建新策略：如果发现明确机会，用 create_strategy 建立新组合

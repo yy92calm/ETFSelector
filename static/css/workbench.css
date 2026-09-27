@@ -3529,3 +3529,5 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .sug-alloc { font-size: 11px; color: var(--text-secondary); line-height: 1.6; }
 .sug-reason { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
 .sug-note { font-size: 11px; color: var(--accent); margin-top: 3px; }
+.sug-swaps { display: flex; flex-wrap: wrap; gap: 4px; margin: 3px 0; }
+.sug-swap { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: rgba(2, 132, 199, 0.08); color: var(--accent); font-weight: 600; }

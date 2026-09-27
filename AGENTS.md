@@ -105,9 +105,11 @@ plans/                   # 迭代设计文档（23 个，历史决策依据）
 market_scanner_service: 全量ETF 5维指标（动量/趋势/量能/波动/资金流）打分排名
   ↓ 纯量化门槛：持仓分 vs 候选分差距 ≥ 5 才进入 LLM 辩论（省 token）
   ↓ failure_mode_service 过滤反复失败的 banned codes
-allocation_suggestion_service（LLM 只建议）: 建议写入 allocation_suggestion（pending）
-  → 轮动通道唯一的换仓入口：有未决建议即提级评估（建议标的补入候选）+ 建议进入辩论材料
-  → 裁决后结算回执（adopted/rejected + 理由）；有效期 7 天 > MIN_HOLD_DAYS(5)
+allocation_suggestion_service（LLM 只建议，轮动通道负责执行）: 建议写入 allocation_suggestion（pending）
+  → 显式替换提案 swaps[{remove,add,weight?}]：通道硬约束校验（持仓池/最短持有期/禁入/≤2只/单只≤40%）
+     通过且 SUGGESTION_AUTO_EXECUTE=true → **建议驱动执行**（跳过辩论，直接进待生效，权重精确落地后归一化）
+     未通过/开关关闭 → 转辩论材料（★可执行提案 / ✖已驳回并回执）
+  → 执行落地后结算 adopted（含实际换仓与权重）；驳回带理由；有效期 7 天 > MIN_HOLD_DAYS(5)
 sector_selection_service（板块→选型，半硬，settings.sector_rotation_mode 可关）:
   申万一级行业评分（sw_industry_service，≥67超配/≤33低配）
   → 低配板块候选排序降级 + 低配板块持仓标记逆风优先换出（板块信号缺失时按中性）

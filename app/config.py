@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     #   True = Ashare 失败时降级到 efinance（部署环境网络受限时使用）
     scheduled_task_allow_fallback: bool = False
 
+    # 调仓建议执行（LLM 只建议 → 轮动通道校验后执行）：
+    #   True（默认）= 建议带显式 swaps 且硬约束校验通过时由轮动通道直接执行（建议驱动执行，不走辩论）
+    #   False = 一律进入辩论，由裁决官决定是否采纳
+    suggestion_auto_execute: bool = True
+
     # 情绪极端条件触发复核（交易日舆情采集后判定，见 plans 舆情接入决策）：
     #   True = 负面极端时对运行中自动策略提前跑一次轮动复核（门槛加严）
     sentiment_review_enabled: bool = True

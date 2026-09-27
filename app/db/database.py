@@ -43,6 +43,16 @@ def init_db():
     from app.models.allocation_suggestion import AllocationSuggestion  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
+    # 调仓建议的显式替换提案（建议可执行化）
+    try:
+        with engine.connect() as conn:
+            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(allocation_suggestion)"))}
+            if cols and "proposed_swaps" not in cols:
+                conn.execute(text("ALTER TABLE allocation_suggestion ADD COLUMN proposed_swaps JSON"))
+                conn.commit()
+    except Exception as e:
+        print(f"迁移 proposed_swaps 失败: {e}")
+
     # 策略暂停冷却字段（熔断自动恢复用）
     try:
         with engine.connect() as conn:

@@ -1160,6 +1160,8 @@ const Workbench = {
                         <span class="sug-src">${({ agentloop: 'AI自主决策', chat: '对话', manual: '人工', fallback: '降级管道（未用LLM）' })[sg.source] || sg.source}</span>
                         <span class="sug-time">${when ? when.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</span>
                     </div>
+                    ${(sg.proposed_swaps || []).length ? `<div class="sug-swaps">${sg.proposed_swaps.map(w =>
+                        `<span class="sug-swap">${this.etfLabel(w.remove)} → ${this.etfLabel(w.add)}${w.weight ? `（权重${(w.weight * 100).toFixed(0)}%）` : ''}</span>`).join('')}</div>` : ''}
                     <div class="sug-alloc">${this.esc(alloc)}</div>
                     ${sg.reason ? `<div class="sug-reason">${this.esc(String(sg.reason).slice(0, 120))}</div>` : ''}
                     ${sg.decided_note ? `<div class="sug-note">裁决：${this.esc(String(sg.decided_note).slice(0, 120))}</div>` : ''}

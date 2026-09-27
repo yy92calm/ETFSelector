@@ -217,6 +217,7 @@ def get_allocation_suggestions(strategy_id: int, limit: int = 20, db: Session = 
         "suggestions": [{
             "id": r.id, "status": r.status, "source": r.source,
             "suggested_allocation": r.suggested_allocation, "reason": r.reason,
+            "proposed_swaps": r.proposed_swaps or [],
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "decided_at": r.decided_at.isoformat() if r.decided_at else None,
             "decided_note": r.decided_note,

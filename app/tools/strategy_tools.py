@@ -102,22 +102,23 @@ def delete_strategy(db: Session, strategy_id: int) -> dict:
     }
 
 
-@tool(name="suggest_allocation_change", description="提交组合调仓建议（仅记录，不改变配置）。实际换仓由轮动通道统一裁决：动量排名+申万板块+规则建议+舆情/经验辩论，采纳后下一交易日生效。新增或删除标的也用本工具提交（建议配置里体现）。")
+@tool(name="suggest_allocation_change", description="提交组合调仓建议（仅记录，不改变配置）。实际换仓由轮动通道统一执行：若提供 swaps 显式替换提案并校验通过（持仓池/最短持有期/禁入名单/每次≤2只/单只≤40%）则直接执行；否则进入辩论或驳回并回执。新增或删除标的也用本工具。")
 def suggest_allocation_change(db: Session, strategy_id: int, new_allocation: dict,
-                              reason: str = "") -> dict:
+                              reason: str = "", swaps: list = None) -> dict:
     """记录调仓建议（LLM 只建议，唯一换仓通道是轮动）
 
     Args:
     strategy_id: 策略ID
     new_allocation: 建议配置 {ETF代码: 比例}，总和必须为1.0
     reason: 建议理由（说明引用了哪些依据）
+    swaps: 显式替换提案 [{remove: 换出代码, add: 换入代码, weight: 可选权重, reason: 可选理由}]，最多2对；提供后可被通道校验并直接执行
     """
     from app.services.allocation_suggestion_service import get_allocation_suggestion_service
 
     # 说明：本工具只写建议记录（不触碰 allocation_config/pending_allocation），
     # 因此显式声明为只读风险——真正的资金动作只有一个入口：轮动通道 execute_rotation。
     return get_allocation_suggestion_service().create(
-        db, strategy_id, new_allocation, reason=reason, source="agentloop",
+        db, strategy_id, new_allocation, reason=reason, source="agentloop", swaps=swaps,
     )
 
 

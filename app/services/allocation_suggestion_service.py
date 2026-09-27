@@ -20,13 +20,46 @@ logger = logging.getLogger(__name__)
 
 MAX_PENDING_PER_STRATEGY = 3     # 同一策略同时最多保留的未决建议数（超出则旧的按 rejected 结算）
 MIN_WEIGHT = 0.01                # 忽略 <1% 的权重
+MAX_SWAPS = 2                    # 单条建议最多替换对数（与轮动硬约束一致）
 
 
 class AllocationSuggestionService:
 
+    @staticmethod
+    def _normalize_swaps(swaps) -> List[Dict]:
+        """规范化显式替换提案：[{remove, add, weight?, reason?}]"""
+        if not swaps:
+            return []
+        if not isinstance(swaps, list):
+            return []
+        out = []
+        for item in swaps[:MAX_SWAPS]:
+            if not isinstance(item, dict):
+                continue
+            remove_code = str(item.get("remove") or "").strip()
+            add_code = str(item.get("add") or "").strip()
+            if not remove_code or not add_code or remove_code == add_code:
+                continue
+            row = {"remove": remove_code, "add": add_code}
+            weight = item.get("weight")
+            if weight is not None:
+                try:
+                    value = float(weight)
+                    if 0 < value <= 1:
+                        row["weight"] = round(value, 4)
+                except (TypeError, ValueError):
+                    pass
+            if item.get("reason"):
+                row["reason"] = str(item["reason"])[:200]
+            out.append(row)
+        return out
+
     def create(self, db: Session, strategy_id: int, suggested_allocation: Dict[str, float],
-               reason: str = "", source: str = "agentloop") -> Dict:
-        """记录一条调仓建议（不修改任何配置）"""
+               reason: str = "", source: str = "agentloop", swaps=None) -> Dict:
+        """记录一条调仓建议（不修改任何配置）
+
+        swaps: 显式替换提案 [{remove, add, weight?}]，轮动通道校验硬约束后可**直接执行**
+        """
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy:
             return {"error": f"策略 {strategy_id} 不存在"}
@@ -60,6 +93,7 @@ class AllocationSuggestionService:
             source=source if source in ("agentloop", "chat", "manual", "fallback") else "agentloop",
             suggested_allocation=allocation,
             reason=(reason or "")[:1000],
+            proposed_swaps=self._normalize_swaps(swaps) or None,
             status="pending",
         )
         db.add(row)
@@ -70,7 +104,11 @@ class AllocationSuggestionService:
             "suggestion_id": row.id,
             "status": row.status,
             "suggested_allocation": allocation,
-            "message": "建议已记录。实际换仓由轮动通道（动量+板块+规则+舆情辩论）裁决，采纳后下一交易日生效。",
+            "proposed_swaps": row.proposed_swaps or [],
+            "message": ("建议已记录。" + (
+                "含显式替换提案，轮动通道将校验硬约束（持仓池/最短持有期/禁入/数量与权重上限），通过即直接执行，"
+                "否则转辩论或驳回并回执。" if row.proposed_swaps else
+                "未提供显式替换提案，仅作为辩论参考（目标权重不会精确执行）；如需精确执行请用 swaps 提案。")),
         }
 
     def _settle_overflow(self, db: Session, strategy_id: int):
