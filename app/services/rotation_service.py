@@ -21,8 +21,13 @@ class RotationService:
     """轮动决策：量化筛选候选 → 多Agent辩论 → 裁决执行"""
 
     def evaluate_rotation(self, strategy_id: int, scan_date: date, db: Session,
-                          gap_threshold: Optional[float] = None) -> Dict:
-        """评估轮动（gap_threshold 可覆盖换仓门槛：情绪条件触发时加严）"""
+                          gap_threshold: Optional[float] = None,
+                          ignore_min_hold: bool = False) -> Dict:
+        """评估轮动
+
+        gap_threshold: 覆盖换仓门槛（情绪条件触发时加严；手动复核可放宽）
+        ignore_min_hold: 忽略最短持有期（仅用于人工"假设不受限"的评估，默认 False）
+        """
         threshold = SCORE_GAP_THRESHOLD if gap_threshold is None else gap_threshold
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy or not strategy.allocation_config:
@@ -54,10 +59,14 @@ class RotationService:
         if not enter_candidates:
             return {"action": "hold", "reason": "无候选标的"}
 
-        eligible_holdings = [
-            h for h in holding_scores
-            if self._check_min_hold_period(strategy_id, h["etf_code"], scan_date, db)
-        ]
+        if ignore_min_hold:
+            eligible_holdings = list(holding_scores)
+        else:
+            eligible_holdings = [
+                h for h in holding_scores
+                if self._check_min_hold_period(strategy_id, h["etf_code"], scan_date, db)
+            ]
+        min_hold_blocked = [h["etf_code"] for h in holding_scores if h not in eligible_holdings]
 
         # 板块层（申万一级，半硬模式）：附加板块信号 + 低配板块分流；失败降级为仅个股动量
         sector_meta = {"mode": "off"}
@@ -87,9 +96,19 @@ class RotationService:
         ) if enter_candidates and eligible_holdings else False
 
         if not has_gap:
+            if min_hold_blocked and not eligible_holdings:
+                reason = (f"持仓均未满最短持有期（{MIN_HOLD_DAYS}日），本次不换仓"
+                          f"（受限持仓 {len(min_hold_blocked)} 只）")
+            elif min_hold_blocked:
+                reason = (f"可换出的持仓与最强候选得分差距不足，无需辩论"
+                          f"（另有 {len(min_hold_blocked)} 只未满最短持有期）")
+            else:
+                reason = "候选与持仓得分差距不足，无需辩论"
             return {
                 "action": "hold",
-                "reason": "候选与持仓得分差距不足，无需辩论",
+                "reason": reason,
+                "min_hold_blocked": min_hold_blocked,
+                "ignore_min_hold": ignore_min_hold,
                 "holdings": [{
                     "code": h["etf_code"],
                     "name": h.get("etf_name", ""),
@@ -161,6 +180,7 @@ class RotationService:
             "sector_meta": sector_meta,
             "sector_context": sector_context,
             "gap_threshold": threshold,
+            "ignore_min_hold": ignore_min_hold,
         }
 
     def execute_rotation(self, strategy_id: int, rotation_plan: Dict, db: Session) -> Dict:
