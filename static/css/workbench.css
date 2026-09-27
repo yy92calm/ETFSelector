@@ -3515,3 +3515,17 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .ac-ev-label { color: var(--text-secondary); font-weight: 600; }
 .ac-ev-tag { padding: 1px 7px; border-radius: 3px; background: rgba(2, 132, 199, 0.09); color: var(--accent); font-weight: 600; }
 .ac-ev-none { color: var(--text-secondary); }
+
+/* ===== 调仓建议（LLM 只建议 → 轮动通道裁决） ===== */
+.sug-item { padding: 6px 4px; border-bottom: 1px dashed var(--border); font-size: 12px; }
+.sug-item:last-child { border-bottom: none; }
+.sug-head { display: flex; align-items: center; gap: 6px; margin-bottom: 3px; }
+.sug-badge { padding: 1px 7px; border-radius: 3px; font-size: 10px; font-weight: 600; }
+.sug-pending { background: rgba(217, 119, 6, 0.12); color: var(--warning); }
+.sug-adopted { background: rgba(2, 132, 199, 0.1); color: var(--accent); }
+.sug-rejected { background: rgba(92, 111, 130, 0.12); color: var(--text-secondary); }
+.sug-src { font-size: 11px; color: var(--text-primary); font-weight: 600; }
+.sug-time { margin-left: auto; font-size: 10px; color: var(--text-secondary); }
+.sug-alloc { font-size: 11px; color: var(--text-secondary); line-height: 1.6; }
+.sug-reason { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+.sug-note { font-size: 11px; color: var(--accent); margin-top: 3px; }

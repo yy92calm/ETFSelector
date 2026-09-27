@@ -50,11 +50,35 @@ class RotationService:
         # 失败模式规避：剔除重复失败的候选标的
         from app.services.failure_mode_service import get_failure_mode_service
         banned = get_failure_mode_service().get_banned_codes(db)
+
+        # 调仓建议（LLM 只建议）：纳入候选池并作为辩论材料，未决建议本身触发评估
+        from app.services.allocation_suggestion_service import get_allocation_suggestion_service
+        suggestion_svc = get_allocation_suggestion_service()
+        suggestion_svc.expire_stale(db, strategy_id)
+        suggestions = suggestion_svc.get_pending(db, strategy_id)
+        suggestion_codes = []
+        for sg in suggestions:
+            for code in (sg.suggested_allocation or {}):
+                if code not in current_holdings and code not in suggestion_codes:
+                    suggestion_codes.append(code)
+
         if banned:
             excluded = [c for c in enter_candidates if c["etf_code"] in banned]
             if excluded:
                 logger.info(f"[Rotation] 规避重复失败候选: {[c['etf_code'] for c in excluded]}")
             enter_candidates = [c for c in enter_candidates if c["etf_code"] not in banned]
+            suggestion_codes = [c for c in suggestion_codes if c not in banned]
+
+        # 建议标的不在动量Top时补进候选（带真实综合分；是否换入仍由辩论与门槛决定）
+        missing = [c for c in suggestion_codes
+                   if c not in {x["etf_code"] for x in enter_candidates}]
+        if missing:
+            extra = scanner.get_holding_scores(scan_date, missing, db)
+            for item in extra:
+                item["from_suggestion"] = True
+            if extra:
+                logger.info(f"[Rotation] 建议标的补入候选: {[x['etf_code'] for x in extra]}")
+                enter_candidates = enter_candidates + extra
 
         if not holding_scores:
             return {"action": "skip", "reason": "持仓ETF无指标数据"}
@@ -96,10 +120,17 @@ class RotationService:
         # 舆情依据：市场情绪 + 涉本策略标的舆情（与板块/规则同级，hold 路径也留痕）
         sentiment_context = self._build_sentiment_context(strategy, db)
 
+        # 调仓建议材料（LLM 建议不具约束力，采纳须通过辩论与门槛）
+        suggestion_context = self._build_suggestion_context(suggestions, holding_scores,
+                                                           enter_candidates, base_allocation)
+
         has_gap = any(
             enter_candidates[0]["composite_score"] - h["composite_score"] >= threshold
             for h in eligible_holdings
         ) if enter_candidates and eligible_holdings else False
+        # 有未决建议时提级评估：建议本身就是"值得辩论"的信号（仍受全部硬约束与门槛约束）
+        if suggestions and eligible_holdings and enter_candidates:
+            has_gap = True
 
         if not has_gap:
             if min_hold_blocked and not eligible_holdings:
@@ -110,6 +141,8 @@ class RotationService:
                           f"（另有 {len(min_hold_blocked)} 只未满最短持有期）")
             else:
                 reason = "候选与持仓得分差距不足，无需辩论"
+            if suggestions and not has_gap:
+                pass  # has_gap 为 False 且无建议时无需结算；有建议必进辩论（见上方提级逻辑）
             return {
                 "action": "hold",
                 "reason": reason,
@@ -134,9 +167,12 @@ class RotationService:
         rule_signal = self._build_rule_signal(strategy, scan_date, db, base_allocation)
 
         debate_result = self._run_debate(eligible_holdings, enter_candidates, rule_signal,
-                                         sector_context, sentiment_context)
+                                         sector_context, sentiment_context, suggestion_context)
 
         if debate_result.get("decision") != "rotate" or not debate_result.get("final_swaps"):
+            if suggestions:
+                suggestion_svc.settle(db, strategy_id, "rejected",
+                                      "辩论驳回：" + str(debate_result.get("summary") or "")[:200])
             return {
                 "action": "hold",
                 "reason": debate_result.get("summary", "辩论裁决维持持仓"),
@@ -171,10 +207,19 @@ class RotationService:
             })
 
         if not rotations:
+            suggestion_svc.settle(db, strategy_id, "rejected",
+                                  "辩论裁决无有效替换：" + str(debate_result.get("summary") or "")[:200])
             return {"action": "hold", "reason": "辩论裁决无有效替换", "debate": debate_result,
                     "rule_signal": rule_signal, "sector_meta": sector_meta,
                     "sector_context": sector_context, "gap_threshold": threshold}
 
+        if suggestions:
+            suggestion_svc.settle(
+                db, strategy_id, "adopted",
+                "轮动通道采纳（%s）：%s" % (
+                    "；".join("%s→%s" % (r["remove"], r["add"]) for r in rotations),
+                    str(debate_result.get("summary") or "")[:150]),
+            )
         return {
             "action": "rotate",
             "rotations": rotations,
@@ -288,6 +333,29 @@ class RotationService:
             logger.warning(f"[Rotation] 规则依据注入失败（不影响辩论）: {e}")
             return None
 
+    def _build_suggestion_context(self, suggestions: List, holding_scores: List[Dict],
+                                  candidates: List[Dict], base_allocation: Dict) -> str:
+        """把未决调仓建议渲染成辩论材料（建议不具约束力，采纳须通过辩论与门槛）"""
+        if not suggestions:
+            return ""
+        score_map = {x["etf_code"]: x for x in list(holding_scores) + list(candidates)}
+        lines = []
+        for sg in suggestions[:3]:
+            alloc = sg.suggested_allocation or {}
+            parts = []
+            for code, weight in sorted(alloc.items(), key=lambda x: -x[1]):
+                item = score_map.get(code) or {}
+                cur = base_allocation.get(code)
+                tag = "持仓" if cur else ("候选" if code in {c["etf_code"] for c in candidates} else "新标的")
+                score_txt = f" 综合分{item['composite_score']:.1f}" if item.get("composite_score") is not None else ""
+                parts.append(f"{code}{item.get('etf_name', '')[:8]} {weight * 100:.0f}%（{tag}{score_txt}）")
+            lines.append(f"建议#{sg.id}（{sg.source}，{sg.created_at:%m-%d %H:%M}）：" + "、".join(parts))
+            if sg.reason:
+                lines.append(f"   建议理由：{str(sg.reason)[:200]}")
+        lines.append("说明：调仓建议由 AI 提出但不具约束力——采纳须通过本次辩论（分数差距门槛/板块分层/规则/舆情），"
+                     "驳回请给出关键理由（会回执给建议方并留痕）。")
+        return "\n".join(lines)
+
     def _build_sentiment_context(self, strategy, db: Session) -> str:
         """舆情依据文本（失败静默降级为空）"""
         try:
@@ -309,7 +377,8 @@ class RotationService:
     def _run_debate(self, holdings: List[Dict], candidates: List[Dict],
                     rule_signal: Optional[Dict] = None,
                     sector_context: str = "",
-                    sentiment_context: str = "") -> Dict:
+                    sentiment_context: str = "",
+                    suggestion_context: str = "") -> Dict:
         from app.agents.rotation_debate.orchestrator import RotationDebateOrchestrator
         from app.config import get_settings
 
@@ -322,7 +391,8 @@ class RotationService:
             debate = RotationDebateOrchestrator()
             return debate.debate(holdings, candidates, rule_signal=rule_signal,
                                  sector_context=sector_context,
-                                 sentiment_context=sentiment_context)
+                                 sentiment_context=sentiment_context,
+                                 suggestion_context=suggestion_context)
         except Exception as e:
             logger.warning(f"[Rotation] 辩论异常，降级纯量化: {e}")
             return self._fallback_quant_decision(holdings, candidates)

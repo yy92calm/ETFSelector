@@ -460,7 +460,7 @@ const Chat = {
 
     refreshWorkbench(toolCalls) {
         const mutatingTools = new Set([
-            'create_strategy', 'update_allocation', 'pause_strategy', 'resume_strategy',
+            'create_strategy', 'pause_strategy', 'resume_strategy',
             'add_etf_to_pool', 'run_backtest', 'run_multi_agent_analysis',
             'execute_rebalance', 'delete_strategy',
         ]);

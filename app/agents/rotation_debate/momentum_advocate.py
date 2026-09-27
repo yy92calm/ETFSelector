@@ -29,6 +29,9 @@ class MomentumAdvocate(BaseAgent):
 ## 舆情参考（市场情绪 + 涉本策略标的）
 {sentiment_context}
 
+## 调仓建议参考（AI 建议，无约束力）
+{suggestion_context}
+
 ## 你的任务
 从动量/趋势角度，论证哪些持仓应该被替换、替换为哪些候选。输出JSON（不要包含其他文字）：
 {{
@@ -51,7 +54,8 @@ class MomentumAdvocate(BaseAgent):
 
     def analyze(self, holdings: List[Dict], candidates: List[Dict],
                 macro_context: str = "", rule_context: str = "",
-                sector_context: str = "", sentiment_context: str = "") -> Dict:
+                sector_context: str = "", sentiment_context: str = "",
+                suggestion_context: str = "") -> Dict:
         prompt = self.PROMPT.format(
             holdings=json.dumps(holdings, ensure_ascii=False, indent=2),
             candidates=json.dumps(candidates, ensure_ascii=False, indent=2),
@@ -59,6 +63,7 @@ class MomentumAdvocate(BaseAgent):
             rule_context=rule_context or "无规则参考",
             sector_context=sector_context or "无板块参考",
             sentiment_context=sentiment_context or "无舆情参考",
+            suggestion_context=suggestion_context or "无调仓建议",
         )
         result = self.call_llm(prompt, temperature=0.4)
         return result if result and "error" not in result else {"error": "动量派分析失败", "stance": "aggressive_rotate", "proposed_swaps": []}

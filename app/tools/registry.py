@@ -55,11 +55,8 @@ def _unwrap_annotated(annotation):
 _WRITE_TOOLS: Set[str] = {
     "create_strategy",
     "delete_strategy",
-    "update_allocation",
     "pause_strategy",
     "resume_strategy",
-    "add_etf_to_strategy",
-    "remove_etf_from_strategy",
     "add_etf_to_pool",
     "execute_rebalance",
     "sync_market_data",

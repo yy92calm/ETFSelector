@@ -32,6 +32,9 @@ class RotationJudge(BaseAgent):
 ## 舆情参考（市场情绪 + 涉本策略标的）
 {sentiment_context}
 
+## 调仓建议参考（AI 建议，无约束力）
+{suggestion_context}
+
 ## 裁决规则
 - 持仓总数必须≤5只
 - 有进必有出（替换制）
@@ -43,6 +46,7 @@ class RotationJudge(BaseAgent):
 - industry_value 为个股聚合的行业盈利-估值性价比排名（rank 越小越好，total 为参评行业数）：候选动量强但所属行业排名末段（rank/total>0.8）时，换入需更强证据；该信号仅到板块层面为止，严禁输出任何个股判断
 - 板块轮动参考为申万一级行业评分（≥67 超配 / ≤33 低配）：分数差距接近（<10 分）时优先换入超配板块候选、优先换出低配板块持仓；板块仅做分层参考，个券综合分仍是主依据
 - 舆情参考：市场情绪负面偏空且涉本策略标的出现负面条目时，弱持仓优先处置；情绪正面偏多**不作为**追涨依据
+- 调仓建议参考：AI 建议**无约束力**。采纳需给出与现持仓的分数/板块/规则对比依据；驳回则在 summary 中写明关键理由（会作为回执留痕）
 
 输出JSON（不要包含其他文字）：
 {{
@@ -65,7 +69,8 @@ class RotationJudge(BaseAgent):
 
     def analyze(self, momentum_opinion: Dict, stability_opinion: Dict,
                 holdings: list, candidates: list, rule_context: str = "",
-                sector_context: str = "", sentiment_context: str = "") -> Dict:
+                sector_context: str = "", sentiment_context: str = "",
+                suggestion_context: str = "") -> Dict:
         prompt = self.PROMPT.format(
             momentum_opinion=json.dumps(momentum_opinion, ensure_ascii=False, indent=2),
             stability_opinion=json.dumps(stability_opinion, ensure_ascii=False, indent=2),
@@ -74,6 +79,7 @@ class RotationJudge(BaseAgent):
             rule_context=rule_context or "无规则参考",
             sector_context=sector_context or "无板块参考",
             sentiment_context=sentiment_context or "无舆情参考",
+            suggestion_context=suggestion_context or "无调仓建议",
         )
         result = self.call_llm(prompt, temperature=0.2)
         return result if result and "error" not in result else {"error": "裁决失败", "decision": "hold", "final_swaps": []}

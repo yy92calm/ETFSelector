@@ -102,134 +102,54 @@ def delete_strategy(db: Session, strategy_id: int) -> dict:
     }
 
 
-@tool(name="add_etf_to_strategy", description="向指定策略添加一个ETF。新ETF会获得指定权重，其余ETF权重等比缩减以保持总和为1.0。持仓上限5只。运行中的策略下一交易日生效。")
-def add_etf_to_strategy(db: Session, strategy_id: int, etf_code: str, weight: float = 0.2) -> dict:
-    from app.models.strategy import Strategy
-    from app.services.strategy_service import get_strategy_service
+@tool(name="suggest_allocation_change", description="提交组合调仓建议（仅记录，不改变配置）。实际换仓由轮动通道统一裁决：动量排名+申万板块+规则建议+舆情/经验辩论，采纳后下一交易日生效。新增或删除标的也用本工具提交（建议配置里体现）。")
+def suggest_allocation_change(db: Session, strategy_id: int, new_allocation: dict,
+                              reason: str = "") -> dict:
+    """记录调仓建议（LLM 只建议，唯一换仓通道是轮动）
 
-    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
-    if not strategy:
-        return {"error": f"策略 {strategy_id} 不存在"}
+    Args:
+    strategy_id: 策略ID
+    new_allocation: 建议配置 {ETF代码: 比例}，总和必须为1.0
+    reason: 建议理由（说明引用了哪些依据）
+    """
+    from app.services.allocation_suggestion_service import get_allocation_suggestion_service
 
-    svc = get_strategy_service()
-    alloc = svc.get_effective_target_allocation(strategy)
-    if etf_code in alloc:
-        return {"error": f"ETF {etf_code} 已在策略中，当前权重 {alloc[etf_code]}"}
+    # 说明：本工具只写建议记录（不触碰 allocation_config/pending_allocation），
+    # 因此显式声明为只读风险——真正的资金动作只有一个入口：轮动通道 execute_rotation。
+    return get_allocation_suggestion_service().create(
+        db, strategy_id, new_allocation, reason=reason, source="agentloop",
+    )
 
-    if len(alloc) >= 5:
-        return {"error": f"策略持仓已达上限5只，需先移除其他ETF"}
 
-    if weight <= 0 or weight >= 1:
-        return {"error": f"权重必须在0到1之间，当前 {weight}"}
+@tool(name="get_allocation_suggestions", description="查询指定策略的调仓建议记录（含待裁决/已采纳/已驳回及裁决说明），用于避免重复建议与复盘建议采纳情况")
+def get_allocation_suggestions(db: Session, strategy_id: int, limit: int = 10) -> dict:
+    """调仓建议记录（只读）
 
-    remaining_weight = 1.0 - weight
-    old_total = sum(alloc.values())
-    if old_total > 0:
-        alloc = {k: round(v * remaining_weight / old_total, 4) for k, v in alloc.items()}
-    alloc[etf_code] = round(weight, 4)
+    Args:
+    strategy_id: 策略ID
+    limit: 返回条数（默认10）
+    """
+    from app.models.allocation_suggestion import AllocationSuggestion
 
-    total = sum(alloc.values())
-    if abs(total - 1.0) > 0.01:
-        diff = 1.0 - total
-        first_key = next(iter(alloc))
-        alloc[first_key] = round(alloc[first_key] + diff, 4)
-
-    old_alloc = svc.get_effective_target_allocation(strategy)
-    try:
-        mode = svc.stage_allocation_change(strategy, alloc, db)
-    except ValueError as e:
-        return {"error": str(e)}
-    db.commit()
-
-    effective_note = "下一交易日生效" if mode == "pending" else "立即生效"
+    rows = (
+        db.query(AllocationSuggestion)
+        .filter(AllocationSuggestion.strategy_id == strategy_id)
+        .order_by(AllocationSuggestion.created_at.desc())
+        .limit(max(1, min(limit, 50)))
+        .all()
+    )
     return {
-        "success": True,
         "strategy_id": strategy_id,
-        "etf_code": etf_code,
-        "weight": alloc[etf_code],
-        "old_allocation": old_alloc,
-        "new_allocation": alloc,
-        "holdings_count": len(alloc),
-        "effective": mode,
-        "message": f"已添加 {etf_code}（权重 {alloc[etf_code]*100:.1f}%），{effective_note}，当前持仓 {len(alloc)} 只",
-    }
-
-
-@tool(name="remove_etf_from_strategy", description="从指定策略移除一个ETF。其权重按比例分配给剩余ETF。至少保留1只。运行中的策略下一交易日生效。")
-def remove_etf_from_strategy(db: Session, strategy_id: int, etf_code: str) -> dict:
-    from app.models.strategy import Strategy
-    from app.services.strategy_service import get_strategy_service
-
-    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
-    if not strategy:
-        return {"error": f"策略 {strategy_id} 不存在"}
-
-    svc = get_strategy_service()
-    alloc = svc.get_effective_target_allocation(strategy)
-    if etf_code not in alloc:
-        return {"error": f"ETF {etf_code} 不在策略中"}
-
-    if len(alloc) <= 1:
-        return {"error": "策略至少需要保留1只ETF"}
-
-    removed_weight = alloc.pop(etf_code)
-    remaining_total = sum(alloc.values())
-    if remaining_total > 0:
-        alloc = {k: round(v / remaining_total, 4) for k, v in alloc.items()}
-        total = sum(alloc.values())
-        if abs(total - 1.0) > 0.01:
-            diff = 1.0 - total
-            first_key = next(iter(alloc))
-            alloc[first_key] = round(alloc[first_key] + diff, 4)
-
-    try:
-        mode = svc.stage_allocation_change(strategy, alloc, db)
-    except ValueError as e:
-        return {"error": str(e)}
-    db.commit()
-
-    effective_note = "下一交易日生效" if mode == "pending" else "立即生效"
-    return {
-        "success": True,
-        "strategy_id": strategy_id,
-        "removed_etf": etf_code,
-        "removed_weight": removed_weight,
-        "new_allocation": alloc,
-        "holdings_count": len(alloc),
-        "effective": mode,
-        "message": f"已移除 {etf_code}（原权重 {removed_weight*100:.1f}%），{effective_note}",
-    }
-
-
-@tool(name="update_allocation", description="修改指定策略的ETF配置比例。new_allocation的比例总和必须为1.0。运行中的策略下一交易日生效，当日持仓与历史收益不受影响")
-def update_allocation(db: Session, strategy_id: int, new_allocation: dict) -> dict:
-    from app.models.strategy import Strategy
-    from app.services.strategy_service import get_strategy_service
-
-    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
-    if not strategy:
-        return {"error": f"策略 {strategy_id} 不存在"}
-
-    svc = get_strategy_service()
-    old_allocation = svc.get_effective_target_allocation(strategy)
-    try:
-        mode = svc.stage_allocation_change(strategy, new_allocation, db)
-    except ValueError as e:
-        return {"error": str(e)}
-    db.commit()
-
-    if mode == "pending":
-        message = "配置已提交，下一交易日按新配置执行交易，当日持仓与历史收益不受影响"
-    else:
-        message = "配置比例已更新（新策略立即生效）"
-
-    return {
-        "success": True,
-        "strategy_id": strategy_id,
-        "old_allocation": old_allocation,
-        "new_allocation": new_allocation,
-        "effective": mode,
-        "message": message,
+        "suggestions": [{
+            "id": r.id,
+            "status": r.status,
+            "source": r.source,
+            "suggested_allocation": r.suggested_allocation,
+            "reason": r.reason,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "decided_note": r.decided_note,
+        } for r in rows],
+        "total": len(rows),
     }
 
 

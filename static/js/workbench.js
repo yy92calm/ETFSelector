@@ -1056,21 +1056,23 @@ const Workbench = {
         if (!el) return;
         el.innerHTML = '<div class="empty-hint">加载中...</div>';
         try {
-            const [riskResp, expResp, evoResp] = await Promise.all([
+            const [riskResp, expResp, evoResp, sugResp] = await Promise.all([
                 fetch(`/api/auto-strategy/enhanced/risk-dashboard?strategy_id=${sid}`).then(r => r.json()).catch(() => ({ code: 500 })),
                 fetch(`/api/auto-strategy/experiences?strategy_id=${sid}`).then(r => r.json()).catch(() => ({ code: 500 })),
                 fetch(`/api/auto-strategy/evolved-prompt?strategy_id=${sid}`).then(r => r.json()).catch(() => ({ code: 500 })),
+                fetch(`/api/auto-strategy/allocation-suggestions?strategy_id=${sid}&limit=10`).then(r => r.json()).catch(() => ({ code: 500 })),
             ]);
             this.renderStrategyEvolution(sid,
                 riskResp.code === 200 ? riskResp.data : null,
                 expResp.code === 200 ? (expResp.data.experiences || []) : [],
-                evoResp.code === 200 ? evoResp.data : null);
+                evoResp.code === 200 ? evoResp.data : null,
+                sugResp.code === 200 ? (sugResp.data.suggestions || []) : []);
         } catch (e) {
             el.innerHTML = '<div class="empty-hint" style="color:var(--danger)">加载失败</div>';
         }
     },
 
-    renderStrategyEvolution(sid, risk, experiences, evolved) {
+    renderStrategyEvolution(sid, risk, experiences, evolved, suggestions) {
         const el = document.getElementById(`evo-body-${sid}`);
         if (!el) return;
         const sub = document.getElementById(`evo-sub-${sid}`);
@@ -1136,7 +1138,35 @@ const Workbench = {
                 <div class="evo-text">${this.esc(evolved.prompt_text)}</div>`;
         }
 
-        if (sub) sub.textContent = `经验 ${experiences.length} 条${evolved && evolved.prompt_text ? ` · 提示词 v${evolved.version}` : ''}`;
+        // 调仓建议（LLM 只建议 → 轮动通道裁决）
+        const sugStatus = {
+            pending: { label: '待裁决', cls: 'sug-pending' },
+            adopted: { label: '已采纳', cls: 'sug-adopted' },
+            rejected: { label: '已驳回', cls: 'sug-rejected' },
+        };
+        const pendingCount = (suggestions || []).filter(x => x.status === 'pending').length;
+        let sugHtml = '<div class="empty-hint">暂无调仓建议</div>';
+        if ((suggestions || []).length) {
+            sugHtml = suggestions.map(sg => {
+                const sm = sugStatus[sg.status] || { label: sg.status, cls: '' };
+                const alloc = Object.entries(sg.suggested_allocation || {})
+                    .sort((a, b) => b[1] - a[1]).slice(0, 5)
+                    .map(([c, w]) => `${this.etfLabel(c)} ${(w * 100).toFixed(0)}%`).join(' · ');
+                const when = parseServerTime(sg.created_at);
+                return `<div class="sug-item">
+                    <div class="sug-head">
+                        <span class="sug-badge ${sm.cls}">${sm.label}</span>
+                        <span class="sug-src">${({ agentloop: 'AI自主决策', chat: '对话', manual: '人工' })[sg.source] || sg.source}</span>
+                        <span class="sug-time">${when ? when.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                    </div>
+                    <div class="sug-alloc">${this.esc(alloc)}</div>
+                    ${sg.reason ? `<div class="sug-reason">${this.esc(String(sg.reason).slice(0, 120))}</div>` : ''}
+                    ${sg.decided_note ? `<div class="sug-note">裁决：${this.esc(String(sg.decided_note).slice(0, 120))}</div>` : ''}
+                </div>`;
+            }).join('');
+        }
+
+        if (sub) sub.textContent = `经验 ${experiences.length} 条${evolved && evolved.prompt_text ? ` · 提示词 v${evolved.version}` : ''}${pendingCount ? ` · 待裁决建议 ${pendingCount} 条` : ''}`;
         el.innerHTML = `
             ${riskHtml}
             <div class="evo-grid">
@@ -1148,6 +1178,10 @@ const Workbench = {
                     <div class="ev-card-head">✨ 进化提示词 <span class="ev-card-note">注入每轮决策上下文</span></div>
                     ${evoHtml}
                 </div>
+            </div>
+            <div class="ev-card" style="margin-top:10px">
+                <div class="ev-card-head">📝 调仓建议 <span class="ev-card-note">LLM 只建议，实际换仓统一走轮动通道（辩论裁决后次日生效）</span></div>
+                ${sugHtml}
             </div>`;
     },
 

@@ -149,7 +149,8 @@ class TestRotationSentimentInjection(unittest.TestCase):
     def _run(self, **kwargs):
         captured = {}
 
-        def fake_debate(holdings, candidates, rule_signal=None, sector_context="", sentiment_context=""):
+        def fake_debate(holdings, candidates, rule_signal=None, sector_context="", sentiment_context="",
+                            suggestion_context=""):
             captured["sentiment"] = sentiment_context
             return {"decision": "hold", "final_swaps": [], "summary": "维持持仓"}
 

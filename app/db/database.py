@@ -40,6 +40,7 @@ def init_db():
     from app.models.market_regime import MarketRegimeSnapshot  # noqa: F401
     from app.models.stock_fundamental import StockFundamental, IndustryScore  # noqa: F401
     from app.models.sw_industry import SwIndustryDaily  # noqa: F401
+    from app.models.allocation_suggestion import AllocationSuggestion  # noqa: F401
     Base.metadata.create_all(bind=engine)
 
     # 策略暂停冷却字段（熔断自动恢复用）

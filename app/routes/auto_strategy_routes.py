@@ -201,6 +201,44 @@ def get_experiences(strategy_id: int, db: Session = Depends(get_db)):
     })
 
 
+@router.get("/allocation-suggestions", response_model=APIResponse)
+def get_allocation_suggestions(strategy_id: int, limit: int = 20, db: Session = Depends(get_db)):
+    """调仓建议记录（LLM 只建议，实际换仓统一由轮动通道裁决）"""
+    from app.models.allocation_suggestion import AllocationSuggestion
+
+    rows = (
+        db.query(AllocationSuggestion)
+        .filter(AllocationSuggestion.strategy_id == strategy_id)
+        .order_by(AllocationSuggestion.created_at.desc())
+        .limit(max(1, min(limit, 100)))
+        .all()
+    )
+    return APIResponse(data={
+        "suggestions": [{
+            "id": r.id, "status": r.status, "source": r.source,
+            "suggested_allocation": r.suggested_allocation, "reason": r.reason,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "decided_at": r.decided_at.isoformat() if r.decided_at else None,
+            "decided_note": r.decided_note,
+        } for r in rows],
+        "total": len(rows),
+    })
+
+
+@router.post("/allocation-suggestions", response_model=APIResponse)
+def create_allocation_suggestion(strategy_id: int, suggested_allocation: dict, reason: str = "",
+                                 db: Session = Depends(get_db)):
+    """人工提交调仓建议（与 AI 建议同通道，由轮动裁决）"""
+    from app.services.allocation_suggestion_service import get_allocation_suggestion_service
+
+    result = get_allocation_suggestion_service().create(
+        db, strategy_id, suggested_allocation, reason=reason, source="manual",
+    )
+    if result.get("error"):
+        return APIResponse(code=400, message=result["error"], data=None)
+    return APIResponse(message=result["message"], data=result)
+
+
 @router.get("/evolved-prompt", response_model=APIResponse)
 def get_evolved_prompt(strategy_id: int, db: Session = Depends(get_db)):
     """获取策略级进化提示词（复盘后由 LLM 改写，注入每轮决策上下文）"""

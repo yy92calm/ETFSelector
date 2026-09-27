@@ -20,7 +20,7 @@ app/
 ├── __init__.py          # FastAPI app 初始化、14个路由注册、鉴权中间件、lifespan
 ├── config.py            # pydantic-settings 配置（.env）
 ├── db/database.py       # SQLAlchemy engine/session/init_db（含 ALTER TABLE 兼容迁移）
-├── models/              # ORM 模型（见"数据模型"节，15 文件 23 表）
+├── models/              # ORM 模型（见"数据模型"节，16 文件 24 表）
 ├── schemas/schemas.py   # Pydantic 请求/响应 schema
 ├── routes/              # API 路由
 │   ├── etf_routes / strategy_routes / backtest_routes / net_value_routes
@@ -105,6 +105,9 @@ plans/                   # 迭代设计文档（23 个，历史决策依据）
 market_scanner_service: 全量ETF 5维指标（动量/趋势/量能/波动/资金流）打分排名
   ↓ 纯量化门槛：持仓分 vs 候选分差距 ≥ 5 才进入 LLM 辩论（省 token）
   ↓ failure_mode_service 过滤反复失败的 banned codes
+allocation_suggestion_service（LLM 只建议）: 建议写入 allocation_suggestion（pending）
+  → 轮动通道唯一的换仓入口：有未决建议即提级评估（建议标的补入候选）+ 建议进入辩论材料
+  → 裁决后结算回执（adopted/rejected + 理由）；有效期 7 天 > MIN_HOLD_DAYS(5)
 sector_selection_service（板块→选型，半硬，settings.sector_rotation_mode 可关）:
   申万一级行业评分（sw_industry_service，≥67超配/≤33低配）
   → 低配板块候选排序降级 + 低配板块持仓标记逆风优先换出（板块信号缺失时按中性）
@@ -163,7 +166,7 @@ ETFBasic     (1) ──→ (N) ETFDailyIndicator # 5维因子+综合分+排名�
 ChatSession  (1) ──→ (N) ChatMessage / AIActionLog
 独立快照表: MarketRegimeSnapshot / RuleSnapshot / FactorPerformance
             StockFundamental / IndustryScore / SwIndustryDaily（申万板块）
-            PipelineCheckpoint / TaskExecutionLog
+            AllocationSuggestion（调仓建议） / PipelineCheckpoint / TaskExecutionLog
 ```
 
 ## 主要服务清单（services/）
@@ -242,6 +245,8 @@ ChatSession  (1) ──→ (N) ChatMessage / AIActionLog
 - 技能文件放 `skills/*.md`（frontmatter 控制 model/user invocable），MCP 工具经 `mcp_bridge` 自动注册，不手写重复工具。
 
 #### 策略引擎
+- **单一换仓通道**：`allocation_config`/`pending_allocation` 只允许由 `rotation_service.execute_rotation`（轮动通道）或人工 API 写入；
+  LLM 工具一律只写「建议」（`suggest_allocation_change`，表 `allocation_suggestion`），由轮动通道辩论裁决后采纳/驳回并回执留痕。
 - 配置比例 `allocation_config` 总和必须为 1.0（容差 0.01）。
 - 买卖以 100 股整数倍取整（`compute_adjustment`）。
 - 回测与实盘共用 `compute_adjustment` 和 `PortfolioContext`，修改时两边都要验证。
