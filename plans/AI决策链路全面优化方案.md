@@ -20,7 +20,7 @@
 | P2 | 3.3 经验权重指数衰减 + 单一权威写入 | ✅ | 7 条单测：60 天经验衰减为 e^(-0.2)=0.819（旧线性口径 0.8）；`initial_weight=1.5` 衰减后 1.357 仍高于 1.0；boost 到 2.0 再跑 decay 值与来源都保持（核心回归）；boost/场景调权重复调用不放大（2 次仍 1.3）；评分 2.0 + pending → 停用，无使用数据的新经验不被误停 |
 | P2 | 3.4 辩论降级显式标记 debate_degraded | ✅ | 8 条新单测 + 3 条改写：LLM 未配置时计划 `degrade_reason=llm_not_configured` 且量化仍决策（缺口 40 分 → rotate）；一派观点缺失 → 跳过裁决官、量化接管（`upstream_missing: 动量派`）；裁决官失败 → 维持 hold 但带 `judge_failed`；完整辩论无任何标记；建议回执前缀「【未经辩论·降级】」；依据接口透出两字段 |
 | P2 | 3.5 N+1 查询清理（最短持有期/建议校验/禁入缓存/行情补全/上下文遗留） | ✅ | 14 条新单测：SQL 计数断言次数不随实体数增长（1 持仓 vs 4 持仓均 1 次 trade_record 查询、1 vs 4 代码均 1 次 etf_basic、3 vs 20 只 ETF 均 1 次 etf_quotation、1 vs 4 策略均 1 次 portfolio_snapshot）；禁入名单二次调用 0 查询、record_failure 后重查；过期失败模式不再规避；批量与逐标的结果逐字段相等 |
-| P3 | 4.1 风控工具补全（相关性/VaR/what-if 熔断） | ⬜ | 单测：工具注册 + 计算正确 |
+| P3 | 4.1 风控工具补全（相关性/VaR/what-if 熔断） | ✅ | 21 条新单测：VaR 用解析期望值断言（5 个亏损日+55 个+0.2%，60 观测下 95% 分位=2%、ES=3.5%）+ √t 缩放 + 置信度夹取 + 待生效优先；相关矩阵 ±1/均值/样本不足/缺行情分支；what-if 四结构与越线组合，并断言 what-if 后 allocation_config/pending_allocation 逐字段不变；工具注册为 read 且经 registry 可执行 |
 | P3 | 4.2 因子表现与板块影响分析工具 | ⬜ | 单测：工具返回结构 |
 | P3 | 4.3 复盘 avg_return 改期间收益率 | ⬜ | 单测：期间收益率计算 |
 | P3 | 4.4 delete_strategy 软删除 | ⬜ | 单测：删除后数据可查回 |
@@ -314,6 +314,19 @@ app/config.py                                # 新增配置项（见下）
 - `check_circuit_breaker(what_if_swaps=None)`：可选参数，模拟「若执行这些换仓后」的仓位/回撤是否触发拦截
 - `run_stress_test(scenario=None)`：支持自定义跌幅场景，缺省沿用预设
 - 注册进 `@tool`，`get_*` 为 read、`what-if` 亦为 read（不改状态）
+
+实施记录（2026-10-10）：
+- 服务落点在 `RiskController`（新增 `get_diversification` / `get_var`，工具名仍按方案叫 `get_portfolio_correlation`、`get_portfolio_var`）：相关度与 VaR 都是「组合层面风险度量」，与熔断/回撤/风险预算同源，另起 service 会把风险口径拆成两处真值。
+- 取价一次 `in_(codes)` + Python 组网格（`_load_price_series`→`_aligned_returns`）：多取 `window×1.8+20` 日历日以覆盖停牌/节假日，再按标的截到最近 `window+1` 个观测，最后在**所有标的都有价的公共交易日**上算日收益——否则不同 ETF 的缺失日会让相关系数与组合收益串期。
+- VaR 用**历史模拟**（权重合成组合日收益后取经验分位），不做正态假设：ETF 日收益普遍尖峰厚尾，参数法会系统性低估尾部损失。同时给出 `expected_shortfall_pct`（分位以下均值），因为 VaR 只说「至少亏这么多」，尾部均值才是 LLM 判断「最坏能坏到哪」需要的数。
+- 多日 VaR 按 `√t` 缩放（`horizon=4` 即 2 倍单日），文档与 `text` 里写明该假设；置信度夹到 `[0.5, 0.999]`、`horizon` 下限 1，避免 LLM 传 0.9999/0 这类样本量撑不起或无意义的参数。
+- **基准口径**：`get_diversification`/`get_var`/what-if 用 `get_effective_target_allocation`（待生效优先），与轮动/执行一致——否则「周一会执行的那套配置」的风险数永远看不到。`run_stress_test` 与 `check_risk_budget` 仍按 `allocation_config`（本次未改，属既有口径）。
+- what-if 明确**不重复轮动通道的硬约束裁决**：`_apply_swaps` 只做换出/换入/权重换算与结构合法性（remove 在组合、add 不在组合、替换后合计≈1.0），仓位是否越线复用 `_eval_risk_budget`，尾部风险用**同一交易日网格**上的前后两次 VaR 相减（各自取公共日会得到不可比的差值）。有进必出、每次≤2只、最短持有期、禁入名单仍归 `_collect_proposals`。
+- `blocked` 的三个来源合并成一个字段：现网熔断已触发 / 替换后仓位越线 / 结构不成立。熔断已触发时文案单独说明「先按冷却期处理再谈换仓」——这与「换仓本身好不好」是两件事，混在一起会让 LLM 误判替换质量。
+- `_eval_risk_budget` 违规项新增 `over_codes`（原来只有 `current`=max，多项越线时看不出是谁）。
+- 单测 21 条：VaR 有**解析期望值**（构造 5 个亏损日 + 55 个 +0.2% 的收盘价序列，60 个观测下 95% 分位固定落在第 4 差的 -2%，ES=3.5%），不是只断言「返回了个数」；另锁 √t 缩放、置信度夹取、待生效优先、相关矩阵 ±1 与均值、样本不足/缺行情/策略不存在的分支、what-if 四种结构与越线组合、**以及 `allocation_config`/`pending_allocation` 在 what-if 后逐字段不变**（这是「只算不改库」的硬约束）；工具层 2 条验证注册、`risk_level=read` 与经 registry 执行。全量 472 passed。
+- 踩坑记录：`run_stress_test` 原实现用 `for scenario in scenarios` 且体内取 `scenario["name"]`，新增同名参数后二者冲突——体内引用已改名 `item`；`if scenario:` 会把显式传的空 dict 当「没传」静默走预设，改 `is not None` 让其按非法场景报错；单标的VaR 在「60 个观测只有 1 个亏损日」时 95% 分位其实是正收益（VaR 为负），不是 bug 而是样本分布，故测试fixture 必须铺够尾部观测。
+- 附带发现（未改）：`RISK_CONFIG["risk_budget"]["max_single_position"]=0.30` 比轮动硬约束的单只 40% 更严，二者语义不同（风险预算建议线 vs 换仓准入线），未统一；what-if 用的是 0.30 这条。
 
 **4.2 分析工具补全**
 - `get_factor_performance(db)`：当前自适应权重 + 各因子近 20 日 IC 均值/ICIR（复用 `factor_performance_service`）

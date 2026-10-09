@@ -1,6 +1,7 @@
 """风险控制服务"""
 
 import logging
+import math
 from datetime import date, timedelta
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
@@ -37,8 +38,9 @@ class RiskController:
         },
     }
     
-    def check_circuit_breaker(self, strategy_id: int, db: Session) -> Dict:
-        """检查熔断条件"""
+    def check_circuit_breaker(self, strategy_id: int, db: Session,
+                              what_if_swaps: Optional[List[Dict]] = None) -> Dict:
+        """检查熔断条件；what_if_swaps 给定时附带「若执行这些换仓后」的风险对照（只算不改库）"""
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy:
             return {"status": "error", "message": "策略不存在"}
@@ -46,7 +48,93 @@ class RiskController:
         snapshots = db.query(PortfolioSnapshot).filter(
             PortfolioSnapshot.strategy_id == strategy_id
         ).order_by(PortfolioSnapshot.trade_date.desc()).limit(10).all()
-        return self._eval_circuit_breaker(strategy, snapshots)
+        result = self._eval_circuit_breaker(strategy, snapshots)
+        if what_if_swaps:
+            result = {**result, "what_if": self._eval_what_if(strategy, result, what_if_swaps, db)}
+        return result
+
+    @staticmethod
+    def _apply_swaps(base: Dict[str, float], swaps: List[Dict]) -> tuple:
+        """把替换对套到基准配置上，返回 (结果配置, 结构问题说明)
+
+        只做「换出/换入/权重」的换算；能否真的换仓仍由轮动通道裁决（有进必出、
+        每次≤2只、最短持有期、禁入名单等硬约束不在风控侧重复实现）。
+        """
+        target = dict(base)
+        problems: List[str] = []
+        for item in swaps[:5]:
+            if not isinstance(item, dict):
+                problems.append(f"{item} 不是 {{'remove': '换出代码', 'add': '换入代码'}} 形式")
+                continue
+            remove_code = str(item.get("remove") or "").strip()
+            add_code = str(item.get("add") or "").strip()
+            if not remove_code or not add_code or remove_code == add_code:
+                problems.append(f"{remove_code or '?'}→{add_code or '?'} 参数不完整")
+                continue
+            if remove_code not in target:
+                problems.append(f"{remove_code} 不在当前组合")
+                continue
+            if add_code in target:
+                problems.append(f"{add_code} 已在组合")
+                continue
+            freed = target.pop(remove_code)
+            weight = item.get("weight")
+            try:
+                weight = float(weight) if weight is not None else freed
+            except (TypeError, ValueError):
+                weight = freed
+            target[add_code] = round(weight, 4)
+        total = sum(target.values())
+        if target and abs(total - 1.0) > 0.01:
+            problems.append(f"替换后权重合计 {total:.2f}（应为 1.0）")
+        return target, problems
+
+    def _eval_what_if(self, strategy: Strategy, breaker: Dict,
+                      swaps: List[Dict], db: Session) -> Dict:
+        """假设换仓后的仓位合规与尾部风险对照（用于「要不要换」之前的风险追问）"""
+        base = self._effective_allocation(strategy)
+        target, problems = self._apply_swaps(base, swaps)
+        if not target:
+            return {"blocked": True, "structure_problems": problems or ["替换后组合为空"],
+                    "message": "假设组合不成立，无法评估"}
+
+        budget = self._eval_risk_budget(target)
+        base_value = self._portfolio_value(strategy.id, db)
+        # 两套配置放在同一交易日网格上算 VaR，差值才可比（各取自身公共日会串期）
+        codes = list(dict.fromkeys([*base, *target]))
+        dates, returns = self._grid_for(codes, db)
+        var_before = self._var_on_grid(base, dates, returns, base_value=base_value)
+        var_after = self._var_on_grid(target, dates, returns, base_value=base_value)
+        # 熔断已触发时，任何新换仓都要先解熔断——与"是否值得换"无关
+        blocked = (breaker.get("status") == "triggered"
+                   or budget.get("status") == "violation"
+                   or bool(problems))
+        delta = None
+        if var_before.get("status") == "ok" and var_after.get("status") == "ok":
+            delta = round(var_after["var_pct"] - var_before["var_pct"], 4)
+        direction = ("数据不足" if delta is None else
+                     "尾部风险上升" if delta > 0.001 else
+                     "尾部风险下降" if delta < -0.001 else "尾部风险基本持平")
+        return {
+            "blocked": blocked,
+            "resulting_allocation": target,
+            "risk_budget": budget,
+            "structure_problems": problems,
+            "var_before": var_before.get("var_pct") if var_before.get("status") == "ok" else None,
+            "var_after": var_after.get("var_pct") if var_after.get("status") == "ok" else None,
+            "var_delta": delta,
+            "current_breaker_status": breaker.get("status"),
+            "message": (
+                ("现网熔断已触发，须先按冷却期处理再谈换仓；"
+                 if breaker.get("status") == "triggered" else "")
+                + ("；".join(problems) + "；" if problems else "")
+                + (f"仓位{'越线' if budget.get('status') == 'violation' else '合规'}，"
+                   f"{direction}"
+                   + (f"（1日VaR {var_before['var_pct']:.2%}→{var_after['var_pct']:.2%}）"
+                      if delta is not None else "")
+                   )
+            ),
+        }
 
     def assess_risk_map(self, strategies: List[Strategy], db: Session) -> Dict[int, Dict]:
         """批量风控：一次取回这些策略的净值快照（逐策略查会随策略数线性增长）
@@ -234,36 +322,243 @@ class RiskController:
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy:
             return {"status": "error", "message": "策略不存在"}
-        
-        config = self.RISK_CONFIG["risk_budget"]
-        allocation = strategy.allocation_config or {}
-        
+        return self._eval_risk_budget(strategy.allocation_config or {})
+
+    @staticmethod
+    def _eval_risk_budget(allocation: Dict[str, float]) -> Dict:
+        """风险预算判定（传入假设配置即可做 what-if，不改库）"""
+        config = RiskController.RISK_CONFIG["risk_budget"]
+
         violations = []
-        
+
         max_position = max(allocation.values()) if allocation else 0
         if max_position > config["max_single_position"]:
             violations.append({
                 "type": "single_position_exceeded",
+                "over_codes": [c for c, w in allocation.items()
+                               if w > config["max_single_position"]],
                 "current": round(max_position, 2),
                 "limit": config["max_single_position"],
                 "message": f"单一持仓{max_position:.2%}超过限制{config['max_single_position']:.2%}",
             })
-        
+
         if violations:
             return {
                 "status": "violation",
                 "violations": violations,
                 "suggested_action": "rebalance_to_limit",
             }
-        
+
         return {
             "status": "compliant",
             "max_single_position": round(max_position, 2),
             "message": "风险预算合规",
         }
-    
-    def run_stress_test(self, strategy_id: int, db: Session) -> Dict:
-        """运行压力测试（按 allocation_config 加权，区分资产类别敏感度）"""
+
+    # ========== 组合风险度量：相关性分散度 / 历史模拟 VaR ==========
+
+    PRICE_WINDOW = 60        # 默认回看窗口（交易日）
+    MIN_OBS = 20             # 少于这么多观测时，分位数与相关系数没有统计意义
+
+    @staticmethod
+    def _effective_allocation(strategy: Strategy) -> Dict[str, float]:
+        """风险度量的基准与轮动/执行口径一致：有待生效配置时以待生效为准"""
+        from app.services.strategy_service import get_strategy_service
+        return get_strategy_service().get_effective_target_allocation(strategy)
+
+    def _load_price_series(self, codes: List[str], db: Session,
+                           window: int = PRICE_WINDOW) -> Dict[str, Dict[date, float]]:
+        """一次查回这些标的的收盘价 {code: {trade_date: close}}（逐标的查会随持仓数变成 N+1）"""
+        from app.models.etf import ETFQuotation
+        if not codes:
+            return {}
+        # 多留日历余量覆盖停牌与节假日，再按标的截到最近 window+1 个观测
+        start = date.today() - timedelta(days=int(window * 1.8) + 20)
+        rows = (
+            db.query(ETFQuotation.etf_code, ETFQuotation.trade_date, ETFQuotation.close_price)
+            .filter(ETFQuotation.etf_code.in_(codes), ETFQuotation.trade_date >= start)
+            .order_by(ETFQuotation.etf_code, ETFQuotation.trade_date)
+            .all()
+        )
+        series: Dict[str, Dict[date, float]] = {}
+        for code, trade_date, close in rows:
+            if close:
+                series.setdefault(code, {})[trade_date] = float(close)
+        return {code: dict(sorted(days.items())[-(window + 1):]) for code, days in series.items()}
+
+    @staticmethod
+    def _aligned_returns(series: Dict[str, Dict[date, float]], codes: List[str]
+                         ) -> tuple:
+        """在「所有标的都有价」的公共交易日上算日收益，返回 (收益对应日, {code: [日收益]})"""
+        common: Optional[set] = None
+        for code in codes:
+            days = set(series.get(code, {}))
+            common = days if common is None else common & days
+        dates = sorted(common or [])
+        if len(dates) < 2:
+            return [], {}
+        returns: Dict[str, List[float]] = {}
+        for code in codes:
+            prices = series[code]
+            returns[code] = [prices[dates[i]] / prices[dates[i - 1]] - 1.0
+                             if prices[dates[i - 1]] else 0.0
+                             for i in range(1, len(dates))]
+        return dates[1:], returns
+
+    @staticmethod
+    def _pearson(a: List[float], b: List[float]) -> Optional[float]:
+        n = len(a)
+        if n < 2:
+            return None
+        ma, mb = sum(a) / n, sum(b) / n
+        da = math.sqrt(sum((x - ma) ** 2 for x in a))
+        db = math.sqrt(sum((y - mb) ** 2 for y in b))
+        if not da or not db:
+            return None
+        return sum((a[i] - ma) * (b[i] - mb) for i in range(n)) / (da * db)
+
+    def get_diversification(self, strategy_id: int, db: Session,
+                            window: int = PRICE_WINDOW) -> Dict:
+        """持仓标的日收益相关系数矩阵与平均相关度（判断组合是否「假分散」）"""
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+        if not strategy:
+            return {"status": "error", "message": "策略不存在"}
+        allocation = self._effective_allocation(strategy)
+        codes = [c for c in allocation if c]
+        if len(codes) < 2:
+            return {"status": "insufficient", "codes": codes,
+                    "message": "持仓标的不足2只，无相关性可算"}
+
+        series = self._load_price_series(codes, db, window)
+        missing = [c for c in codes if c not in series]
+        usable = [c for c in codes if c in series]
+        dates, returns = self._aligned_returns(series, usable)
+        if len(usable) < 2 or len(dates) < self.MIN_OBS:
+            return {"status": "insufficient_data", "obs_days": len(dates), "codes": usable,
+                    "missing_codes": missing,
+                    "message": f"公共交易日仅{len(dates)}天（需≥{self.MIN_OBS}），相关度暂不可用"}
+
+        matrix = {
+            a: {b: round(self._pearson(returns[a], returns[b]) or 0.0, 3) for b in usable}
+            for a in usable
+        }
+        pairs = [(a, b) for i, a in enumerate(usable) for b in usable[i + 1:]]
+        pair_corr = {p: (matrix[p[0]][p[1]]) for p in pairs}
+        avg = sum(pair_corr.values()) / len(pair_corr)
+        hi = max(pair_corr, key=pair_corr.get)
+        lo = min(pair_corr, key=pair_corr.get)
+        level = ("高度同涨同跌（分散不足）" if avg > 0.8
+                 else "分散度一般" if avg > 0.5 else "分散良好")
+        return {
+            "status": "ok",
+            "strategy_id": strategy_id,
+            "obs_days": len(dates),
+            "window_end": dates[-1].isoformat(),
+            "codes": usable,
+            "missing_codes": missing,
+            "matrix": matrix,
+            "avg_correlation": round(avg, 3),
+            "highest_pair": {"a": hi[0], "b": hi[1], "corr": round(pair_corr[hi], 3)},
+            "lowest_pair": {"a": lo[0], "b": lo[1], "corr": round(pair_corr[lo], 3)},
+            "text": (f"近{len(dates)}个交易日持仓两两相关度均值{avg:.2f}，{level}；"
+                     f"最高={hi[0]}/{hi[1]} {pair_corr[hi]:.2f}，"
+                     f"最低={lo[0]}/{lo[1]} {pair_corr[lo]:.2f}"),
+        }
+
+    def _grid_for(self, codes: List[str], db: Session,
+                  window: int = PRICE_WINDOW) -> tuple:
+        """一次查价，取「所有标的都有价」的公共交易日与日收益 (dates, {code: [ret]})"""
+        series = self._load_price_series(codes, db, window)
+        usable = [c for c in codes if c in series]
+        return self._aligned_returns(series, usable)
+
+    def _var_on_grid(self, allocation: Dict[str, float], dates: List[date],
+                     returns: Dict[str, List[float]], horizon: float = 1,
+                     confidence: float = 0.95, base_value: float = 0) -> Dict:
+        """历史模拟法 VaR：按权重合成组合日收益序列后取分位损失（不做正态假设）
+
+        单独收 (dates, returns) 是为了 what-if 能把「换仓前/后」放在**同一交易日网格**上比，
+        否则两边各自取公共日，差值就没有可比性。
+        """
+        codes = [c for c in allocation if c in returns]
+        if not codes or len(dates) < self.MIN_OBS:
+            return {"status": "insufficient_data", "obs_days": len(dates), "codes_used": codes,
+                    "message": f"公共交易日仅{len(dates)}天（需≥{self.MIN_OBS}），VaR 暂不可用"}
+
+        horizon = max(1.0, float(horizon))
+        conf = min(0.999, max(0.5, float(confidence)))
+        weights = {c: float(allocation.get(c) or 0) for c in codes}
+        port = [sum(weights[c] * returns[c][i] for c in codes) for i in range(len(dates))]
+        ordered = sorted(port)
+        idx = min(len(ordered) - 1, max(0, int(math.floor((1 - conf) * len(ordered)))))
+        var_1d = -ordered[idx]
+        var_h = var_1d * math.sqrt(horizon)      # 按 √t 时间缩放（隐含独立同分布假设）
+        worst_i = port.index(ordered[idx])
+        tail = ordered[:idx + 1]
+        es = -sum(tail) / len(tail)
+        return {
+            "status": "ok",
+            "obs_days": len(dates),
+            "confidence": conf,
+            "horizon_days": horizon,
+            "var_pct": round(var_h, 4),
+            "var_amount": round(var_h * (base_value or 0), 2),
+            "expected_shortfall_pct": round(es, 4),
+            "base_value": round(base_value or 0, 2),
+            "var_day": {"trade_date": dates[worst_i].isoformat(),
+                        "return_pct": round(ordered[idx], 4)},
+            "codes_used": codes,
+            "text": (f"近{len(dates)}个交易日：{conf:.0%}置信度下{horizon:g}日 VaR "
+                     f"{var_h:.2%}（约{var_h * (base_value or 0):,.0f}元），尾部均值(ES) {es:.2%}"),
+        }
+
+    def _var_of_allocation(self, allocation: Dict[str, float], db: Session,
+                           horizon: float = 1, confidence: float = 0.95,
+                           window: int = PRICE_WINDOW,
+                           base_value: Optional[float] = None,
+                           strategy_id: Optional[int] = None) -> Dict:
+        codes = [c for c in allocation if c]
+        if not codes:
+            return {"status": "insufficient", "message": "组合为空，VaR 不可算"}
+        dates, returns = self._grid_for(codes, db, window)
+        if base_value is None:
+            base_value = self._portfolio_value(strategy_id, db)
+        return self._var_on_grid(allocation, dates, returns, horizon=horizon,
+                                 confidence=confidence, base_value=base_value)
+
+    def _portfolio_value(self, strategy_id: Optional[int], db: Session) -> float:
+        """最新净值快照的总资产（无快照时回退初始资金）"""
+        if strategy_id is None:
+            return 0.0
+        snap = (db.query(PortfolioSnapshot)
+                .filter(PortfolioSnapshot.strategy_id == strategy_id)
+                .order_by(PortfolioSnapshot.trade_date.desc()).first())
+        if snap and snap.total_asset:
+            return float(snap.total_asset)
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+        return float(strategy.initial_capital or 0) if strategy else 0.0
+
+    def get_var(self, strategy_id: int, db: Session, horizon: int = 1,
+                confidence: float = 0.95, window: int = PRICE_WINDOW) -> Dict:
+        """组合在险价值（VaR）：当前生效配置的合成收益序列分位损失"""
+        strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+        if not strategy:
+            return {"status": "error", "message": "策略不存在"}
+        allocation = self._effective_allocation(strategy)
+        result = self._var_of_allocation(
+            allocation, db, horizon=horizon, confidence=confidence, window=window,
+            strategy_id=strategy_id,
+        )
+        result["strategy_id"] = strategy_id
+        return result
+
+    def run_stress_test(self, strategy_id: int, db: Session,
+                        scenario: Optional[Dict] = None) -> Dict:
+        """运行压力测试（按 allocation_config 加权，区分资产类别敏感度）
+
+        scenario: 自定义跌幅场景 {"name": 场景名, "shock": 跌幅}，提供时**替换**预设场景
+                  （问什么答什么，避免把 4 个预设一起倒给 LLM）；缺省沿用预设四场景。
+        """
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy:
             return {"status": "error", "message": "策略不存在"}
@@ -282,12 +577,17 @@ class RiskController:
             {"name": "流动性危机", "shock": -0.15, "description": "模拟流动性枯竭"},
             {"name": "政策冲击", "shock": -0.10, "description": "模拟政策重大变化"},
         ]
+        if scenario is not None:
+            parsed = self._parse_custom_scenario(scenario)
+            if isinstance(parsed, str):
+                return {"status": "error", "message": parsed}
+            scenarios = [parsed]
 
         initial_capital = strategy.initial_capital or 100000
 
         results = []
-        for scenario in scenarios:
-            base_shock = scenario["shock"]
+        for item in scenarios:
+            base_shock = item["shock"]
 
             # 按配置比例加权，不同资产类别敏感度不同
             weighted_shock = 0.0
@@ -302,8 +602,8 @@ class RiskController:
             severity = "critical" if abs(weighted_shock) > 0.25 else "severe" if abs(weighted_shock) > 0.15 else "moderate"
 
             results.append({
-                "scenario": scenario["name"],
-                "description": scenario["description"],
+                "scenario": item["name"],
+                "description": item["description"],
                 "shock_pct": round(weighted_shock, 4),
                 "estimated_loss": round(estimated_loss, 2),
                 "estimated_final_value": round(estimated_final_value, 2),
@@ -319,6 +619,22 @@ class RiskController:
             "worst_case": worst_case,
             "risk_assessment": self._generate_risk_assessment(worst_case),
             "recommendations": self._generate_risk_recommendations(results),
+        }
+
+    @staticmethod
+    def _parse_custom_scenario(scenario: Dict) -> object:
+        """规范化自定义跌幅场景，非法时返回错误说明字符串"""
+        name = str(scenario.get("name") or "").strip() or "自定义场景"
+        try:
+            shock = -abs(float(scenario.get("shock")))
+        except (TypeError, ValueError):
+            return "shock 需为跌幅数值（如 -0.15 或 0.15）"
+        if not 0 < abs(shock) <= 0.99:
+            return f"跌幅 {abs(shock):.2%} 不在 (0, 99%] 区间"
+        return {
+            "name": name[:30],
+            "shock": round(shock, 4),
+            "description": str(scenario.get("description") or f"自定义场景：整体下跌{abs(shock):.0%}")[:80],
         }
 
     def _classify_etf_shock_multiplier(self, etf_name: str) -> float:
