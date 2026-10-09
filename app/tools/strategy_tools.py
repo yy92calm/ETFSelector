@@ -2,13 +2,28 @@
 
 import logging
 from datetime import date, datetime
-from typing import Optional
+from typing import List, Optional, TypedDict
 
 from sqlalchemy.orm import Session
 
 from app.tools.registry import tool
 
 logger = logging.getLogger(__name__)
+
+
+class _SwapPairRequired(TypedDict):
+    """替换提案的必填项"""
+    remove: str
+    add: str
+
+
+class SwapPair(_SwapPairRequired, total=False):
+    """一对显式替换提案：换出 remove、换入 add，可选指定权重与理由
+
+    只用于生成工具 schema（运行时就是普通 dict），让 LLM 不必猜提案格式。
+    """
+    weight: float
+    reason: str
 
 
 @tool(name="list_strategies", description="列出所有策略，包含名称、类型、状态、配置比例等信息")
@@ -104,7 +119,8 @@ def delete_strategy(db: Session, strategy_id: int) -> dict:
 
 @tool(name="suggest_allocation_change", description="提交组合调仓建议（仅记录，不改变配置）。实际换仓由轮动通道统一执行：若提供 swaps 显式替换提案并校验通过（持仓池/最短持有期/禁入名单/每次≤2只/单只≤40%）则直接执行；否则进入辩论或驳回并回执。新增或删除标的也用本工具。")
 def suggest_allocation_change(db: Session, strategy_id: int, new_allocation: dict,
-                              reason: str = "", swaps: list = None) -> dict:
+                              reason: str = "",
+                              swaps: Optional[List[SwapPair]] = None) -> dict:
     """记录调仓建议（LLM 只建议，唯一换仓通道是轮动）
 
     Args:

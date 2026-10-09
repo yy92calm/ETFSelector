@@ -12,7 +12,7 @@
 | P0 | 1.6 因子回填批量预加载 forward return | ✅ | 9 条单测：SQL 次数不随记录数增长；与逐条口径逐条等值；缺失因子补齐不再被整日跳过 |
 | P1 | 2.1 上下文补全（持仓盈亏/近期交易/大盘指数/仓位） | ⬜ | 单测：快照含新 section；缺失数据不崩 |
 | P1 | 2.2 轮动辩论裁决官输入去重 | ⬜ | 单测：裁决官 prompt 不含全量候选池 |
-| P1 | 2.3 工具 Schema 类型支持（Optional/Literal/list[dict]） | ⬜ | 单测：swaps 生成正确 nested schema |
+| P1 | 2.3 工具 Schema 类型支持（Optional/Literal/list[dict]） | ✅ | 24 条单测：swaps.items 含 remove/add 与必填；Optional→nullable；Literal/Enum→enum；参数校验错误可读 |
 | P1 | 2.4 run_autonomous 状态判定 bug | ✅ | 6 条单测：以 "LLM" 开头的正常结论→completed；异常/跑满轮数无结论→failed；按主键排除当前消息 |
 | P1 | 2.5 经验匹配带权相似度 + 冲突检测修正 | ⬜ | 单测：不相关 failure/success 不判冲突 |
 | P2 | 3.1 管道阶段关键路径阻断 | ⬜ | 单测：quotes 失败 → market_scan 标记跳过 |
