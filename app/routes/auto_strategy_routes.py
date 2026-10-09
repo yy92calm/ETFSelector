@@ -561,9 +561,9 @@ def find_similar_environments(
 @router.post("/enhanced/smart-experience-match", response_model=APIResponse)
 def smart_match_experiences(strategy_id: int, db: Session = Depends(get_db)):
     """智能经验匹配"""
-    from app.services.smart_experience_matcher import SmartExperienceMatcher
+    from app.services.smart_experience_matcher import get_smart_experience_matcher
     
-    matcher = SmartExperienceMatcher()
+    matcher = get_smart_experience_matcher()
     current_scenario = matcher.get_current_market_scenario(_latest_trade_date(db), db)
     matched = matcher.match_experiences_by_scenario(strategy_id, current_scenario, db)
     
@@ -577,9 +577,9 @@ def smart_match_experiences(strategy_id: int, db: Session = Depends(get_db)):
 @router.post("/enhanced/experience-conflict-detection", response_model=APIResponse)
 def detect_experience_conflicts(strategy_id: int, db: Session = Depends(get_db)):
     """检测经验冲突"""
-    from app.services.smart_experience_matcher import SmartExperienceMatcher
+    from app.services.smart_experience_matcher import get_smart_experience_matcher
     
-    matcher = SmartExperienceMatcher()
+    matcher = get_smart_experience_matcher()
     experiences = db.query(Experience).filter(
         Experience.strategy_id == strategy_id,
         Experience.is_active == True,

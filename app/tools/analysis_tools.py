@@ -240,9 +240,9 @@ def smart_match_experiences(db: Session, strategy_id: int) -> dict:
     Args:
     strategy_id: 策略ID
     """
-    from app.services.smart_experience_matcher import SmartExperienceMatcher
+    from app.services.smart_experience_matcher import get_smart_experience_matcher
 
-    matcher = SmartExperienceMatcher()
+    matcher = get_smart_experience_matcher()
     scenario = matcher.get_current_market_scenario(_latest_trade_date(db), db)
     matched = matcher.match_experiences_by_scenario(strategy_id, scenario, db)
     # 转纯字典（含 id，供决策留痕记录「本次参考了哪些经验」）

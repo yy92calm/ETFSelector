@@ -181,9 +181,9 @@ class MarketAnalystAgent(BaseAgent):
         return summary
 
     def _get_relevant_experiences(self, strategy_id: int, target_date: date, db: Session) -> List[Experience]:
-        from app.services.smart_experience_matcher import SmartExperienceMatcher
+        from app.services.smart_experience_matcher import get_smart_experience_matcher
 
-        matcher = SmartExperienceMatcher()
+        matcher = get_smart_experience_matcher()
         current_scenario = matcher.get_current_market_scenario(target_date, db)
         matched = matcher.match_experiences_by_scenario(strategy_id, current_scenario, db)
         experiences = [m["experience"] for m in matched]

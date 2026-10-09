@@ -256,8 +256,8 @@ class ExperienceManager:
         db: Session
     ) -> List[Dict]:
         """获取智能匹配的经验"""
-        from app.services.smart_experience_matcher import SmartExperienceMatcher
-        matcher = SmartExperienceMatcher()
+        from app.services.smart_experience_matcher import get_smart_experience_matcher
+        matcher = get_smart_experience_matcher()
         
         matched = matcher.match_experiences_by_scenario(strategy_id, current_scenario, db)
         
@@ -289,8 +289,8 @@ class ExperienceManager:
         db: Session
     ) -> Dict:
         """应用场景权重调整"""
-        from app.services.smart_experience_matcher import SmartExperienceMatcher
-        matcher = SmartExperienceMatcher()
+        from app.services.smart_experience_matcher import get_smart_experience_matcher
+        matcher = get_smart_experience_matcher()
         
         matched = matcher.match_experiences_by_scenario(strategy_id, current_scenario, db)
         

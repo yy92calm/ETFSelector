@@ -14,7 +14,7 @@
 | P1 | 2.2 轮动辩论裁决官输入去重 | ⬜ | 单测：裁决官 prompt 不含全量候选池 |
 | P1 | 2.3 工具 Schema 类型支持（Optional/Literal/list[dict]） | ✅ | 24 条单测：swaps.items 含 remove/add 与必填；Optional→nullable；Literal/Enum→enum；参数校验错误可读 |
 | P1 | 2.4 run_autonomous 状态判定 bug | ✅ | 6 条单测：以 "LLM" 开头的正常结论→completed；异常/跑满轮数无结论→failed；按主键排除当前消息 |
-| P1 | 2.5 经验匹配带权相似度 + 冲突检测修正 | ⬜ | 单测：不相关 failure/success 不判冲突 |
+| P1 | 2.5 经验匹配带权相似度 + 冲突检测修正 | ✅ | 11 条单测：不相关 failure/success 不再判冲突；同场景对立结论仍判冲突；regime 命中权重高于普通因素 |
 | P2 | 3.1 管道阶段关键路径阻断 | ⬜ | 单测：quotes 失败 → market_scan 标记跳过 |
 | P2 | 3.2 上下文压缩 Token 估算 + 分层压缩 | ⬜ | 单测：中文估算更准；分级触发 |
 | P2 | 3.3 经验权重指数衰减 + 单一权威写入 | ⬜ | 单测：衰减不覆盖 boost 结果 |
@@ -206,10 +206,10 @@ app/config.py                                # 新增配置项（见下）
 - 验证：mock LLM 抛异常 → status=failed；mock 返回以 "LLM" 开头的正常文本 → status=completed
 
 **2.5 经验匹配算法**
-- 相似度：标签集合改为 `f"{key}={value}"` 保留语义；引入维度权重（`market_regime` 1.5、`volatility` 1.2、其余 1.0）做加权 Jaccard
+- 相似度：**带维度权重的 Jaccard**（`market_regime` 1.5、`volatility` 1.2、其余 1.0；同值出现在多维取最大权重）。原设想把标签写成 `f"{key}={value}"`，落地前核对数据发现 `Experience.scenario_tags` 存的是**裸值**（「高波动」「管道失败」等，来自复盘 LLM / 异常检测 / 定时任务），改键值形式会让两侧永不相交、匹配全部归零，故改为「按值匹配 + 按维度加权」，权重只作用于命中项贡献
 - 权重调整曲线放宽：`base * (1 + similarity)`（去掉 ×1.5），failure 乘数由 2.0 降为 1.5
-- 冲突检测：把「type 不同」权重从 0.5 降到 0.25，并**要求标签重叠度 ≥ 0.3 才计冲突**（否则直接返回非冲突），消除假冲突
-- `SmartExperienceMatcher` 改模块级单例（`get_smart_experience_matcher()`）
+- 冲突检测：**先过标签重叠度门槛（≥0.3 才计分，否则直接返回非冲突）**，并把「type 不同」权重从 0.5 降到 0.25、重叠贡献从 0.3 提到 0.5，消除「类型相反 + 操作不同 = 0.7」的假冲突
+- `SmartExperienceMatcher` 改模块级单例（`get_smart_experience_matcher()`），6 处调用点同步替换
 - 验证：单测——完全不相干的 failure/success 不再判为冲突；同 regime 场景的冲突仍能识别
 
 ### 阶段 P2 — 健壮性
