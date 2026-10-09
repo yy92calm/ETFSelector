@@ -56,7 +56,7 @@ class TestSentimentPromptConstraints(unittest.TestCase):
     def test_sentiment_service_prompt_constraint(self):
         from app.services.sentiment_service import SentimentService
         self.assertIn("不得将其本身作为投资标的判断依据",
-                      SentimentService.SENTIMENT_ANALYSIS_PROMPT)
+                      SentimentService.SENTIMENT_BATCH_ANALYSIS_PROMPT)
 
     def test_sentiment_analyst_prompt_constraint(self):
         from app.agents.sentiment_analyst import SentimentAnalystAgent

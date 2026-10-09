@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     sentiment_extreme_score: float = -0.5          # 市场情绪均分 ≤ 该值视为负面极端
     sentiment_extreme_negative_count: int = 3      # 涉策略标的负面舆情条数 ≥ 该值视为极端
     sentiment_condition_gap_threshold: float = 3.0 # 条件触发时的换仓门槛（常规为 5.0）
+    sentiment_analysis_batch_size: int = 8         # 舆情LLM情感分析每批条数（1即退回逐条）
 
     # 板块层介入强度（申万一级行业，见 plans/板块轮动到选型方案.md）：
     #   semi_hard（默认）= 低配板块候选排序降级 + 低配板块持仓优先换出 + 超配板块作辩论证据

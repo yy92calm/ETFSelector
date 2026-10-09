@@ -93,11 +93,13 @@ class TestKnownTemplateContent(unittest.TestCase):
 
     def test_sentiment_prompt_keeps_json(self):
         from app.services.sentiment_service import SentimentService
-        rendered = SentimentService.SENTIMENT_ANALYSIS_PROMPT.format(
-            title="标题", content="内容", available_etfs="510300"
+        rendered = SentimentService.SENTIMENT_BATCH_ANALYSIS_PROMPT.format(
+            count=1, news_block="新闻1（编号1）:\n标题: 标题\n内容: 内容",
+            available_etfs="510300"
         )
         self.assertIn('"sentiment_score"', rendered)
         self.assertIn('"related_etfs"', rendered)
+        self.assertIn('"index"', rendered)
         self.assertIn("510300", rendered)
 
     def test_experience_prompt_keeps_json_and_data(self):

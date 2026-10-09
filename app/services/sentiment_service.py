@@ -2,7 +2,6 @@
 
 import logging
 import json
-import re
 from datetime import date, datetime
 from typing import List, Dict
 from openai import OpenAI
@@ -21,21 +20,23 @@ settings = get_settings()
 class SentimentService:
     """舆情数据采集服务 - 直接HTTP采集财经新闻"""
     
-    SENTIMENT_ANALYSIS_PROMPT = """分析以下财经新闻的情感倾向：
+    SENTIMENT_BATCH_ANALYSIS_PROMPT = """分析以下 {count} 条财经新闻的情感倾向，逐条给出结论。
 
-标题: {title}
-内容: {content}
+{news_block}
 
 ⚠️ 可用ETF列表（仅限从中选择）：
 {available_etfs}
 
-请返回JSON格式（不要包含其他文字）：
-{{
-  "sentiment_score": 0.5,
-  "sentiment_label": "positive",
-  "related_etfs": [],
-  "key_factors": ["政策利好"]
-}}
+请返回JSON数组（不要包含其他文字），每个元素对应一条新闻，必须带 index（从1开始，与上面的新闻编号一致）：
+[
+  {{
+    "index": 1,
+    "sentiment_score": 0.5,
+    "sentiment_label": "positive",
+    "related_etfs": [],
+    "key_factors": ["政策利好"]
+  }}
+]
 
 字段说明：
 - sentiment_score: -1到1的情感分数，正面为正数，负面为负数
@@ -85,26 +86,31 @@ class SentimentService:
                 if r[0]
             )
             
-            added_count = 0
+            new_items = []
             for news_item in news_list:
                 title = news_item.get("title", "").strip()
                 if not title or title in existing_titles:
                     continue
                 existing_titles.add(title)
+                new_items.append({**news_item, "title": title})
 
+            # 先批量出情感结论，再入库：LLM 往返次数由条数降为批数
+            analyses = self._analyze_sentiment_batch(new_items, db)
+
+            added_count = 0
+            for news_item, analysis in zip(new_items, analyses):
                 sentiment_data = SentimentData(
                     data_date=collect_date,
                     source=news_item.get("source", "eastmoney"),
                     data_type="news",
-                    title=title,
+                    title=news_item.get("title"),
                     content=news_item.get("content"),
                     publish_time=news_item.get("publish_time"),
                 )
                 db.add(sentiment_data)
                 db.flush()
                 added_count += 1
-                
-                analysis = self._analyze_sentiment(news_item, db)
+
                 if analysis:
                     sentiment_data.sentiment_score = analysis.get("sentiment_score")
                     sentiment_data.sentiment_label = analysis.get("sentiment_label")
@@ -239,14 +245,32 @@ class SentimentService:
         logger.info(f"采集舆情数据: {len(news_list)}条")
         return news_list
     
-    def _analyze_sentiment(self, news_item: Dict, db: Session) -> Dict:
-        """分析舆情情感（LLM优先，失败时回退到关键词匹配）"""
-        if self.llm_client:
-            analysis = self._analyze_sentiment_with_llm(news_item, db)
-            if analysis and analysis.get("sentiment_score") is not None:
-                return analysis
+    def _analyze_sentiment_batch(self, news_items: List[Dict], db: Session) -> List[Dict]:
+        """批量情感分析（LLM优先，失败回退关键词匹配）
 
-        return self._analyze_sentiment_by_keywords(news_item)
+        返回与 news_items 等长、按位对齐的结果列表。
+        逐条调用LLM会让一批新闻产生同等次数的API往返，这里按批合并；
+        LLM 漏答或整批失败的位置退回关键词评分，保证调用方总能拿到逐条结论。
+        """
+        if not news_items:
+            return []
+
+        if not self.llm_client:
+            return [self._analyze_sentiment_by_keywords(item) for item in news_items]
+
+        available_etfs = self._get_available_etfs(db)
+        batch_size = max(1, settings.sentiment_analysis_batch_size)
+        results: List[Dict] = []
+
+        for start in range(0, len(news_items), batch_size):
+            chunk = news_items[start:start + batch_size]
+            analyses = self._analyze_sentiment_batch_with_llm(chunk, available_etfs)
+            for item, analysis in zip(chunk, analyses):
+                if analysis.get("sentiment_score") is None:
+                    analysis = self._analyze_sentiment_by_keywords(item)
+                results.append(analysis)
+
+        return results
 
     def _analyze_sentiment_by_keywords(self, news_item: Dict) -> Dict:
         """关键词匹配情感分析（无需LLM）"""
@@ -281,30 +305,55 @@ class SentimentService:
             "key_factors": factors,
         }
 
-    def _analyze_sentiment_with_llm(self, news_item: Dict, db: Session) -> Dict:
-        """使用LLM分析舆情情感"""
-        available_etfs = self._get_available_etfs(db)
-        
+    def _analyze_sentiment_batch_with_llm(self, news_items: List[Dict],
+                                          available_etfs: str) -> List[Dict]:
+        """一次LLM调用分析一批新闻，返回与入参等长、按位对齐的结果。
+
+        以 LLM 回给的 index 对齐输入编号；index 缺失、越界或重复都视为不可用，
+        对应位置返回 {} 交给上层回退关键词评分，绝不把某条结论错安到另一条上。
+        """
+        news_block = "\n\n".join(
+            f"新闻{i}（编号{i}）:\n标题: {(item.get('title') or '无标题')}\n"
+            f"内容: {(item.get('content') or '无内容')}"
+            for i, item in enumerate(news_items, 1)
+        )
+
         try:
-            prompt = self.SENTIMENT_ANALYSIS_PROMPT.format(
-                title=news_item.get("title", "无标题"),
-                content=news_item.get("content", "无内容"),
-                available_etfs=available_etfs
+            prompt = self.SENTIMENT_BATCH_ANALYSIS_PROMPT.format(
+                count=len(news_items),
+                news_block=news_block,
+                available_etfs=available_etfs,
             )
-            
             response = self.llm_client.chat.completions.create(
                 model=settings.llm_model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=500,
+                max_tokens=min(4000, 200 + 120 * len(news_items)),
             )
-            
-            content = response.choices[0].message.content
-            return self._parse_json_response(content)
-            
+            parsed = self._parse_json_array_response(response.choices[0].message.content)
         except Exception as e:
-            logger.warning(f"LLM情感分析失败: {e}")
-            return {}
+            logger.warning(f"LLM批量情感分析失败，该批回退关键词评分: {e}")
+            return [{} for _ in news_items]
+
+        aligned: List[Dict] = [{} for _ in news_items]
+        for entry in parsed:
+            if not isinstance(entry, dict):
+                continue
+            try:
+                idx = int(entry.get("index"))
+            except (TypeError, ValueError):
+                continue
+            if not 1 <= idx <= len(news_items) or aligned[idx - 1]:
+                continue
+            aligned[idx - 1] = entry
+
+        # 单条成批时模型常省掉 index，此时唯一元素即为该条结论；
+        # 但只放宽到「完全没给 index」，显式给了却越界的说明模型认错条目，不采信
+        if len(news_items) == 1 and not aligned[0] and len(parsed) == 1:
+            entry = parsed[0]
+            if isinstance(entry, dict) and entry.get("index") is None:
+                aligned[0] = entry
+        return aligned
     
     def get_sentiment_summary(self, target_date: date, db: Session) -> Dict:
         """获取指定日期的舆情汇总"""
@@ -430,15 +479,26 @@ class SentimentService:
         logger.info(f"重新分析舆情评分: {count}/{len(items)} 条已更新")
         return count
 
-    def _parse_json_response(self, content: str) -> Dict:
-        """解析JSON响应"""
-        try:
-            match = re.search(r'\{[\s\S]*\}', content)
-            if match:
-                return json.loads(match.group())
-        except:
-            pass
-        return {}
+    def _parse_json_array_response(self, content: str) -> List[Dict]:
+        """从LLM回复中提取JSON数组（容忍包裹的说明文字）"""
+        if not content:
+            return []
+
+        candidates = [content.strip()]
+        start, end = content.find("["), content.rfind("]")
+        if 0 <= start < end:
+            candidates.append(content[start:end + 1])
+
+        for text in candidates:
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(parsed, list):
+                return parsed
+            if isinstance(parsed, dict):
+                return [parsed]
+        return []
 
 _service = None
 
