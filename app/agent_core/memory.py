@@ -7,6 +7,7 @@ from typing import List, Optional
 from sqlalchemy.orm import Session
 
 from app.models.chat import ChatSession, ChatMessage
+from app.agent_core.compaction import RECENT_ROUNDS_AFTER_COMPACTION
 
 logger = logging.getLogger(__name__)
 
@@ -57,8 +58,8 @@ class ChatMemory:
         比「内容相同就丢弃末条」可靠——用户重复问同一句话时不会误删上一条历史。
         """
         if self.get_summary(session_id, db):
-            # 压缩后只保留最近若干轮，避免超长
-            limit = min(limit, 8)
+            # 压缩后只保留最近若干轮，避免超长（轮数与压缩模块的出站视图口径同源）
+            limit = min(limit, RECENT_ROUNDS_AFTER_COMPACTION)
 
         query = db.query(ChatMessage).filter(ChatMessage.session_id == session_id)
         if exclude_message_id:

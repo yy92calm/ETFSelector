@@ -146,6 +146,7 @@ class TestContextSnapshot(unittest.TestCase):
             st.llm_model = "m"
             st.context_window_tokens = 128000
             st.compaction_threshold = 0.8
+            st.context_compaction_light_ratio = 0.55
             st.compaction_min_tokens = 20000
             st.llm_stream_retries = 0
             st.llm_stream_retry_base = 1.0
@@ -171,6 +172,7 @@ class TestContextSnapshot(unittest.TestCase):
             st.llm_model = "m"
             st.context_window_tokens = 128000
             st.compaction_threshold = 0.8
+            st.context_compaction_light_ratio = 0.55
             st.compaction_min_tokens = 20000
             st.llm_stream_retries = 0
             st.llm_stream_retry_base = 1.0
@@ -209,6 +211,7 @@ class TestLoopRetry(unittest.TestCase):
             st.llm_model = "m"
             st.context_window_tokens = 128000
             st.compaction_threshold = 0.8
+            st.context_compaction_light_ratio = 0.55
             st.compaction_min_tokens = 20000
             st.llm_stream_retries = retries
             st.llm_stream_retry_base = 0.01

@@ -199,15 +199,23 @@ class AgentLoop:
         # 加载历史（按主键排除刚保存的当前消息）
         history = self.memory.get_history(session_id, db, exclude_message_id=user_message_id)
 
-        # 上下文压缩：历史过长则生成摘要，出站视图只保留最近轮
-        if compaction.compaction_due(
+        # 上下文压缩：分层触发，轻度只摘要最早一半（近期消息仍以原文呈现），
+        # 逼近窗口上限才全量摘要换取最大空间
+        tier = compaction.compaction_tier(
             compaction.estimate_tokens(history),
             settings.context_window_tokens,
-            settings.compaction_threshold,
             settings.compaction_min_tokens,
-        ):
+            settings.context_compaction_light_ratio,
+            settings.compaction_threshold,
+        )
+        if tier:
             yield {"type": "compacting", "data": {"session_id": session_id}}
-            summary = compaction.summarize(history, lambda msgs: self._complete_text(msgs, client, model))
+            summary = compaction.summarize(
+                history,
+                lambda msgs: self._complete_text(msgs, client, model),
+                tier=tier,
+                prior_summary=self.memory.get_summary(session_id, db),
+            )
             if summary:
                 self.memory.save_summary(session_id, summary, db)
                 history = self.memory.get_history(session_id, db,

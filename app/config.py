@@ -32,7 +32,10 @@ class Settings(BaseSettings):
 
     # 上下文压缩
     context_window_tokens: int = 128000
+    # 重度压缩触发比例（全量摘要，换取最大空间）
     compaction_threshold: float = 0.8
+    # 轻度压缩触发比例（只摘要最早一半消息，近期仍以原文呈现）
+    context_compaction_light_ratio: float = 0.55
     compaction_min_tokens: int = 20000
 
     # 数据源容错（efinance 防封）

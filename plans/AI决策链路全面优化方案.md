@@ -16,7 +16,7 @@
 | P1 | 2.4 run_autonomous 状态判定 bug | ✅ | 6 条单测：以 "LLM" 开头的正常结论→completed；异常/跑满轮数无结论→failed；按主键排除当前消息 |
 | P1 | 2.5 经验匹配带权相似度 + 冲突检测修正 | ✅ | 11 条单测：不相关 failure/success 不再判冲突；同场景对立结论仍判冲突；regime 命中权重高于普通因素 |
 | P2 | 3.1 管道阶段关键路径阻断 | ✅ | 15 条单测：quotes 失败 → rebalance/market_scan/regime/rotation/autonomous 全部 skipped_dependency 不执行；检查点不标 completed 且未成功阶段不进 done_stages；失败经验只对真失败阶段写；LLM 返回 error 转降级；双路径失败抛 [failed_both_paths] |
-| P2 | 3.2 上下文压缩 Token 估算 + 分层压缩 | ⬜ | 单测：中文估算更准；分级触发 |
+| P2 | 3.2 上下文压缩 Token 估算 + 分层压缩 | ✅ | `TestCompaction` 15 条（新增 10）：同一批中文消息新估算 2035 > 旧口径 800（x2.54；旧口径需约 41 万中文字符才触发 0.8×128k 重度压缩，新口径约 15.4 万）；档位边界 70399/70400/102400 → None/light/heavy；tool_calls 计入；摘要预算随规模伸缩；trim 保留最近 4 条 assistant；loop 实测选中 light 档 |
 | P2 | 3.3 经验权重指数衰减 + 单一权威写入 | ⬜ | 单测：衰减不覆盖 boost 结果 |
 | P2 | 3.4 辩论降级显式标记 debate_degraded | ⬜ | 单测：LLM 失败路径带标记 |
 | P2 | 3.5 N+1 查询清理（最短持有期/建议校验/禁入缓存） | ⬜ | 单测：批量查询生效 |
@@ -247,6 +247,16 @@ app/config.py                                # 新增配置项（见下）
 - `_trim_fallback` 同时保留最近 4 条 assistant 消息（不丢推理过程）
 - 验证：单测——同一批中文消息，新估算 > 旧估算；分层阈值触发正确
 
+实施记录（2026-10-10）：
+- 估算改 `_text_tokens`：CJK 区间（含日文假名/扩展A/兼容表意）按 1.5 字符/token，其余按 4 字符/token，逐条消息累加后取整；`tool_calls` 计入 `function.name` + `function.arguments`（ReAct 一轮的 JSON 参数常常比正文长，漏算会让压缩永不触发）。
+- `compaction_due()` 删除，改为 `compaction_tier() -> "heavy" | "light" | None`：先判 `min_tokens` 与窗口有效性（窗口 ≤0 直接不压），再按 ratio 先重后轻。**复用既有 `compaction_threshold` 作重度线**（默认同为 0.8），只新增 `context_compaction_light_ratio`（0.55），避免出现两个同义旋钮。
+- 轻度档只摘要 `messages[:len//2]`，重度全量。代价是「未被摘要覆盖、又落在出站窗口外」的中间段会随截断一并丢弃（canonical 行不动，只是不再进模型视野）——这是成本换空间的取舍，按方案设计执行。
+- 新增 `prior_summary` 参数并由 loop 传入既有摘要：摘要是压缩后唯一的历史载体，旧实现每次 `save_summary` 整份覆盖，多轮压缩会把早期结论丢光；轻度/增量压缩让这个缺陷更频繁，故把旧摘要作为 `[已有摘要]` 并入新的摘要输入。降级 trim 同样拼接旧摘要。
+- 摘要预算 `summary_budget()` = `min(600, max(200, 原文字符 // 5))`，通过 `{budget}` 占位符进提示词（小对话不必写 600 字，大对话不能只写 200 字）。
+- `_trim_fallback` 除最近 10 条 user 外，再保留最近 4 条 assistant（查过什么/得出什么结论），否则降级后 LLM 会重复劳动。
+- `memory.get_history()` 压缩后的 `min(limit, 8)` 改引用 `RECENT_ROUNDS_AFTER_COMPACTION`，与压缩模块出站口径同源（该常量此前是死值）。
+- 本地库无 `chat_messages` 表，倍率用合成中文会话实测（20 轮含工具调用：旧 800 → 新 2035）。
+
 **3.3 经验权重单一权威**
 - `Experience` 增 `initial_weight` 列（`init_db` 内 ALTER TABLE 兼容迁移，默认 1.0）
 - 衰减改指数：`weight = max(0.3, initial_weight * exp(-0.1 * months))`
@@ -297,7 +307,7 @@ app/config.py                                # 新增配置项（见下）
 | `sentiment_analysis_batch_size` | 8 | 舆情 LLM 批量分析每批条数 |
 | `agent_parallel_max_workers` | 4 | 辩论 Agent 并行线程数 |
 | `context_compaction_light_ratio` | 0.55 | 轻度压缩触发比例 |
-| `context_compaction_heavy_ratio` | 0.80 | 重度压缩触发比例 |
+| ~~`context_compaction_heavy_ratio`~~ | 0.80 | **未新增**：重度线复用既有 `compaction_threshold`（默认同为 0.8），避免两个同义旋钮 |
 | `experience_weight_decay_rate` | 0.1 | 经验权重指数衰减率（每月） |
 
 ## 验证策略

@@ -7,9 +7,11 @@ import unittest
 from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 import json
+import re
 import threading
 import time
 
+from app.agent_core import compaction as compaction_module
 from app.agent_core.permissions import Mode, PermissionEngine
 from app.agent_core.approvals import (
     ApprovalStore,
@@ -17,7 +19,10 @@ from app.agent_core.approvals import (
     APPROVAL_OUTCOME_ALWAYS,
     APPROVAL_OUTCOME_DENY,
 )
-from app.agent_core.compaction import estimate_tokens, compaction_due, summarize
+from app.agent_core.compaction import (estimate_tokens, compaction_tier, summarize,
+                                       summary_budget, _trim_fallback,
+                                       SUMMARY_BUDGET_MIN, SUMMARY_BUDGET_MAX,
+                                       TRIM_KEEP_USER_MESSAGES, TRIM_KEEP_ASSISTANT_MESSAGES)
 from app.agent_core.memory import ChatMemory
 
 
@@ -56,6 +61,7 @@ def iter_events(loop, user_message, session_id, db, stream=None):
         st.llm_model = "mock-model"
         st.context_window_tokens = 128000
         st.compaction_threshold = 0.8
+        st.context_compaction_light_ratio = 0.55
         st.compaction_min_tokens = 20000
         st.llm_stream_retries = 0  # 测试关闭流式重试，保持确定性
         st.llm_stream_retry_base = 1.0
@@ -245,10 +251,75 @@ class TestCompaction(unittest.TestCase):
     def test_estimate_tokens(self):
         self.assertEqual(estimate_tokens([{"role": "user", "content": "a" * 4000}]), 1000)
 
-    def test_compaction_due(self):
-        self.assertFalse(compaction_due(1000, 128000, 0.8, 20000))   # 低于 min_tokens
-        self.assertTrue(compaction_due(102400, 128000, 0.8, 20000))  # 达到阈值
-        self.assertFalse(compaction_due(102400, 128000, 0.8, 200000))  # 未达阈值
+    def test_cjk_messages_are_estimated_higher_than_chars_div_4(self):
+        """同一批中文消息：新估算必须高于旧的「字符/4」口径，否则压缩永远来不及"""
+        text = "请把沪深300与中证白酒的近5日动量对比一下，并给出换仓建议，注意最短持有期5天。"
+        legacy = len(text) // 4
+        self.assertGreater(estimate_tokens([{"role": "user", "content": text}]), legacy)
+
+    def test_tool_call_arguments_are_counted(self):
+        """ReAct 一轮的 arguments 常常比正文长，漏算会让估算系统性偏低"""
+        pure_text = estimate_tokens([{"role": "assistant", "content": ""}])
+        with_calls = estimate_tokens([
+            {"role": "assistant", "content": "",
+             "tool_calls": [{"id": "1", "type": "function",
+                             "function": {"name": "run_multi_agent_analysis",
+                                          "arguments": json.dumps({"codes": ["512880"] * 8})}}]},
+        ])
+        self.assertEqual(pure_text, 0)
+        self.assertGreater(with_calls, 0)
+
+    def test_compaction_tier_boundaries(self):
+        self.assertIsNone(compaction_tier(1000, 128000, 20000, 0.55, 0.8))      # 低于 min_tokens
+        self.assertIsNone(compaction_tier(70399, 128000, 20000, 0.55, 0.8))     # 未到轻度线
+        self.assertEqual(compaction_tier(70400, 128000, 20000, 0.55, 0.8), "light")
+        self.assertEqual(compaction_tier(102400, 128000, 20000, 0.55, 0.8), "heavy")
+        self.assertIsNone(compaction_tier(102400, 128000, 200000, 0.55, 0.8))   # min_tokens 更高
+        self.assertIsNone(compaction_tier(102400, 0, 20000, 0.55, 0.8))         # 窗口配置异常
+
+    def test_summary_budget_scales_with_history(self):
+        self.assertEqual(summary_budget("x" * 100), SUMMARY_BUDGET_MIN)
+        self.assertEqual(summary_budget("x" * 1500), 300)
+        self.assertEqual(summary_budget("x" * 100000), SUMMARY_BUDGET_MAX)
+
+    def test_summarize_prompt_carries_dynamic_budget(self):
+        prompts = []
+
+        def capture(msgs):
+            prompts.append(msgs[1]["content"])
+            return "摘要"
+
+        summarize([{"role": "user", "content": "短" * 100}], capture)
+        summarize([{"role": "user", "content": "长" * 2000}], capture)
+        budgets = [int(re.search(r"不超过(\d+)字", p).group(1)) for p in prompts]
+        self.assertEqual(budgets[0], SUMMARY_BUDGET_MIN)   # 小对话不必写长摘要
+        self.assertGreater(budgets[1], budgets[0])         # 大对话预算随之增大
+
+    def test_light_tier_summarizes_only_earliest_half(self):
+        bodies = []
+
+        def capture(msgs):
+            bodies.append(msgs[1]["content"])
+            return "摘要"
+
+        msgs = [{"role": "user", "content": f"第{i}条"} for i in range(6)]
+        summarize(msgs, capture, tier="light")
+        self.assertIn("第0条", bodies[0])
+        self.assertIn("第2条", bodies[0])
+        self.assertNotIn("第3条", bodies[0])   # 后半段保持原文，不进摘要
+
+        bodies.clear()
+        summarize(msgs, capture, tier="heavy")
+        self.assertIn("第5条", bodies[0])      # 重度全量摘要
+
+    def test_prior_summary_is_merged_into_new_summary(self):
+        """已有摘要必须续写进新摘要，否则每轮压缩都丢历史（摘要是唯一的历史载体）"""
+        bodies = []
+        summarize([{"role": "user", "content": "新话题"}],
+                  lambda msgs: (bodies.append(msgs[1]["content"]), "摘要")[1],
+                  prior_summary="早前讨论了白酒仓位")
+        self.assertIn("早前讨论了白酒仓位", bodies[0])
+        self.assertIn("新话题", bodies[0])
 
     def test_summarize_ok(self):
         s = summarize([{"role": "user", "content": "长文本" * 10}], lambda msgs: "结构化摘要")
@@ -260,6 +331,56 @@ class TestCompaction(unittest.TestCase):
 
         s = summarize([{"role": "user", "content": "问题"}], boom)
         self.assertTrue(s)
+
+    def test_summarize_fallback_keeps_prior_summary(self):
+        def boom(msgs):
+            raise RuntimeError("llm down")
+
+        s = summarize([{"role": "user", "content": "问题"}], boom, prior_summary="既有摘要")
+        self.assertIn("既有摘要", s)
+
+    def test_trim_fallback_keeps_recent_assistant_actions(self):
+        """降级 trim 也要保留最近助手结论，否则 LLM 会重复查同样的东西"""
+        msgs = [{"role": "user", "content": f"u{i}"} for i in range(20)]
+        msgs += [{"role": "assistant", "content": f"a{i}"} for i in range(10)]
+        text = _trim_fallback(msgs)
+        self.assertEqual(text.count("- 用户: u"), TRIM_KEEP_USER_MESSAGES)
+        self.assertEqual(text.count("- 助手: a"), TRIM_KEEP_ASSISTANT_MESSAGES)
+        self.assertIn("最近的推理与结论", text)
+        self.assertIn("a9", text)
+        self.assertNotIn("a5", text)
+
+    def test_loop_picks_light_tier_below_heavy_ratio(self):
+        db = make_db()
+        loop = make_loop(db)
+        sid = loop.memory.get_or_create_session("c3", db)
+        for _ in range(20):
+            loop.memory.save_message(sid, "user", "中" * 360, db=db)
+            loop.memory.save_message(sid, "assistant", "答" * 360, db=db)
+
+        captured = {}
+
+        def fake_summarize(msgs, complete, tier="heavy", prior_summary=""):
+            captured["tier"] = tier
+            return "摘要内容"
+
+        with patch("app.agent_core.loop.settings") as st, \
+             patch("app.agent_core.provider.stream_completion") as sc, \
+             patch.object(compaction_module, "summarize", side_effect=fake_summarize):
+            st.llm_model = "m"
+            # 40 条 × 360 汉字 ≈ 9600 token，窗口 16000 → 0.6 介于轻度与重度之间
+            st.context_window_tokens = 16000
+            st.compaction_threshold = 0.8
+            st.context_compaction_light_ratio = 0.55
+            st.compaction_min_tokens = 1000
+            st.llm_stream_retries = 0
+            st.llm_stream_retry_base = 1.0
+            sc.return_value = iter(text_stream("好"))
+            events = list(loop._iter_events("你好", "c3", db))
+
+        self.assertEqual(captured["tier"], "light")
+        self.assertIn("compacted", [ev["type"] for ev in events])
+        self.assertEqual(loop.memory.get_summary("c3", db), "摘要内容")
 
     def test_get_history_outbound_view(self):
         """有摘要时：出站视图只保留最近消息且不含摘要块（摘要由快照消息承载），canonical 历史不动"""
@@ -294,6 +415,7 @@ class TestCompaction(unittest.TestCase):
             st.llm_model = "mock-model"
             st.context_window_tokens = 1000
             st.compaction_threshold = 0.5
+            st.context_compaction_light_ratio = 0.3
             st.compaction_min_tokens = 100
             st.llm_stream_retries = 0
             st.llm_stream_retry_base = 1.0
@@ -412,6 +534,7 @@ class TestProvider(unittest.TestCase):
             st.llm_model = "mock-model"
             st.context_window_tokens = 128000
             st.compaction_threshold = 0.8
+            st.context_compaction_light_ratio = 0.55
             st.compaction_min_tokens = 20000
             st.llm_stream_retries = 0
             st.llm_stream_retry_base = 1.0
