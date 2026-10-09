@@ -1,12 +1,13 @@
 """全市场ETF量化指标扫描服务（纯计算，无LLM）"""
 
 import logging
-from datetime import date
-from typing import Dict, List
+from collections import defaultdict
+from datetime import date, timedelta
+from typing import Dict, List, NamedTuple, Optional
 
 import numpy as np
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 
 from app.models.etf import ETFBasic, ETFQuotation, ETFDailyIndicator
 from app.models.factor_performance import FactorPerformance
@@ -24,13 +25,26 @@ WEIGHTS = {
 MIN_AMOUNT_5D = 5_000_000
 MIN_HISTORY_DAYS = 25
 
+# 每只ETF取最近多少条行情参与计算（与 _compute_indicator 的 limit 一致）
+QUOTES_PER_ETF = 30
+
+# 单次扫描的日历窗口：需覆盖 30 个交易日（含长假），不足者回退逐只补查
+QUOTES_LOOKBACK_DAYS = 90
+
+
+class _Quote(NamedTuple):
+    """行情的轻量投影，字段与 _compute_indicator 使用的属性对齐"""
+    trade_date: date
+    close_price: float
+    volume: float
+    amount: float
+
 
 class MarketScannerService:
     """每个工作日对全量ETF计算量化指标并存库"""
 
     def scan_all(self, scan_date: date, db: Session) -> Dict:
-        from sqlalchemy import func as sa_func
-        actual_date = db.query(sa_func.max(ETFQuotation.trade_date)).scalar()
+        actual_date = db.query(func.max(ETFQuotation.trade_date)).scalar()
         if not actual_date:
             return {"status": "no_data", "count": 0}
         scan_date = actual_date
@@ -46,9 +60,18 @@ class MarketScannerService:
         codes = [r[0] for r in all_etfs]
         logger.info(f"[Scanner] 开始扫描 {len(codes)} 只ETF ({scan_date})")
 
+        # 一次查询取回全部行情，避免逐只ETF各查一次（N+1）
+        quotes_map = self._load_quotes_map(codes, scan_date, db)
+        # 自适应权重只需解析一次，不在每只ETF的循环里重复查库
+        weights = self._resolve_weights(db)
+
         results = []
         for code in codes:
-            indicator = self._compute_indicator(code, scan_date, db)
+            indicator = self._compute_indicator(
+                code, scan_date, db,
+                quotes=quotes_map.get(code, []),
+                weights=weights,
+            )
             if indicator:
                 results.append(indicator)
 
@@ -92,6 +115,65 @@ class MarketScannerService:
         logger.info(f"[Scanner] 完成: {len(results)}只ETF指标已存库")
         return {"status": "ok", "count": len(results)}
 
+    def _load_quotes_map(self, codes: List[str], scan_date: date, db: Session) -> Dict[str, List[_Quote]]:
+        """一次查询取回所有ETF在 scan_date 之前(含)的最近 QUOTES_PER_ETF 条行情。
+
+        返回 {etf_code: [行情按日期升序]}。做法是先按日历窗口单次扫描（比逐只查询快，
+        且不构造 ORM 对象），再对窗口内不足 30 条的稀疏标的回退逐只补查，
+        使结果与 `order_by(desc).limit(30)` 的逐只语义完全一致。
+        """
+        if not codes:
+            return {}
+
+        cutoff = scan_date - timedelta(days=QUOTES_LOOKBACK_DAYS)
+        rows = db.execute(
+            select(
+                ETFQuotation.etf_code, ETFQuotation.trade_date,
+                ETFQuotation.close_price, ETFQuotation.volume, ETFQuotation.amount,
+            )
+            .where(ETFQuotation.trade_date <= scan_date)
+            .where(ETFQuotation.trade_date >= cutoff)
+            .where(ETFQuotation.etf_code.in_(codes))
+            .order_by(ETFQuotation.etf_code.asc(), ETFQuotation.trade_date.desc())
+        ).all()
+
+        grouped: Dict[str, List[_Quote]] = defaultdict(list)
+        for code, trade_date, close_price, volume, amount in rows:
+            bucket = grouped[code]
+            if len(bucket) < QUOTES_PER_ETF:
+                bucket.append(_Quote(trade_date, close_price, volume, amount))
+
+        # 窗口内没凑够 30 条的代码，回退逐只查询取真正的最近 30 条
+        for code in codes:
+            if len(grouped.get(code, [])) < QUOTES_PER_ETF:
+                full = self._load_quotes_for_code(code, scan_date, db)
+                if len(full) > len(grouped.get(code, [])):
+                    grouped[code] = full
+
+        # 以上按日期降序收集，翻转为升序供后续计算
+        for bucket in grouped.values():
+            bucket.reverse()
+        return grouped
+
+    def _load_quotes_for_code(self, etf_code: str, scan_date: date, db: Session) -> List[_Quote]:
+        """单只ETF最近 QUOTES_PER_ETF 条行情（日期降序）"""
+        rows = db.query(ETFQuotation).filter(
+            ETFQuotation.etf_code == etf_code,
+            ETFQuotation.trade_date <= scan_date,
+        ).order_by(ETFQuotation.trade_date.desc()).limit(QUOTES_PER_ETF).all()
+        return [_Quote(r.trade_date, r.close_price, r.volume, r.amount) for r in rows]
+
+    def _resolve_weights(self, db: Session) -> Dict[str, float]:
+        """动态权重：优先使用IC自适应权重，无数据或异常时退回固定权重"""
+        try:
+            from app.services.factor_performance_service import get_factor_performance_service
+            adaptive = get_factor_performance_service().get_adaptive_weights(db)
+            if adaptive:
+                return adaptive
+        except Exception as e:
+            logger.warning(f"[Scanner] 自适应权重获取失败，使用固定权重: {e}")
+        return WEIGHTS
+
     def get_top_n(self, scan_date: date, n: int, db: Session) -> List[Dict]:
         rows = db.query(ETFDailyIndicator).filter(
             ETFDailyIndicator.trade_date == scan_date
@@ -127,16 +209,21 @@ class MarketScannerService:
             "trend_strength": r.trend_strength,
         } for r in rows]
 
-    def _compute_indicator(self, etf_code: str, scan_date: date, db: Session) -> Dict | None:
-        quotes = db.query(ETFQuotation).filter(
-            ETFQuotation.etf_code == etf_code,
-            ETFQuotation.trade_date <= scan_date,
-        ).order_by(ETFQuotation.trade_date.desc()).limit(30).all()
+    def _compute_indicator(self, etf_code: str, scan_date: date, db: Session,
+                           quotes: Optional[List[_Quote]] = None,
+                           weights: Optional[Dict[str, float]] = None) -> Dict | None:
+        """计算单只ETF的量化指标。
+
+        quotes / weights 可由调用方预先批量准备好传入（scan_all 走这条路径）；
+        未传时各自查库，保持单只回填调用（scripts/backfill_sparse_indicators.py）可用。
+        """
+        if quotes is None:
+            quotes = self._load_quotes_for_code(etf_code, scan_date, db)
+            quotes.reverse()
 
         if len(quotes) < MIN_HISTORY_DAYS:
             return None
 
-        quotes.reverse()
         prices = [q.close_price for q in quotes]
         volumes = [q.volume for q in quotes]
         amounts = [q.amount for q in quotes]
@@ -183,15 +270,9 @@ class MarketScannerService:
             "capital_flow": flow_score,
         }
 
-        # 动态权重：优先使用IC自适应权重，无数据时退回固定权重
-        weights = WEIGHTS
-        try:
-            from app.services.factor_performance_service import get_factor_performance_service
-            adaptive = get_factor_performance_service().get_adaptive_weights(db)
-            if adaptive:
-                weights = adaptive
-        except Exception:
-            pass
+        # 动态权重：调用方已解析则直接复用，否则查库
+        if weights is None:
+            weights = self._resolve_weights(db)
 
         composite = (
             weights["momentum"] * factor_scores["momentum"]
