@@ -32,8 +32,8 @@ class ChatMemory:
 
     def save_message(self, session_id: str, role: str, content: Optional[str],
                      tool_calls: Optional[list] = None, tool_results: Optional[list] = None,
-                     usage: Optional[dict] = None, db: Session = None):
-        """保存一条消息"""
+                     usage: Optional[dict] = None, db: Session = None) -> int:
+        """保存一条消息，返回消息 id（调用方据此从历史中精确排除）"""
         msg = ChatMessage(
             session_id=session_id,
             role=role,
@@ -44,25 +44,28 @@ class ChatMemory:
         )
         db.add(msg)
         db.commit()
+        return msg.id
 
-    def get_history(self, session_id: str, db: Session, limit: int = MAX_HISTORY_ROUNDS) -> List[dict]:
+    def get_history(self, session_id: str, db: Session, limit: int = MAX_HISTORY_ROUNDS,
+                    exclude_message_id: Optional[int] = None) -> List[dict]:
         """获取对话历史（OpenAI messages 格式，只含真实消息）
 
         压缩摘要不在此注入：由 loop 拼入每轮的「系统状态快照」user 消息，
         避免消息列表中段出现 system role（部分 provider 不接受）。
         有摘要时出站视图只保留最近若干轮，canonical 历史不变。
+        exclude_message_id 按主键排除单条消息（当前刚写入的用户消息），
+        比「内容相同就丢弃末条」可靠——用户重复问同一句话时不会误删上一条历史。
         """
         if self.get_summary(session_id, db):
             # 压缩后只保留最近若干轮，避免超长
             limit = min(limit, 8)
 
-        messages = (
-            db.query(ChatMessage)
-            .filter(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at.desc())
+        query = db.query(ChatMessage).filter(ChatMessage.session_id == session_id)
+        if exclude_message_id:
+            query = query.filter(ChatMessage.id != exclude_message_id)
+        messages = query.order_by(ChatMessage.created_at.desc()) \
             .limit(limit * 3)  # 每轮可能有 user + assistant + tool 多条
-            .all()
-        )
+        messages = messages.all()
         messages.reverse()
 
         history = []

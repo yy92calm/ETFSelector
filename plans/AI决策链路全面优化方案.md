@@ -13,7 +13,7 @@
 | P1 | 2.1 上下文补全（持仓盈亏/近期交易/大盘指数/仓位） | ⬜ | 单测：快照含新 section；缺失数据不崩 |
 | P1 | 2.2 轮动辩论裁决官输入去重 | ⬜ | 单测：裁决官 prompt 不含全量候选池 |
 | P1 | 2.3 工具 Schema 类型支持（Optional/Literal/list[dict]） | ⬜ | 单测：swaps 生成正确 nested schema |
-| P1 | 2.4 run_autonomous 状态判定 bug | ⬜ | 单测：LLM 失败→failed，正常→completed |
+| P1 | 2.4 run_autonomous 状态判定 bug | ✅ | 6 条单测：以 "LLM" 开头的正常结论→completed；异常/跑满轮数无结论→failed；按主键排除当前消息 |
 | P1 | 2.5 经验匹配带权相似度 + 冲突检测修正 | ⬜ | 单测：不相关 failure/success 不判冲突 |
 | P2 | 3.1 管道阶段关键路径阻断 | ⬜ | 单测：quotes 失败 → market_scan 标记跳过 |
 | P2 | 3.2 上下文压缩 Token 估算 + 分层压缩 | ⬜ | 单测：中文估算更准；分级触发 |

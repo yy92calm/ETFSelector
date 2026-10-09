@@ -190,17 +190,14 @@ class AgentLoop:
             return
 
         # 保存用户消息
-        self.memory.save_message(session_id, "user", user_message, db=db)
+        user_message_id = self.memory.save_message(session_id, "user", user_message, db=db)
 
         # 构建消息列表（system prompt 只含静态身份与规则，跨轮字节稳定）
         skills_summary = self._build_skills_summary()
         system_msg = SYSTEM_PROMPT.format(skills=skills_summary)
 
-        # 加载历史
-        history = self.memory.get_history(session_id, db)
-        # 排除刚保存的最后一条（就是当前 user_message）
-        if history and history[-1].get("content") == user_message:
-            history = history[:-1]
+        # 加载历史（按主键排除刚保存的当前消息）
+        history = self.memory.get_history(session_id, db, exclude_message_id=user_message_id)
 
         # 上下文压缩：历史过长则生成摘要，出站视图只保留最近轮
         if compaction.compaction_due(
@@ -213,9 +210,8 @@ class AgentLoop:
             summary = compaction.summarize(history, lambda msgs: self._complete_text(msgs, client, model))
             if summary:
                 self.memory.save_summary(session_id, summary, db)
-                history = self.memory.get_history(session_id, db)
-                if history and history[-1].get("content") == user_message:
-                    history = history[:-1]
+                history = self.memory.get_history(session_id, db,
+                                                  exclude_message_id=user_message_id)
             yield {"type": "compacted", "data": {"session_id": session_id}}
 
         messages = [{"role": "system", "content": system_msg}]
@@ -595,8 +591,10 @@ class AgentLoop:
                     "result": result if isinstance(result, dict) else {},
                 })
 
-        # 记录自主决策日志
-        status = "completed" if not final_content.startswith("LLM") else "failed"
+        # 记录自主决策日志：LLM 异常已在上面按 failed 落库并返回，
+        # 这里 final_content 为空说明跑满 MAX_TOOL_ROUNDS 仍未给出结论，同样记 failed；
+        # 不能用回复文本前缀判失败（正常回答以 "LLM" 开头就会被误判）
+        status = "completed" if final_content else "failed"
         self._log_action(trigger, final_content, tool_calls_made, status, db)
 
         return AgentResponse(content=final_content, tool_calls_made=tool_calls_made)
