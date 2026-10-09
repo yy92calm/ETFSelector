@@ -1,10 +1,12 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.config import get_settings
+from app.db.database import SessionLocal
 from app.agents.technical_analyst import TechnicalAnalystAgent
 from app.agents.sentiment_analyst import SentimentAnalystAgent
 from app.agents.market_analyst import MarketAnalystAgent
@@ -37,6 +39,40 @@ class Orchestrator:
         self.drawdown_attribution = DrawdownAttributionAgent()
         self.rebalance_timing = RebalanceTimingAgent()
 
+    def _run_parallel(self, tasks: List[Tuple[str, Callable[[Session], Dict]]]) -> Dict[str, Dict]:
+        """并行执行互不依赖的 Agent 调用，返回 {任务名: 结果}。
+
+        每个任务使用独立 Session —— SQLAlchemy 的 Session 不能跨线程共享，
+        直接把主管道 session 交给工作线程会产生并发读写问题。
+        单任务异常不抛穿，转成 {"error": ...} 以保持原有的容错语义。
+        """
+        def invoke(fn: Callable[[Session], Dict]) -> Dict:
+            session = SessionLocal()
+            try:
+                return fn(session)
+            except Exception as e:
+                logger.warning(f"[Orchestrator] 并行Agent执行异常: {e}")
+                return {"error": str(e)}
+            finally:
+                session.close()
+
+        if len(tasks) == 1:
+            name, fn = tasks[0]
+            return {name: invoke(fn)}
+
+        results: Dict[str, Dict] = {}
+        workers = min(settings.agent_parallel_max_workers, len(tasks))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="agent") as pool:
+            futures = {pool.submit(invoke, fn): name for name, fn in tasks}
+            for future in as_completed(futures):
+                results[futures[future]] = future.result()
+        return results
+
+    @staticmethod
+    def _warn_if_error(label: str, report: Dict) -> None:
+        if isinstance(report, dict) and "error" in report:
+            logger.warning(f"[Orchestrator] {label}失败: {report.get('error')}")
+
     def analyze(self, strategy_id: int, analysis_date: date, db: Session) -> Dict:
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy:
@@ -54,43 +90,50 @@ class Orchestrator:
         data_lock_date = self._compute_lock_date(etf_codes, analysis_date, db)
         data_date_str = data_lock_date.isoformat() if data_lock_date else "未知"
 
-        # 阶段1: 数据消化
-        technical_report = self.technical_analyst.analyze(etf_codes, db, lock_date=data_lock_date)
-        if "error" in technical_report:
-            logger.warning(f"[Orchestrator] 技术分析师失败: {technical_report.get('error')}")
+        # 阶段1 + 阶段1.5: 数据消化与增强分析（五个Agent互不依赖，并行以省串行等待）
+        stage1 = self._run_parallel([
+            ("technical", lambda s: self.technical_analyst.analyze(
+                etf_codes, s, lock_date=data_lock_date)),
+            ("sentiment", lambda s: self.sentiment_analyst.analyze(analysis_date, s)),
+            ("macro", lambda s: self.macro_cycle.analyze(etf_codes, s)),
+            ("cross_asset", lambda s: self.cross_asset.analyze(etf_codes, s)),
+            ("volatility", lambda s: self.volatility_regime.analyze(etf_codes, s)),
+        ])
+        technical_report = stage1["technical"]
+        sentiment_report = stage1["sentiment"]
+        macro_report = stage1["macro"]
+        cross_asset_report = stage1["cross_asset"]
+        vol_report = stage1["volatility"]
+        self._warn_if_error("技术分析师", technical_report)
+        self._warn_if_error("情绪分析师", sentiment_report)
+        self._warn_if_error("宏观周期分析", macro_report)
+        self._warn_if_error("跨资产分析", cross_asset_report)
+        self._warn_if_error("波动率体制分析", vol_report)
 
-        sentiment_report = self.sentiment_analyst.analyze(analysis_date, db)
-        if "error" in sentiment_report:
-            logger.warning(f"[Orchestrator] 情绪分析师失败: {sentiment_report.get('error')}")
-
-        # 阶段1.5: 宏观+跨资产+波动率（增强分析层）
-        macro_report = self.macro_cycle.analyze(etf_codes, db)
-        if "error" in macro_report:
-            logger.warning(f"[Orchestrator] 宏观周期分析失败: {macro_report.get('error')}")
-
-        cross_asset_report = self.cross_asset.analyze(etf_codes, db)
-        if "error" in cross_asset_report:
-            logger.warning(f"[Orchestrator] 跨资产分析失败: {cross_asset_report.get('error')}")
-
-        vol_report = self.volatility_regime.analyze(etf_codes, db)
-        if "error" in vol_report:
-            logger.warning(f"[Orchestrator] 波动率体制分析失败: {vol_report.get('error')}")
-
-        # 阶段2: 多空辩论（方向2: 开放工具取数；方向3: 喂入宏观/跨资产/波动率）
-        data_kwargs = {
+        # 阶段2 多空辩论（方向2: 开放工具取数；方向3: 喂入宏观/跨资产/波动率）
+        # 与阶段4 辅助决策一并并行：主题发现与再平衡时机只进最终汇总，不参与裁决，无前后依赖
+        debate_kwargs = {
             "macro_report": macro_report,
             "cross_asset_report": cross_asset_report,
             "volatility_report": vol_report,
             "data_date": data_date_str,
-            "db": db,
         }
-        bull_report = self.bull_researcher.analyze(technical_report, sentiment_report, **data_kwargs)
-        if "error" in bull_report:
-            logger.warning(f"[Orchestrator] 多头研究员失败: {bull_report.get('error')}")
-
-        bear_report = self.bear_researcher.analyze(technical_report, sentiment_report, **data_kwargs)
-        if "error" in bear_report:
-            logger.warning(f"[Orchestrator] 空头研究员失败: {bear_report.get('error')}")
+        stage2 = self._run_parallel([
+            ("bull", lambda s: self.bull_researcher.analyze(
+                technical_report, sentiment_report, db=s, **debate_kwargs)),
+            ("bear", lambda s: self.bear_researcher.analyze(
+                technical_report, sentiment_report, db=s, **debate_kwargs)),
+            ("theme", lambda s: self.theme_discovery.analyze(etf_codes, s)),
+            ("rebalance", lambda s: self.rebalance_timing.analyze(strategy_id, s)),
+        ])
+        bull_report = stage2["bull"]
+        bear_report = stage2["bear"]
+        theme_report = stage2["theme"]
+        rebalance_report = stage2["rebalance"]
+        self._warn_if_error("多头研究员", bull_report)
+        self._warn_if_error("空头研究员", bear_report)
+        self._warn_if_error("主题发现", theme_report)
+        self._warn_if_error("再平衡时机判断", rebalance_report)
 
         # 月收益目标进度（供裁决Agent提示词使用）
         monthly_status = None
@@ -113,15 +156,6 @@ class Orchestrator:
             bear_report=bear_report,
             monthly_target=(monthly_status or {}).get("text", ""),
         )
-
-        # 阶段4: 辅助决策（主题发现 + 再平衡时机）
-        theme_report = self.theme_discovery.analyze(etf_codes, db)
-        if "error" in theme_report:
-            logger.warning(f"[Orchestrator] 主题发现失败: {theme_report.get('error')}")
-
-        rebalance_report = self.rebalance_timing.analyze(strategy_id, db)
-        if "error" in rebalance_report:
-            logger.warning(f"[Orchestrator] 再平衡时机判断失败: {rebalance_report.get('error')}")
 
         combined = {
             "analysis_date": analysis_date.isoformat(),

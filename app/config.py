@@ -66,6 +66,7 @@ class Settings(BaseSettings):
 
     # 多Agent辩论
     debate_max_data_lag_days: int = 3  # 辩论前允许的数据最大滞后自然日，超过则自动同步
+    agent_parallel_max_workers: int = 4  # 互不依赖的Agent并行度上限（每个任务用独立Session）
 
     # 定时任务（每个工作日20:00更新净值数据）
     scheduler_hour: int = 20

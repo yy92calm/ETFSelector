@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional
 
 from app.agents.rotation_debate.momentum_advocate import MomentumAdvocate
@@ -54,15 +55,18 @@ class RotationDebateOrchestrator:
         logger.info("[RotationDebate] 开始轮动辩论")
         rule_context = format_rule_context(rule_signal)
 
-        momentum_opinion = self.momentum.analyze(holdings, candidates, macro_context,
-                                                 rule_context, sector_context,
-                                                 sentiment_context, suggestion_context)
+        # 两派输入相同、互不依赖，并行执行省掉一次 LLM 串行等待
+        debate_args = (holdings, candidates, macro_context, rule_context,
+                       sector_context, sentiment_context, suggestion_context)
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="rotation-debate") as pool:
+            momentum_future = pool.submit(self.momentum.analyze, *debate_args)
+            stability_future = pool.submit(self.stability.analyze, *debate_args)
+            momentum_opinion = momentum_future.result()
+            stability_opinion = stability_future.result()
+
         if "error" in momentum_opinion:
             logger.warning(f"[RotationDebate] 动量派失败: {momentum_opinion.get('error')}")
 
-        stability_opinion = self.stability.analyze(holdings, candidates, macro_context,
-                                                   rule_context, sector_context,
-                                                   sentiment_context, suggestion_context)
         if "error" in stability_opinion:
             logger.warning(f"[RotationDebate] 稳定派失败: {stability_opinion.get('error')}")
 

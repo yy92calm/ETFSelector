@@ -215,6 +215,11 @@ class TestOrchestratorWithMocks(unittest.TestCase):
             "status": "fresh", "latest_date": "2026-06-10", "lag_days": 1,
         })
         self.orchestrator._compute_lock_date = MagicMock(return_value=date(2026, 6, 10))
+        # 并行任务会为每个Agent单独新建 Session，测试用 mock 工厂避免触达真实库
+        session_factory = MagicMock(side_effect=lambda: MagicMock())
+        patcher = patch("app.agents.orchestrator.SessionLocal", session_factory)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_full_debate_flow(self):
         """验证辩论流程：技术→情绪→多头→空头→主管"""
@@ -265,9 +270,9 @@ class TestOrchestratorWithMocks(unittest.TestCase):
         self.assertEqual(result["bear_report"]["bearish_case"], "RSI超买")
         self.assertEqual(result["market_regime"], "bull_quiet")
 
-        # 验证数据被持久化
+        # 验证数据被持久化（策略快照 + 每日分析日志各提交一次）
         self.assertEqual(strategy_mock.last_analysis_result, result)
-        db.commit.assert_called_once()
+        self.assertEqual(db.commit.call_count, 2)
 
 
 class TestRiskDebateWithMocks(unittest.TestCase):
