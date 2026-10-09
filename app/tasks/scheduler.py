@@ -10,6 +10,8 @@
 import logging
 from datetime import date
 from pathlib import Path
+from typing import Callable, List, Tuple
+
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from app.config import get_settings
@@ -99,6 +101,8 @@ def _job_daily_pipeline():
     阶段4: LLM自主决策（感知→推理→行动），失败时降级为原有管道
 
     支持断点续跑：每阶段完成后写入检查点，中断后从失败阶段续跑。
+    阶段间有依赖（见 DAILY_PIPELINE_STAGES）：上游本轮未成功时下游直接跳过，
+    避免拿过期行情出指标、甚至据过期指标下换仓决策。
     """
     from app.db.database import SessionLocal
     from app.services.pipeline_checkpoint_service import get_pipeline_checkpoint_service
@@ -106,9 +110,6 @@ def _job_daily_pipeline():
 
     _cp_svc = get_pipeline_checkpoint_service()
     _run_date = date.today()
-    _stages = ["net_value", "quotes", "rebalance", "sentiment", "policy_flow",
-               "market_scan", "market_regime", "sw_sector", "fundamental",
-               "rotation_review", "autonomous"]
 
     db = SessionLocal()
     try:
@@ -116,18 +117,45 @@ def _job_daily_pipeline():
     finally:
         db.close()
 
-    def _run_stage(stage: str, fn):
-        """执行阶段，成功标记检查点；失败记录并跳过（不中断整个管道）"""
+    # 本轮没能产出有效结果的阶段（失败 + 因上游被跳过），下游据此阻断
+    unavailable: set = set()
+    skipped: dict = {}
+
+    def _run_stage(stage: str, fn, deps: List[str]):
+        """执行阶段，成功标记检查点；失败记录并阻断下游；上游未成功则跳过"""
         from app.models.task_log import TaskExecutionLog
         from datetime import datetime
-        
+
         if stage in done:
             logger.info(f"[Checkpoint] 阶段 {stage} 已完成，跳过")
             return
-        
+
+        blocked_by = [d for d in deps if d in unavailable]
+        if blocked_by:
+            logger.warning(f"[Checkpoint] 阶段 {stage} 跳过：上游 {blocked_by} 本轮未成功，不使用过期数据")
+            skipped[stage] = blocked_by
+            unavailable.add(stage)
+            db_local = SessionLocal()
+            try:
+                db_local.add(TaskExecutionLog(
+                    task_name=f"daily_pipeline.{stage}",
+                    status="skipped",
+                    started_at=datetime.utcnow(),
+                    finished_at=datetime.utcnow(),
+                    duration_seconds=0.0,
+                    error_message=f"skipped_dependency: {','.join(blocked_by)}",
+                ))
+                db_local.commit()
+            except Exception as log_err:
+                logger.error(f"记录阶段 {stage} 跳过状态失败: {log_err}")
+                db_local.rollback()
+            finally:
+                db_local.close()
+            return
+
         db_local = SessionLocal()
         started_at = datetime.utcnow()
-        
+
         # 创建执行日志
         log_entry = TaskExecutionLog(
             task_name=f"daily_pipeline.{stage}",
@@ -136,11 +164,11 @@ def _job_daily_pipeline():
         )
         db_local.add(log_entry)
         db_local.commit()
-        
+
         try:
             fn()
             _cp_svc.mark_stage_done("daily_pipeline", _run_date, stage, db_local)
-            
+
             # 更新为成功
             log_entry.status = "success"
             log_entry.finished_at = datetime.utcnow()
@@ -148,14 +176,15 @@ def _job_daily_pipeline():
             db_local.commit()
         except Exception as e:
             logger.error(f"[Checkpoint] 阶段 {stage} 失败: {e}")
-            
+            unavailable.add(stage)
+
             # 更新为失败
             log_entry.status = "failed"
             log_entry.finished_at = datetime.utcnow()
             log_entry.duration_seconds = (log_entry.finished_at - started_at).total_seconds()
             log_entry.error_message = str(e)[:1000]
             db_local.commit()
-            
+
             try:
                 _cp_svc.mark_failed("daily_pipeline", _run_date, stage, str(e), db_local)
                 # 写入失败经验
@@ -166,24 +195,9 @@ def _job_daily_pipeline():
         finally:
             db_local.close()
 
-    # ============================== 阶段1 ==============================
-    _run_stage("net_value", _step_update_net_values)
-    _run_stage("quotes", _step_update_quotes)
-    _run_stage("rebalance", _step_run_strategies)
-
-    # ============================== 阶段2 ==============================
-    _run_stage("sentiment", _step_collect_sentiments)
-    _run_stage("policy_flow", lambda: (_step_policy_impact(), _step_capital_flow()))
-
-    # ============================== 阶段3 ==============================
-    _run_stage("market_scan", _step_market_scan)
-    _run_stage("market_regime", _step_market_regime)
-    _run_stage("sw_sector", _step_sw_sector)
-    _run_stage("fundamental", _step_fundamental)
-    _run_stage("rotation_review", _step_rotation_review)
-
-    # ============================== 阶段4 ==============================
-    _run_stage("autonomous", _step_autonomous_decision)
+    # ============================== 串行执行（按依赖阻断） ==============================
+    for stage, deps, fn in DAILY_PIPELINE_STAGES:
+        _run_stage(stage, fn, deps)
 
     # 管道完成：新分析日志已产生，失效规则缓存使次日规则刷新
     try:
@@ -194,7 +208,16 @@ def _job_daily_pipeline():
 
     db_local = SessionLocal()
     try:
-        _cp_svc.mark_completed("daily_pipeline", _run_date, db_local)
+        if unavailable:
+            # 有阶段没出结果时不能标 completed：那会让断点续跑与看板都以为管道健康
+            detail = "失败: " + ",".join(sorted(unavailable - set(skipped)))
+            if skipped:
+                detail += " | 依赖跳过: " + "; ".join(
+                    f"{s}←{','.join(d)}" for s, d in skipped.items())
+            _cp_svc.mark_failed("daily_pipeline", _run_date, "pipeline", detail[:500], db_local)
+            logger.warning(f"[Checkpoint] 管道未全部完成: {detail}")
+        else:
+            _cp_svc.mark_completed("daily_pipeline", _run_date, db_local)
     finally:
         db_local.close()
 
@@ -214,6 +237,7 @@ def _step_update_net_values():
             logger.info(f"还有 {result['total'] - 6} 只ETF待更新，将在下一个周期继续")
     except Exception as e:
         logger.error(f"净值更新异常: {e}")
+        raise
     finally:
         db.close()
 
@@ -231,6 +255,7 @@ def _step_update_quotes():
         logger.info(f"行情更新完成: 成功 {result['success_count']}, 失败 {result['fail_count']}")
     except Exception as e:
         logger.error(f"行情更新异常: {e}")
+        raise
     finally:
         db.close()
 
@@ -257,6 +282,7 @@ def _step_run_strategies():
         logger.info("组合再平衡完成")
     except Exception as e:
         logger.error(f"组合再平衡异常: {e}")
+        raise
     finally:
         db.close()
 
@@ -274,6 +300,7 @@ def _step_collect_sentiments():
         logger.info(f"舆情采集完成: {result.get('news_count', 0)}条")
     except Exception as e:
         logger.error(f"舆情采集异常: {e}")
+        raise
     finally:
         db.close()
 
@@ -424,6 +451,7 @@ def _step_policy_impact():
             logger.warning(f"政策影响评估跳过: {result.get('error')}")
     except Exception as e:
         logger.error(f"政策影响评估异常: {e}")
+        raise
     finally:
         db.close()
 
@@ -454,8 +482,26 @@ def _step_capital_flow():
             logger.warning(f"资金流向分析跳过: {result.get('error')}")
     except Exception as e:
         logger.error(f"资金流向分析异常: {e}")
+        raise
     finally:
         db.close()
+
+
+def _step_policy_flow():
+    """policy_flow 阶段：政策评估 + 资金流向
+
+    两个子步骤互不依赖（一个读舆情、一个读行情），任一失败不影响另一个执行，
+    但只要有失败本阶段就算失败——否则下游看到的是「成功且无数据」。
+    """
+    errors = []
+    for label, step in (("政策影响评估", _step_policy_impact), ("资金流向", _step_capital_flow)):
+        try:
+            step()
+        except Exception as e:
+            logger.error(f"[policy_flow] {label} 失败: {e}")
+            errors.append(f"{label}: {e}")
+    if errors:
+        raise RuntimeError("政策/资金流阶段失败: " + "; ".join(errors)[:500])
 
 
 def _step_market_scan():
@@ -486,6 +532,7 @@ def _step_market_scan():
             logger.error(f"因子收益回填异常: {e}")
     except Exception as e:
         logger.error(f"量化扫描异常: {e}")
+        raise
     finally:
         db.close()
 
@@ -595,6 +642,7 @@ def _step_rotation_review():
                 logger.info(f"策略{strategy.id} 跳过: {plan.get('reason', '')}")
     except Exception as e:
         logger.error(f"轮动复盘异常: {e}")
+        raise
     finally:
         db.close()
 
@@ -629,8 +677,8 @@ def _step_autonomous_decision():
     """
     STEP 8: LLM自主决策（感知→推理→行动）
 
-    优先使用 AgentLoop 自主决策；
-    LLM不可用时降级为原有硬编码管道。
+    优先使用 AgentLoop 自主决策；LLM 不可用/异常/返回错误时降级为原有管道；
+    降级管道也失败则阶段判失败（[failed_both_paths]），两次失败不能看起来像成功。
     """
     from app.db.database import SessionLocal
     from app.config import get_settings
@@ -638,8 +686,14 @@ def _step_autonomous_decision():
     _settings = get_settings()
     db = SessionLocal()
     try:
-        if _settings.llm_api_key and _settings.llm_api_key.strip():
-            logger.info("===== [阶段2] LLM自主决策 =====")
+        if not (_settings.llm_api_key and _settings.llm_api_key.strip()):
+            logger.info("===== [阶段4] LLM未配置，降级为原有管道 =====")
+            _step_auto_pipeline_fallback(db)
+            return
+
+        logger.info("===== [阶段4] LLM自主决策 =====")
+        primary_error = ""
+        try:
             from app.agent_core.loop import AgentLoop
             agent = AgentLoop()
             result = agent.run_autonomous(
@@ -650,14 +704,26 @@ def _step_autonomous_decision():
             logger.info(f"LLM自主决策完成: {result.content[:200] if result.content else 'no content'}")
             if result.tool_calls_made:
                 logger.info(f"工具调用: {[t['tool'] for t in result.tool_calls_made]}")
-            if not result.error:
+            if result.error:
+                # run_autonomous 的异常已按 failed 落库并返回 here；旧实现只跳过回写，
+                # 阶段仍标 success —— 等于「当日没有任何决策」被记成正常，必须转降级
+                primary_error = f"自主决策返回错误: {result.error}"
+            else:
                 _record_autonomous_analysis(result, db)
-        else:
-            logger.info("===== [阶段2] LLM未配置，降级为原有管道 =====")
+                return
+        except Exception as e:
+            primary_error = f"自主决策异常: {e}"
+            logger.error(f"[autonomous] 主路径失败，转降级管道: {primary_error}")
+
+        logger.info("===== [阶段4] 降级为原有管道 =====")
+        try:
             _step_auto_pipeline_fallback(db)
-    except Exception as e:
-        logger.error(f"LLM自主决策异常，降级为原有管道: {e}")
-        _step_auto_pipeline_fallback(db)
+        except Exception as fb_err:
+            # 失败经验由 _run_stage 按本阶段异常统一写入（签名含 failed_both_paths，同签名合并计数）
+            raise RuntimeError(
+                f"[failed_both_paths] 自主决策与降级管道均失败 | "
+                f"主路径: {primary_error[:300]} | 降级: {str(fb_err)[:300]}"
+            )
     finally:
         db.close()
 
@@ -771,7 +837,7 @@ def _record_autonomous_analysis(autonomous_result, db):
 
 
 def _step_auto_pipeline_fallback(db):
-    """原有硬编码管道（fallback）"""
+    """原有硬编码管道（fallback）：异常必须抛出，否则双路径失败会被记成阶段成功"""
     from app.services.auto_strategy_executor import AutoStrategyExecutor
 
     try:
@@ -780,6 +846,27 @@ def _step_auto_pipeline_fallback(db):
         logger.info(f"[fallback] AI自驱动管道完成: {result}")
     except Exception as e:
         logger.error(f"[fallback] AI自驱动管道异常: {e}")
+        db.rollback()
+        raise
+
+
+# 每日管道阶段表（阶段名, 依赖阶段, 执行函数），定义在阶段函数之后
+# 依赖依据「谁的输出是谁的输入」：指标由行情算出、换仓决策由指标算出；
+# 上游本轮失败或被跳过时下游记 skipped_dependency 不执行，避免用过期数据出指标甚至下单
+DAILY_PIPELINE_STAGES: List[Tuple[str, List[str], Callable[[], None]]] = [
+    ("net_value", [], _step_update_net_values),
+    ("quotes", [], _step_update_quotes),
+    ("rebalance", ["quotes"], _step_run_strategies),
+    ("sentiment", [], _step_collect_sentiments),
+    ("policy_flow", ["sentiment"], _step_policy_flow),
+    ("market_scan", ["quotes"], _step_market_scan),
+    ("market_regime", ["market_scan"], _step_market_regime),
+    # 申万板块与基本面各自有独立数据源和「最近落库」降级，不作为下游硬依赖
+    ("sw_sector", [], _step_sw_sector),
+    ("fundamental", [], _step_fundamental),
+    ("rotation_review", ["market_scan", "rebalance"], _step_rotation_review),
+    ("autonomous", ["market_scan"], _step_autonomous_decision),
+]
 
 
 @log_task_execution("weekly_review")

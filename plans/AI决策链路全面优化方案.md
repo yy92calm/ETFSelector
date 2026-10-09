@@ -15,7 +15,7 @@
 | P1 | 2.3 工具 Schema 类型支持（Optional/Literal/list[dict]） | ✅ | 24 条单测：swaps.items 含 remove/add 与必填；Optional→nullable；Literal/Enum→enum；参数校验错误可读 |
 | P1 | 2.4 run_autonomous 状态判定 bug | ✅ | 6 条单测：以 "LLM" 开头的正常结论→completed；异常/跑满轮数无结论→failed；按主键排除当前消息 |
 | P1 | 2.5 经验匹配带权相似度 + 冲突检测修正 | ✅ | 11 条单测：不相关 failure/success 不再判冲突；同场景对立结论仍判冲突；regime 命中权重高于普通因素 |
-| P2 | 3.1 管道阶段关键路径阻断 | ⬜ | 单测：quotes 失败 → market_scan 标记跳过 |
+| P2 | 3.1 管道阶段关键路径阻断 | ✅ | 15 条单测：quotes 失败 → rebalance/market_scan/regime/rotation/autonomous 全部 skipped_dependency 不执行；检查点不标 completed 且未成功阶段不进 done_stages；失败经验只对真失败阶段写；LLM 返回 error 转降级；双路径失败抛 [failed_both_paths] |
 | P2 | 3.2 上下文压缩 Token 估算 + 分层压缩 | ⬜ | 单测：中文估算更准；分级触发 |
 | P2 | 3.3 经验权重指数衰减 + 单一权威写入 | ⬜ | 单测：衰减不覆盖 boost 结果 |
 | P2 | 3.4 辩论降级显式标记 debate_degraded | ⬜ | 单测：LLM 失败路径带标记 |
@@ -230,6 +230,15 @@ app/config.py                                # 新增配置项（见下）
 - 统一异常策略：`_step_*` 不再吞异常（或改为返回 bool 状态），让 `_run_stage` 真实感知失败
 - `autonomous` 的双重降级：降级管道自身失败时写 failure 经验 + 标记阶段 `failed_both_paths`
 - 验证：单测 mock `quotes` 抛异常 → `market_scan` 状态为 `skipped_dependency`，检查点不误标 success
+
+实施记录（2026-10-10）：
+- 阶段表改为模块级 `DAILY_PIPELINE_STAGES: List[(阶段, 依赖, 执行函数)]`（定义在阶段函数之后），管道遍历同一张表，依赖图与执行顺序单点定义。
+- 顺带修掉两个隐性 bug：① `_step_*` 吞异常导致阶段永远「成功」并写检查点；② `run_autonomous` 返回 `result.error` 时旧代码既不降级也不失败——「当日没有任何决策」被记成正常。
+- `failed_both_paths` 用**异常文本前缀**承载（进 `TaskExecutionLog.error_message`、检查点 `error_message` 与失败经验签名），不加新列；失败经验仍由 `_run_stage` 单点写入，避免同一次失败记两条。
+- 检查点收尾：只要有阶段失败或被依赖阻断，改调 `mark_failed("pipeline", detail)` 而非 `mark_completed`。旧实现无条件 `mark_completed` 并把 `error_message` 清成 None，等于把整条管道的失败记录擦掉；`detail` 形如 `失败: quotes | 依赖跳过: market_scan←quotes; autonomous←market_scan`。
+- `sw_sector` / `fundamental` 不设阻断依赖：二者自带「最近落库」降级，且板块/基本面信号缺失时按中性处理，不应连带停掉换仓。
+- `policy_flow` 阶段新增 `_step_policy_flow()`：政策评估与资金流向互不依赖（一个读舆情、一个读行情），各自执行、任一失败则阶段失败；手动触发映射同步指向它。
+- 附带发现（未改）：`task_routes.PIPELINE_STAGES` 前端阶段清单缺 `sw_sector`，与管道 11 阶段不一致。
 
 **3.2 上下文压缩**
 - `estimate_tokens`：中文字符按 1.5 字符/token、其他按 4 字符/token 分别累加；额外计入 `tool_calls` 的 name+arguments 长度

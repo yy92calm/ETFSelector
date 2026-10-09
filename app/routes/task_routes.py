@@ -296,7 +296,7 @@ _STAGE_FUNCS = {
     "quotes": "app.tasks.scheduler:_step_update_quotes",
     "rebalance": "app.tasks.scheduler:_step_run_strategies",
     "sentiment": "app.tasks.scheduler:_step_collect_sentiments",
-    "policy_flow": "app.tasks.scheduler:_step_policy_impact",
+    "policy_flow": "app.tasks.scheduler:_step_policy_flow",
     "capital_flow": "app.tasks.scheduler:_step_capital_flow",
     "market_scan": "app.tasks.scheduler:_step_market_scan",
     "rotation_review": "app.tasks.scheduler:_step_rotation_review",
