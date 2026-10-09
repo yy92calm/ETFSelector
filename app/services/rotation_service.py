@@ -4,6 +4,7 @@ import logging
 from datetime import date, timedelta
 from typing import Dict, List, Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.strategy import Strategy
@@ -87,12 +88,15 @@ class RotationService:
         if not enter_candidates:
             return {"action": "hold", "reason": "无候选标的"}
 
+        # 最短持有期判定所需「标的→最近买入日」一次取回（持仓口径下 current_holdings 已覆盖
+        # 全部候选出池标的，提案的 remove 也必在其中）
+        last_buys = self._latest_buy_dates(strategy_id, current_holdings, db)
         if ignore_min_hold:
             eligible_holdings = list(holding_scores)
         else:
             eligible_holdings = [
                 h for h in holding_scores
-                if self._check_min_hold_period(strategy_id, h["etf_code"], scan_date, db)
+                if self._held_long_enough(last_buys.get(h["etf_code"]), scan_date)
             ]
         min_hold_blocked = [h["etf_code"] for h in holding_scores if h not in eligible_holdings]
 
@@ -125,7 +129,7 @@ class RotationService:
         from app.config import get_settings
         score_map = {x["etf_code"]: x for x in list(holding_scores) + list(enter_candidates)}
         proposal_exec, proposal_rejected = self._collect_proposals(
-            base_allocation, suggestions, scan_date, db, banned, score_map
+            base_allocation, suggestions, scan_date, banned, score_map, last_buys
         )
         proposal_summary = self._suggestion_summary(proposal_exec, proposal_rejected, score_map)
 
@@ -532,8 +536,8 @@ class RotationService:
                 "summary": f"纯量化裁决替换{len(swaps)}只（未经辩论）", **degraded}
 
     def _collect_proposals(self, base_allocation: Dict, suggestions: List,
-                           scan_date: date, db: Session, banned: Dict,
-                           score_map: Dict) -> tuple:
+                           scan_date: date, banned: Dict,
+                           score_map: Dict, last_buys: Dict[str, date]) -> tuple:
         """把建议里的显式替换提案转成可执行换仓（硬约束校验）
 
         返回 (executable, rejected)：
@@ -564,7 +568,7 @@ class RotationService:
                 if weight is not None and not (0 < float(weight) <= MAX_SINGLE_WEIGHT):
                     rejected.append({**item, "reason_note": f"建议权重 {weight} 超出 (0, {MAX_SINGLE_WEIGHT}]"})
                     continue
-                if not self._check_min_hold_period(int(sg.strategy_id), remove_code, scan_date, db):
+                if not self._held_long_enough(last_buys.get(remove_code), scan_date):
                     rejected.append({**item, "reason_note": f"{remove_code} 未满最短持有期（{MIN_HOLD_DAYS}日）"})
                     continue
                 # 结果组合校验：持仓数上限 + 单只权重上限
@@ -600,20 +604,28 @@ class RotationService:
             "rejected": [{"remove": x["remove"], "add": x["add"], "reason": x["reason_note"]} for x in rejected],
         }
 
-    def _check_min_hold_period(self, strategy_id: int, etf_code: str,
-                               scan_date: date, db: Session) -> bool:
+    def _latest_buy_dates(self, strategy_id: int, codes: List[str], db: Session) -> Dict[str, date]:
+        """一次取回这些标的的最近买入日（逐标的查会让持有期判定变成 N+1）"""
         from app.models.portfolio import TradeRecord
-        last_buy = db.query(TradeRecord).filter(
-            TradeRecord.strategy_id == strategy_id,
-            TradeRecord.etf_code == etf_code,
-            TradeRecord.direction == "buy",
-        ).order_by(TradeRecord.trade_date.desc()).first()
+        if not codes:
+            return {}
+        rows = (
+            db.query(TradeRecord.etf_code, func.max(TradeRecord.trade_date))
+            .filter(
+                TradeRecord.strategy_id == strategy_id,
+                TradeRecord.direction == "buy",
+                TradeRecord.etf_code.in_(codes),
+            )
+            .group_by(TradeRecord.etf_code)
+            .all()
+        )
+        return {code: d for code, d in rows if d is not None}
 
+    def _held_long_enough(self, last_buy: Optional[date], scan_date: date) -> bool:
+        """最短持有期判定：无买入记录视为可换出"""
         if not last_buy:
             return True
-
-        hold_days = (scan_date - last_buy.trade_date).days
-        return hold_days >= MIN_HOLD_DAYS
+        return (scan_date - last_buy).days >= MIN_HOLD_DAYS
 
 
 _service: RotationService | None = None

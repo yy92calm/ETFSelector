@@ -19,7 +19,7 @@
 | P2 | 3.2 上下文压缩 Token 估算 + 分层压缩 | ✅ | `TestCompaction` 15 条（新增 10）：同一批中文消息新估算 2035 > 旧口径 800（x2.54；旧口径需约 41 万中文字符才触发 0.8×128k 重度压缩，新口径约 15.4 万）；档位边界 70399/70400/102400 → None/light/heavy；tool_calls 计入；摘要预算随规模伸缩；trim 保留最近 4 条 assistant；loop 实测选中 light 档 |
 | P2 | 3.3 经验权重指数衰减 + 单一权威写入 | ✅ | 7 条单测：60 天经验衰减为 e^(-0.2)=0.819（旧线性口径 0.8）；`initial_weight=1.5` 衰减后 1.357 仍高于 1.0；boost 到 2.0 再跑 decay 值与来源都保持（核心回归）；boost/场景调权重复调用不放大（2 次仍 1.3）；评分 2.0 + pending → 停用，无使用数据的新经验不被误停 |
 | P2 | 3.4 辩论降级显式标记 debate_degraded | ✅ | 8 条新单测 + 3 条改写：LLM 未配置时计划 `degrade_reason=llm_not_configured` 且量化仍决策（缺口 40 分 → rotate）；一派观点缺失 → 跳过裁决官、量化接管（`upstream_missing: 动量派`）；裁决官失败 → 维持 hold 但带 `judge_failed`；完整辩论无任何标记；建议回执前缀「【未经辩论·降级】」；依据接口透出两字段 |
-| P2 | 3.5 N+1 查询清理（最短持有期/建议校验/禁入缓存） | ⬜ | 单测：批量查询生效 |
+| P2 | 3.5 N+1 查询清理（最短持有期/建议校验/禁入缓存/行情补全/上下文遗留） | ✅ | 14 条新单测：SQL 计数断言次数不随实体数增长（1 持仓 vs 4 持仓均 1 次 trade_record 查询、1 vs 4 代码均 1 次 etf_basic、3 vs 20 只 ETF 均 1 次 etf_quotation、1 vs 4 策略均 1 次 portfolio_snapshot）；禁入名单二次调用 0 查询、record_failure 后重查；过期失败模式不再规避；批量与逐标的结果逐字段相等 |
 | P3 | 4.1 风控工具补全（相关性/VaR/what-if 熔断） | ⬜ | 单测：工具注册 + 计算正确 |
 | P3 | 4.2 因子表现与板块影响分析工具 | ⬜ | 单测：工具返回结构 |
 | P3 | 4.3 复盘 avg_return 改期间收益率 | ⬜ | 单测：期间收益率计算 |
@@ -192,7 +192,7 @@ app/config.py                                # 新增配置项（见下）
 实施记录（2026-10-10）：
 - 「暂无」与「系统刚初始化」兜底的边界：库内**完全没有行情**时大盘 section 返回空（让整体兜底语生效，否则空库快照被一堆「暂无」占满），**有行情但指数代理/状态快照缺失**才显式标注「暂无」——静默省略才会让 LLM 以为大盘坐标可忽略。
 - 持有期口径与轮动通道一致：从该标的**最近一笔买入**起算（group-by 一次取回全部 `(策略,标的)→最近买入日`，不逐标的查）。
-- 遗留：旧 section（目标进度、风控）仍逐策略查询，随策略数线性增长，归入 3.5 清理。
+- 已完成（归入 3.5）：旧 section（目标进度、风控）已改批量查询，查询次数不随策略数增长。
 
 **2.2 辩论 Token 去重**
 - 新增 `_build_diff_context(momentum_opinion, stability_opinion, holdings, candidates)`：只提取两派**提及到的标的**及其得分摘要，作为裁决官输入
@@ -292,6 +292,19 @@ app/config.py                                # 新增配置项（见下）
 - `allocation_suggestion_service`：ETF 存在性改 `IN` 查询做差集
 - `failure_mode_service`：`import re` 提模块顶 + 预编译；banned_codes 加进程内 TTL 缓存（当日有效，写入失败模式时失效）；查询增加 `expires_date >= today` 过滤
 - `scheduler.py` 行情补全：改 `GROUP BY etf_code` 一次取全部最新日期
+
+实施记录（2026-10-10）：
+- 最短持有期改 `_latest_buy_dates(strategy_id, codes, db)`（`in_` + `group_by` + `func.max` 一次取回）+ 纯判定 `_held_long_enough(last_buy, scan_date)`；`evaluate_rotation` 在循环前取一次、把结果同时传给持有期过滤与 `_collect_proposals`。**偏离方案字面**：`_check_min_hold_period` 没有改成批量版而是**整个删除**——它只被 `evaluate_rotation` 的单标的路径调用，批量口径下已无调用方，留一个只有测试用的包装函数属死代码。`_collect_proposals` 的签名同步去掉不再需要的 `db` 参数（改为收 `last_buys`），两处调用点与 `tests/test_allocation_suggestion.py` 已同步。
+- 建议标的校验：一次 `ETFBasic.etf_code.in_(...)` 取回已知集合做差集，报错文本仍列**全部**未知代码（不是首个即返回），单测断言 4 个未知代码时错误里同时含 `159995` 与 `512760`。
+- 禁入缓存的键是 `(engine 身份, 当日, 结果)`，**不是只按日期**：`FailureModeService` 是进程单例，同进程可能挂着多个库（测试用内存库、多环境），只按日期取键会跨库读到别处的规避名单。这个坑在本次实施中被单测真实打到——`tests/test_debate_degraded.py` 单独跑正常、接在其他建库用例之后因读到前一个库的名单而提前命中「无候选标的」返回体（不含 `debate_degraded` 键）报 `KeyError`，改按 `is bind` 比较后全量转绿。阈值非默认值（`threshold` 显式传入）时不读写缓存，避免把带参结果当通用名单缓存。
+- 缓存失效点有两处：`record_failure()` 两条提交路径后调 `invalidate_banned_cache()`；`scheduler._record_failure_experience()` 是**绕过服务直写 `Experience`** 的第二个写入口，累计次数可能刚跨过阈值，故也在提交后失效（否则当日新跨阈值的失败模式被旧缓存漏过）。
+- 过期口径 `or_(expires_date.is_(None), expires_date >= today)`：用 `is_(None)` 放行历史 NULL 行，若只写 `>= today`，早期未填过期时间的失败模式会全部失去规避（静默放宽风控）。
+- `_llm_plan_fetch` 之前的行情新鲜度判定改一次 `GROUP BY etf_code` + `func.max(trade_date)`（ETF 池上千只时，逐标的查就是上千次查询），`stale_info` 由 map 组装，无行情仍标「无数据」。
+- 上下文快照的两处遗留查询改新增批量 API：`RiskController.assess_risk_map(strategies, db)`、`PortfolioService.get_monthly_progress_map(strategies, db)`。为此把判定逻辑抽成纯静态方法 `_eval_circuit_breaker` / `_eval_drawdown_protection` / `_monthly_progress`，原 `check_circuit_breaker(strategy_id, db)`、`apply_drawdown_protection(strategy_id, db)`、`get_monthly_progress(strategy_id, db)` **签名与返回口径不变**（公开 API 的调用方很多，改签名会波及风控/前端），批量入口只是「一次查询 + 同样的纯判定」。`assess_risk_map` 明确只读不写库（与 `apply_drawdown_protection` 原本就不落库一致）。
+- 验证方式：`tests/test_n_plus_one_cleanup.py` 14 条用例**用 SQL 计数断言「次数不随实体数增长」**（`event.listen(engine, "before_cursor_execute")`），而不是只看结果对不对——只看结果无法区分一次批量与 N 次单查。关键断言：最短持有期 1 vs 4 个持仓均为 1 次 `trade_record` 查询；ETF 存在性 1 vs 4 个代码均为 1 次 `etf_basic` 查询；禁入名单同日二次调用 0 次查询、`record_failure` 后重新查 1 次；行情补全 3 vs 20 只 ETF 均为 1 次 `etf_quotation` 查询；进度/风控 section 1 vs 3~4 个策略均为 1 次 `portfolio_snapshot` 查询。批量与逐标的**等价**另有 3 条用例锁死（`_latest_buy_dates` 含重复买入取最近、`assess_risk_map` 与单策略返回逐字段相等、`get_monthly_progress_map` 同上）。全量 451 passed（顺序跑与随机序各验证一次）。
+- 踩坑记录：`PortfolioSnapshot` 没有 `holdings`/`positions` 列（只有 `total_asset/cash/market_value/profit/profit_pct`），按直觉造 fixture 会 `TypeError: 'holdings' is an invalid keyword argument`；另本文件 `make_db()` 在模块顶导入**全部** `app.models` 子模块后再建表，避免 3.3/3.4 记录过的「建表早于模型导入 → no such table」顺序坑。
+- 附带发现（未改）：`get_banned_codes` 的缓存只在 `threshold` 为默认值时生效，而管道每轮只调一次，实际收益有限；跨进程（多 worker）仍各自查库，未引入 Redis 等外部依赖（符合项目约束）。
+- 取舍：`_get_strategies_summary` 的批量进度查询用**一个** try/except 包住（原实现每策略各包一个），批量口径下失败本就影响全部策略，分开包没有意义——代价是进度整体退化为空文本，而原来可能只少一个策略。
 
 ### 阶段 P3 — 能力边界
 

@@ -79,10 +79,14 @@ class AllocationSuggestionService:
         if abs(total - 1.0) > 0.01:
             return {"error": f"建议配置权重总和应为 1.0，当前为 {total:.4f}"}
 
-        unknown = [
-            c for c in allocation
-            if not db.query(ETFBasic.etf_code).filter(ETFBasic.etf_code == c).first()
-        ]
+        # 一次 IN 查询取回已存在的代码做差集（逐代码查会随建议标的数变成 N+1）
+        known = {
+            row.etf_code
+            for row in db.query(ETFBasic.etf_code).filter(
+                ETFBasic.etf_code.in_(list(allocation.keys()))
+            ).all()
+        }
+        unknown = [c for c in allocation if c not in known]
         if unknown:
             return {"error": f"以下代码不在 ETF 列表中: {unknown}（建议前先搜索/入池）"}
 

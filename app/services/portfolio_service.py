@@ -282,14 +282,10 @@ class PortfolioService:
             {"monthly_return", "target_min", "target_max", "expected_pace",
              "status": behind/on_track/above/insufficient_data, "text"}
         """
-        import calendar
         as_of = as_of or date.today()
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy:
             return None
-        t_min = strategy.target_monthly_min if strategy.target_monthly_min is not None else 0.05
-        t_max = strategy.target_monthly_max if strategy.target_monthly_max is not None else 0.10
-
         month_start = as_of.replace(day=1)
         snaps = (
             db.query(PortfolioSnapshot)
@@ -301,6 +297,40 @@ class PortfolioService:
             .order_by(PortfolioSnapshot.trade_date.asc())
             .all()
         )
+        return self._monthly_progress(strategy, snaps, as_of)
+
+    def get_monthly_progress_map(self, strategies: List[Strategy], db: Session,
+                                 as_of: date = None) -> Dict[int, Optional[Dict]]:
+        """批量月收益进度：一次取回全部策略的当月快照（逐策略查会随策略数线性增长）"""
+        as_of = as_of or date.today()
+        ids = [s.id for s in strategies]
+        if not ids:
+            return {}
+        month_start = as_of.replace(day=1)
+        rows = (
+            db.query(PortfolioSnapshot)
+            .filter(
+                PortfolioSnapshot.strategy_id.in_(ids),
+                PortfolioSnapshot.trade_date >= month_start,
+                PortfolioSnapshot.trade_date <= as_of,
+            )
+            .order_by(PortfolioSnapshot.strategy_id, PortfolioSnapshot.trade_date.asc())
+            .all()
+        )
+        snaps_by_sid: Dict[int, List[PortfolioSnapshot]] = {}
+        for r in rows:
+            snaps_by_sid.setdefault(r.strategy_id, []).append(r)
+        return {s.id: self._monthly_progress(s, snaps_by_sid.get(s.id, []), as_of)
+                for s in strategies}
+
+    @staticmethod
+    def _monthly_progress(strategy: Strategy, snaps: List[PortfolioSnapshot],
+                          as_of: date) -> Dict:
+        """按「当月首末快照资产」算本月进度，与目标节奏比较（snaps 需按日期升序）"""
+        import calendar
+        t_min = strategy.target_monthly_min if strategy.target_monthly_min is not None else 0.05
+        t_max = strategy.target_monthly_max if strategy.target_monthly_max is not None else 0.10
+
         if len(snaps) < 2:
             return {
                 "monthly_return": None, "target_min": t_min, "target_max": t_max,

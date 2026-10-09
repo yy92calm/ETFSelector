@@ -89,6 +89,10 @@ def _record_failure_experience(db, stage: str, error_msg: str, run_date):
         db.commit()
         logger.info(f"失败经验已记录: {failure_sig}")
 
+    # 此处直写 Experience（未走失败模式服务），累计次数可能刚跨过禁入阈值 → 失效缓存
+    from app.services.failure_mode_service import get_failure_mode_service
+    get_failure_mode_service().invalidate_banned_cache()
+
 
 @log_task_execution("daily_pipeline")
 def _job_daily_pipeline():
@@ -922,11 +926,17 @@ def _job_auto_fetch_quotes():
             logger.info("ETF池为空，跳过")
             return
 
+        # 一次 GROUP BY 取回全部标的的最新行情日（逐标的查会随 ETF 池规模变成上千次查询）
+        latest_rows = (
+            db.query(ETFQuotation.etf_code, func.max(ETFQuotation.trade_date))
+            .group_by(ETFQuotation.etf_code)
+            .all()
+        )
+        latest_map = {code: d for code, d in latest_rows if d is not None}
+
         stale_info = []
         for etf in all_etfs:
-            latest = db.query(func.max(ETFQuotation.trade_date)).filter(
-                ETFQuotation.etf_code == etf.etf_code
-            ).scalar()
+            latest = latest_map.get(etf.etf_code)
             stale_info.append({
                 "code": etf.etf_code,
                 "name": etf.etf_name or "",

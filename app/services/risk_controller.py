@@ -42,12 +42,42 @@ class RiskController:
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy:
             return {"status": "error", "message": "策略不存在"}
-        
-        config = self.RISK_CONFIG["circuit_breaker"]
-        
+
         snapshots = db.query(PortfolioSnapshot).filter(
             PortfolioSnapshot.strategy_id == strategy_id
         ).order_by(PortfolioSnapshot.trade_date.desc()).limit(10).all()
+        return self._eval_circuit_breaker(strategy, snapshots)
+
+    def assess_risk_map(self, strategies: List[Strategy], db: Session) -> Dict[int, Dict]:
+        """批量风控：一次取回这些策略的净值快照（逐策略查会随策略数线性增长）
+
+        返回 {strategy_id: {"circuit_breaker": {...}, "drawdown_protection": {...}}}，
+        与 check_circuit_breaker / apply_drawdown_protection 同口径（只读，不写库）。
+        """
+        ids = [s.id for s in strategies]
+        if not ids:
+            return {}
+        rows = (
+            db.query(PortfolioSnapshot)
+            .filter(PortfolioSnapshot.strategy_id.in_(ids))
+            .order_by(PortfolioSnapshot.strategy_id, PortfolioSnapshot.trade_date.desc())
+            .all()
+        )
+        snaps_by_sid: Dict[int, List[PortfolioSnapshot]] = {}
+        for r in rows:
+            snaps_by_sid.setdefault(r.strategy_id, []).append(r)
+        return {
+            s.id: {
+                # 与单策略口径一致：熔断看最近10个快照，回撤保护看最近60个
+                "circuit_breaker": self._eval_circuit_breaker(s, snaps_by_sid.get(s.id, [])[:10]),
+                "drawdown_protection": self._eval_drawdown_protection(s, snaps_by_sid.get(s.id, [])[:60]),
+            }
+            for s in strategies
+        }
+
+    @staticmethod
+    def _eval_circuit_breaker(strategy: Strategy, snapshots: List[PortfolioSnapshot]) -> Dict:
+        config = RiskController.RISK_CONFIG["circuit_breaker"]
         
         if len(snapshots) < 2:
             return {"status": "normal", "message": "数据不足，无需熔断"}
@@ -135,12 +165,15 @@ class RiskController:
         strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
         if not strategy:
             return {"status": "error", "message": "策略不存在"}
-        
-        config = self.RISK_CONFIG["drawdown_protection"]
-        
+
         snapshots = db.query(PortfolioSnapshot).filter(
             PortfolioSnapshot.strategy_id == strategy_id
         ).order_by(PortfolioSnapshot.trade_date.desc()).limit(60).all()
+        return self._eval_drawdown_protection(strategy, snapshots)
+
+    @staticmethod
+    def _eval_drawdown_protection(strategy: Strategy, snapshots: List[PortfolioSnapshot]) -> Dict:
+        config = RiskController.RISK_CONFIG["drawdown_protection"]
         
         if len(snapshots) < 5:
             return {"status": "normal", "message": "数据不足"}

@@ -115,18 +115,22 @@ class ContextBuilder:
         if not strategies:
             return ""
 
+        shown = strategies[:CONTEXT_STRATEGY_LIMIT]
+        # 目标进度批量取（逐策略查会随策略数线性增长）
+        try:
+            progress_map = get_portfolio_service().get_monthly_progress_map(shown, db)
+        except Exception as e:
+            logger.warning(f"目标进度批量查询失败: {e}")
+            progress_map = {}
+
         lines = []
-        for s in strategies[:CONTEXT_STRATEGY_LIMIT]:
+        for s in shown:
             alloc = s.allocation_config or {}
             alloc_str = ", ".join(f"{k}:{v:.0%}" for k, v in list(alloc.items())[:4])
             status = s.auto_strategy_status or s.status
             # 收益目标与当月进度（不可变使命，AI须以此校准行动）
-            try:
-                progress = get_portfolio_service().get_monthly_progress(s.id, db)
-                progress_text = progress["text"] if progress else ""
-            except Exception as e:
-                logger.warning(f"策略{s.id}目标进度查询失败: {e}")
-                progress_text = ""
+            progress = progress_map.get(s.id)
+            progress_text = progress["text"] if progress else ""
             t_min = s.target_monthly_min if s.target_monthly_min is not None else 0.05
             t_max = s.target_monthly_max if s.target_monthly_max is not None else 0.10
             lines.append(
@@ -391,10 +395,13 @@ class ContextBuilder:
             return ""
 
         ctrl = RiskController()
+        shown = auto_strategies[:3]
+        # 一次取回这些策略的净值快照（逐策略查会让风控 section 随策略数线性增长）
+        risk_map = ctrl.assess_risk_map(shown, db)
         lines = []
-        for s in auto_strategies[:3]:
-            cb = ctrl.check_circuit_breaker(s.id, db)
-            dd = ctrl.apply_drawdown_protection(s.id, db)
+        for s in shown:
+            cb = risk_map[s.id]["circuit_breaker"]
+            dd = risk_map[s.id]["drawdown_protection"]
             risk_status = "正常"
             if cb.get("status") == "triggered":
                 risk_status = f"⚠️熔断:{cb.get('reason', '')}"

@@ -345,7 +345,7 @@ class TestExecutableSuggestion(unittest.TestCase):
             exec_list, rej = self.svc._collect_proposals(
                 base, [type("SG", (), {"id": 1, "strategy_id": 1,
                                         "proposed_swaps": [swap], "reason": "t"})()],
-                DAY, self.db, {}, score_map)
+                DAY, {}, score_map, {})
             if expect is None:
                 self.assertEqual(len(exec_list), 1, swap)
             else:
@@ -357,8 +357,8 @@ class TestExecutableSuggestion(unittest.TestCase):
             [type("SG", (), {"id": 1, "strategy_id": 1,
                              "proposed_swaps": [{"remove": "512480", "add": "159053"}],
                              "reason": "t"})()],
-            DAY, self.db, {"159053": 5},
-            {"512480": {"composite_score": 70}, "159053": {"composite_score": 66}})
+            DAY, {"159053": 5},
+            {"512480": {"composite_score": 70}, "159053": {"composite_score": 66}}, {})
         self.assertEqual(exec_list, [])
         self.assertIn("禁入名单", rej[0]["reason_note"])
 

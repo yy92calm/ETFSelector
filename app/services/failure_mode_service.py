@@ -1,13 +1,18 @@
 """失败模式库服务 - 将失败操作沉淀为可规避的模式（FSA式）"""
 
 import logging
+import re
 from datetime import date
 from typing import Dict, List, Optional
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.models.experience import Experience
 
 logger = logging.getLogger(__name__)
+
+# 签名里的 ETF 代码（格式: 买入{code}... / 卖出{code}...），模块级预编译避免每次调用重编
+_CODE_RE = re.compile(r"[0-9]{6}")
 
 
 class FailureModeService:
@@ -17,6 +22,15 @@ class FailureModeService:
         "ban_threshold": 3,          # 同一签名出现≥3次即进入规避名单
         "default_expire_days": 90,
     }
+
+    def __init__(self):
+        # 规避名单缓存: (engine, day, result)。按 engine 身份而非仅按日期取键——
+        # 同进程可能挂着多个库（测试/多环境），只按日期会跨库读到别处的名单
+        self._banned_cache: Optional[tuple] = None
+
+    def invalidate_banned_cache(self) -> None:
+        """清空规避名单缓存（供外部直接改库的写入方调用）"""
+        self._banned_cache = None
 
     def record_failure(
         self,
@@ -45,6 +59,7 @@ class FailureModeService:
             exp.description = description
             exp.key_insight = key_insight or exp.key_insight
             db.commit()
+            self.invalidate_banned_cache()
             logger.info(f"失败模式已存在 {signature}，次数累计为 {exp.occurrence_count}")
             return exp
 
@@ -64,27 +79,40 @@ class FailureModeService:
         )
         db.add(exp)
         db.commit()
+        self.invalidate_banned_cache()
         logger.info(f"记录失败模式: {signature}")
         return exp
 
-    def get_banned_codes(self, db: Session, threshold: int = None) -> Dict[str, int]:
+    def get_banned_codes(self, db: Session, threshold: int = None,
+                         use_cache: bool = True) -> Dict[str, int]:
         """获取规避名单：重复失败≥阈值的 ETF 代码 → 出现次数
 
         从 failure_signature 解析 ETF 代码（签名格式: 买入{code}... 或 卖出{code}...）
+        轮动评估每轮都会调用，故当日结果做进程内缓存；record_failure 写入即失效。
         """
+        today = date.today()
+        bind = db.get_bind()
+        if (use_cache and self._banned_cache is not None and threshold is None
+                and self._banned_cache[0] is bind and self._banned_cache[1] == today):
+            return self._banned_cache[2]
+
         threshold = threshold or self.CONFIG["ban_threshold"]
         exps = db.query(Experience).filter(
             Experience.experience_type == "failure",
             Experience.is_active == True,
             Experience.occurrence_count >= threshold,
+            # 已过期的失败模式不再规避（同 is_active 之外的生命周期口径）
+            or_(Experience.expires_date.is_(None), Experience.expires_date >= today),
         ).all()
 
         banned: Dict[str, int] = {}
-        import re
         for exp in exps:
             sig = exp.failure_signature or ""
-            for code in re.findall(r"[0-9]{6}", sig):
+            for code in _CODE_RE.findall(sig):
                 banned[code] = max(banned.get(code, 0), exp.occurrence_count or 1)
+
+        if use_cache and threshold == self.CONFIG["ban_threshold"]:
+            self._banned_cache = (bind, today, banned)
         return banned
 
     def get_active_failure_modes(
