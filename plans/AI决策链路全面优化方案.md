@@ -17,7 +17,7 @@
 | P1 | 2.5 经验匹配带权相似度 + 冲突检测修正 | ✅ | 11 条单测：不相关 failure/success 不再判冲突；同场景对立结论仍判冲突；regime 命中权重高于普通因素 |
 | P2 | 3.1 管道阶段关键路径阻断 | ✅ | 15 条单测：quotes 失败 → rebalance/market_scan/regime/rotation/autonomous 全部 skipped_dependency 不执行；检查点不标 completed 且未成功阶段不进 done_stages；失败经验只对真失败阶段写；LLM 返回 error 转降级；双路径失败抛 [failed_both_paths] |
 | P2 | 3.2 上下文压缩 Token 估算 + 分层压缩 | ✅ | `TestCompaction` 15 条（新增 10）：同一批中文消息新估算 2035 > 旧口径 800（x2.54；旧口径需约 41 万中文字符才触发 0.8×128k 重度压缩，新口径约 15.4 万）；档位边界 70399/70400/102400 → None/light/heavy；tool_calls 计入；摘要预算随规模伸缩；trim 保留最近 4 条 assistant；loop 实测选中 light 档 |
-| P2 | 3.3 经验权重指数衰减 + 单一权威写入 | ⬜ | 单测：衰减不覆盖 boost 结果 |
+| P2 | 3.3 经验权重指数衰减 + 单一权威写入 | ✅ | 7 条单测：60 天经验衰减为 e^(-0.2)=0.819（旧线性口径 0.8）；`initial_weight=1.5` 衰减后 1.357 仍高于 1.0；boost 到 2.0 再跑 decay 值与来源都保持（核心回归）；boost/场景调权重复调用不放大（2 次仍 1.3）；评分 2.0 + pending → 停用，无使用数据的新经验不被误停 |
 | P2 | 3.4 辩论降级显式标记 debate_degraded | ⬜ | 单测：LLM 失败路径带标记 |
 | P2 | 3.5 N+1 查询清理（最短持有期/建议校验/禁入缓存） | ⬜ | 单测：批量查询生效 |
 | P3 | 4.1 风控工具补全（相关性/VaR/what-if 熔断） | ⬜ | 单测：工具注册 + 计算正确 |
@@ -263,6 +263,14 @@ app/config.py                                # 新增配置项（见下）
 - 引入 `weight_source`（`decay`/`boost`/`scenario`），同一次 lifecycle 更新内按优先级 `boost > scenario > decay` 结算，后写不覆盖前写的高值（取 max 而非直接赋值）
 - 低效处理补后续动作：`review_status=pending` 且 `effectiveness < 3.0` → 直接 `is_active=False`
 - 验证：单测——boost 到 2.0 的经验再跑 decay 不应跌回线性基线
+
+实施记录（2026-10-10）：
+- `Experience` 新增 `initial_weight`（默认 1.0，衰减基线）与 `weight_source`（decay/scenario/boost），走 `init_db()` 的 PRAGMA + `ALTER TABLE` 兼容迁移；实测旧库迁移后既有行 `initial_weight` 取默认值 1.0、`weight_source` 为 NULL（按最低优先级 decay 处理）。
+- 衰减改 `max(0.3, initial_weight × e^(-rate × 月数))`，rate 从 `settings.experience_weight_decay_rate`（0.1/月）读取，`LIFECYCLE_CONFIG` 里删掉同名的硬编码值，避免两处真值。
+- `_set_weight()` 为唯一写权重的入口：先统一封顶 `max_weight=2.0` 再结算，若现值来自更高优先级规则且不低于本次结果，则**整笔作废（值与 weight_source 都保持）**——只取 max 而仍把 source 写成 decay 的话，下一次衰减就又能把它抹掉，保护等于只生效一次。
+- boost 与场景调权改为**以衰减基线为参照换算**（`_decay_weight() × 系数`）而不是在上一次的存量权重上再乘：二者原本可被重复调用逐次放大。原 `min(2.0, weight×2)` 的封顶语义由 `_set_weight` 统一承担。
+- `_check_effectiveness` 补上停用动作，但**以 `success_rate is not None` 为闸门**：`effectiveness_score` 默认 0.0，若照字面按「pending 且 <3.0 就停用」实现，所有刚生成、尚无足量使用数据的经验会在第一轮生命周期里被全部停用（直接把经验闭环关掉）。`prune_low_effectiveness` 的 3.0 硬编码同步改用 `prune_effectiveness_threshold` 配置项，与停用线同源。
+- 附带发现（未改）：① `SmartExperienceMatcher.update_experience_weights()` 是直接写 `exp.weight` 的第二个写入口，但全仓无调用方，暂不动；② `tests/test_sector_rotation.py` 在 helper 内才 `from app.models.sw_industry import SwIndustryDaily`，而 `setUp` 先 `make_db()`，导致该文件单独跑或用 `-k` 筛跑时因建表早于模型导入而报 `no such table: sw_industry_daily`（全量跑靠别的模块先导入而掩盖）。
 
 **3.4 辩论降级显式标记**
 - `evaluate_rotation` 走 `_fallback_quant_decision` 时返回 `debate_degraded: true` + `degrade_reason`

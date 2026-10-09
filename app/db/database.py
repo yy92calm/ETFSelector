@@ -112,6 +112,8 @@ def init_db():
                 ("failure_signature", "VARCHAR(200)"),
                 ("occurrence_count", "INTEGER DEFAULT 1"),
                 ("last_triggered_date", "DATE"),
+                ("initial_weight", "FLOAT DEFAULT 1.0"),
+                ("weight_source", "VARCHAR(20)"),
             ]
 
             for col_name, col_type in exp_migrations:

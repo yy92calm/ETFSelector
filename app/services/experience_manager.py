@@ -1,10 +1,12 @@
 """经验生命周期管理"""
 
 import logging
+import math
 from datetime import date, datetime, timedelta
 from typing import List, Dict
 from sqlalchemy.orm import Session, object_session
 
+from app.config import get_settings
 from app.models.experience import Experience, ExperienceUsageRecord
 from app.models.portfolio import PortfolioSnapshot
 
@@ -16,12 +18,16 @@ class ExperienceManager:
 
     LIFECYCLE_CONFIG = {
         "expire_days": 90,
-        "weight_decay_rate": 0.1,
         "min_weight": 0.3,
+        "max_weight": 2.0,
         "validation_threshold": 3,
         "effectiveness_threshold": 6.0,
+        "prune_effectiveness_threshold": 3.0,
         "failure_priority_boost": 2.0,
     }
+
+    # 权重写入优先级：低优先级的规则不得覆盖高优先级刚算出的结果
+    WEIGHT_SOURCE_RANK = {"decay": 1, "scenario": 2, "boost": 3}
     
     def record_usage(self, strategy_id: int, db: Session, experience_ids: List[int] = None,
                      decision: Dict = None, source: str = "explicit",
@@ -148,7 +154,7 @@ class ExperienceManager:
         ).all()
         
         for exp in experiences:
-            self._apply_weight_decay(exp)
+            self._set_weight(exp, self._decay_weight(exp), "decay")
             self._check_expiration(exp)
             self._validate_if_needed(exp)
             self._check_effectiveness(exp)
@@ -156,13 +162,34 @@ class ExperienceManager:
         db.commit()
         logger.info(f"策略{strategy_id}经验生命周期更新完成")
     
-    def _apply_weight_decay(self, exp: Experience):
-        """权重衰减"""
-        days_since = (date.today() - exp.generated_date).days
-        months_since = days_since / 30
-        
-        new_weight = 1.0 - months_since * self.LIFECYCLE_CONFIG["weight_decay_rate"]
-        exp.weight = max(self.LIFECYCLE_CONFIG["min_weight"], new_weight)
+    def _decay_weight(self, exp: Experience) -> float:
+        """指数衰减基线：max(min_weight, initial_weight × e^(-rate × 月数))
+
+        以 initial_weight 为起点（生成时的权重），不再从 1.0 硬重算——
+        旧写法会把 boost 过的经验拉回线性基线，强化结果每跑一次生命周期就丢一次。
+        """
+        months_since = (date.today() - exp.generated_date).days / 30
+        initial = exp.initial_weight or exp.weight or 1.0
+        rate = get_settings().experience_weight_decay_rate
+        return max(self.LIFECYCLE_CONFIG["min_weight"], initial * math.exp(-rate * months_since))
+
+    def _set_weight(self, exp: Experience, value: float, source: str):
+        """权重单一权威写入：按优先级结算后再落库
+
+        已有更高优先级来源（如 boost）且现值不低于本次结果时整笔作废——
+        值与来源都保持，衰减不能把强化结果抹回基线；
+        同优先级或更高优先级则正常覆盖（衰减仍要能随时间下降）。
+        统一封顶 max_weight，避免场景调权被重复调用逐次放大。
+        """
+        value = round(min(self.LIFECYCLE_CONFIG["max_weight"], value), 3)
+        current_rank = self.WEIGHT_SOURCE_RANK.get(exp.weight_source or "decay", 1)
+        if (current_rank > self.WEIGHT_SOURCE_RANK[source]
+                and exp.weight is not None and exp.weight >= value):
+            return
+        if exp.weight == value and exp.weight_source == source:
+            return
+        exp.weight = value
+        exp.weight_source = source
     
     def _check_expiration(self, exp: Experience):
         """过期检查"""
@@ -189,11 +216,21 @@ class ExperienceManager:
             exp.failure_count = len(records) - positive
     
     def _check_effectiveness(self, exp: Experience):
-        """检查效果评分"""
-        if exp.effectiveness_score < self.LIFECYCLE_CONFIG["effectiveness_threshold"]:
-            if exp.is_validated:
-                exp.review_status = "pending"
-                logger.warning(f"经验{exp.id}效果评分过低: {exp.effectiveness_score}")
+        """检查效果评分：过低先待审，确实评得很低就直接停用
+
+        success_rate 为 None 表示还没有足量使用数据，此时 effectiveness_score 是默认值，
+        不能拿去做去留判断（否则新生成的经验会在第一轮生命周期里被全部停用）。
+        """
+        if exp.success_rate is None:
+            return
+        score = exp.effectiveness_score or 0.0
+        if score >= self.LIFECYCLE_CONFIG["effectiveness_threshold"]:
+            return
+        exp.review_status = "pending"
+        logger.warning(f"经验{exp.id}效果评分过低: {score}")
+        if score < self.LIFECYCLE_CONFIG["prune_effectiveness_threshold"]:
+            exp.is_active = False
+            logger.info(f"经验{exp.id}效果评分{score}低于停用线，已停用")
     
     def _get_usage_records(self, exp: Experience, limit: int = 10) -> List[ExperienceUsageRecord]:
         """获取使用记录"""
@@ -206,12 +243,12 @@ class ExperienceManager:
         return []
     
     def prune_low_effectiveness(self, strategy_id: int, db: Session) -> int:
-        """清理低效经验"""
+        """清理低效经验（阈值与生命周期停用线同源）"""
         low_effect = db.query(Experience).filter(
             Experience.strategy_id == strategy_id,
             Experience.is_active == True,
             Experience.is_validated == True,
-            Experience.effectiveness_score < 3.0,
+            Experience.effectiveness_score < self.LIFECYCLE_CONFIG["prune_effectiveness_threshold"],
         ).all()
         
         for exp in low_effect:
@@ -298,15 +335,17 @@ class ExperienceManager:
         for m in matched:
             exp = m["experience"]
             old_weight = exp.weight or 1.0
-            new_weight = m["adjusted_weight"]
-            
-            exp.weight = new_weight
-            
+            # 场景加成换算成「系数」再乘到衰减基线上：直接写 adjusted_weight
+            # 会让每次调用都在上一次的结果上再乘一遍，权重只增不减地漂走
+            factor = (m["adjusted_weight"] / old_weight) if old_weight > 0 else 1.0
+            proposed = self._decay_weight(exp) * factor
+            self._set_weight(exp, proposed, "scenario")
+
             adjustment_records.append({
                 "experience_id": exp.id,
                 "title": exp.title,
                 "old_weight": old_weight,
-                "new_weight": new_weight,
+                "new_weight": exp.weight,
                 "scenario_similarity": m["scenario_similarity"],
             })
         
@@ -327,10 +366,10 @@ class ExperienceManager:
         
         boosted_count = 0
         for exp in failure_experiences:
-            current_weight = exp.weight or 1.0
-            boosted_weight = current_weight * self.LIFECYCLE_CONFIG["failure_priority_boost"]
-            
-            exp.weight = min(2.0, boosted_weight)
+            # 同样以衰减基线为参照：重复调用不会把权重越乘越离谱，
+            # 而 boost 结果由 _set_weight 的优先级保护，不会被后续 decay 抹回基线
+            proposed = self._decay_weight(exp) * self.LIFECYCLE_CONFIG["failure_priority_boost"]
+            self._set_weight(exp, proposed, "boost")
             boosted_count += 1
         
         db.commit()

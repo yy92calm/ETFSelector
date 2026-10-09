@@ -251,5 +251,98 @@ class TestSmartMatchToolJsonSafe(unittest.TestCase):
         self.assertEqual(result["matched_experiences"][0]["scenario_similarity"], 0.9)
 
 
+class TestWeightAuthority(unittest.TestCase):
+    """3.3 权重单一权威：指数衰减以 initial_weight 为基线，低优先级规则不覆盖高优先级结果"""
+
+    def setUp(self):
+        from app.services.experience_manager import ExperienceManager
+        self.mgr = ExperienceManager()
+        self.db = make_db()
+        seed_strategy(self.db)
+
+    def _reload(self, exp_id):
+        from app.models.experience import Experience
+        return self.db.query(Experience).filter(Experience.id == exp_id).first()
+
+    def test_decay_is_exponential(self):
+        """60 天 → e^(-0.1×2)=0.819，而不是旧线性口径的 0.8"""
+        import math
+        exp = seed_experience(self.db, generated=TODAY - timedelta(days=60))
+        self.mgr.update_experience_lifecycle(1, self.db)
+        exp = self._reload(exp.id)
+        self.assertAlmostEqual(exp.weight, round(math.exp(-0.1 * 2), 3), places=3)
+        self.assertEqual(exp.weight_source, "decay")
+
+    def test_decay_starts_from_initial_weight_not_one(self):
+        """基线是生成时的权重：initial_weight=1.5 的经验衰减后仍应高于 1.0"""
+        import math
+        exp = seed_experience(self.db, title="高起点经验", weight=1.5,
+                              generated=TODAY - timedelta(days=30))
+        exp.initial_weight = 1.5
+        self.db.commit()
+        self.mgr.update_experience_lifecycle(1, self.db)
+        exp = self._reload(exp.id)
+        self.assertAlmostEqual(exp.weight, round(1.5 * math.exp(-0.1), 3), places=3)
+        self.assertGreater(exp.weight, 1.0)
+
+    def test_boost_survives_later_decay(self):
+        """核心回归：boost 到 2.0 的经验再跑 decay 不得跌回线性基线"""
+        exp = seed_experience(self.db, exp_type="failure", generated=TODAY)
+        self.mgr.boost_failure_experience_weights(1, self.db)
+        exp = self._reload(exp.id)
+        self.assertEqual(exp.weight, 2.0)
+        self.assertEqual(exp.weight_source, "boost")
+
+        self.mgr.update_experience_lifecycle(1, self.db)
+        exp = self._reload(exp.id)
+        self.assertEqual(exp.weight, 2.0)
+        self.assertEqual(exp.weight_source, "boost")
+
+    def test_repeated_boost_does_not_compound(self):
+        exp = seed_experience(self.db, exp_type="failure", generated=TODAY)
+        self.mgr.boost_failure_experience_weights(1, self.db)
+        first = self._reload(exp.id).weight
+        self.mgr.boost_failure_experience_weights(1, self.db)
+        self.assertEqual(self._reload(exp.id).weight, first)
+
+    def test_scenario_adjustment_rebases_on_decay_line(self):
+        """场景调权按系数换算到衰减基线：重复调用不会在上一次结果上再乘一遍"""
+        exp = seed_experience(self.db, generated=TODAY)
+        fake = [{
+            "experience": exp, "scenario_similarity": 0.5,
+            "adjusted_weight": (exp.weight or 1.0) * 1.3,
+        }]
+        for _ in range(2):
+            with patch("app.services.smart_experience_matcher.SmartExperienceMatcher."
+                       "match_experiences_by_scenario", return_value=fake):
+                self.mgr.apply_scenario_based_weight_adjustment(1, {"scenario_tags": []}, self.db)
+            exp = self._reload(exp.id)
+            fake[0]["experience"] = exp
+            fake[0]["adjusted_weight"] = exp.weight * 1.3
+        self.assertAlmostEqual(exp.weight, 1.3, places=3)
+        self.assertEqual(exp.weight_source, "scenario")
+
+    def test_low_effectiveness_experience_is_deactivated(self):
+        """待审 + 评分低于停用线 → 直接停用（旧实现只标 pending，僵尸经验一直参与匹配）"""
+        exp = seed_experience(self.db, title="低效经验", generated=TODAY - timedelta(days=10))
+        exp.is_validated = True
+        exp.success_rate = 0.1
+        exp.effectiveness_score = 2.0
+        self.db.commit()
+
+        self.mgr.update_experience_lifecycle(1, self.db)
+        exp = self._reload(exp.id)
+        self.assertEqual(exp.review_status, "pending")
+        self.assertFalse(exp.is_active)
+
+    def test_experience_without_usage_data_stays_active(self):
+        """没有足量使用数据时评分是默认值，不能据此停用新经验"""
+        exp = seed_experience(self.db, title="新经验", generated=TODAY)
+        self.mgr.update_experience_lifecycle(1, self.db)
+        exp = self._reload(exp.id)
+        self.assertTrue(exp.is_active)
+        self.assertEqual(exp.review_status, "pending")
+
+
 if __name__ == "__main__":
     unittest.main()

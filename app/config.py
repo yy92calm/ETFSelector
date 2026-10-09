@@ -38,6 +38,9 @@ class Settings(BaseSettings):
     context_compaction_light_ratio: float = 0.55
     compaction_min_tokens: int = 20000
 
+    # 经验生命周期
+    experience_weight_decay_rate: float = 0.1  # 权重指数衰减率（每月）
+
     # 数据源容错（efinance 防封）
     data_source_retries: int = 3  # 单次拉取失败重试次数
     data_source_retry_base: float = 1.5  # 退避基数（秒）

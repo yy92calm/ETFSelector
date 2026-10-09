@@ -40,7 +40,9 @@ class Experience(Base):
     is_validated = Column(Boolean, default=False, comment="是否已验证")
     is_active = Column(Boolean, default=True, comment="是否激活")
     expires_date = Column(Date, nullable=False, comment="过期日期")
-    weight = Column(Float, default=1.0, comment="权重（衰减）")
+    initial_weight = Column(Float, default=1.0, comment="生成时的权重基线（衰减以此为起点，不随时间变动）")
+    weight = Column(Float, default=1.0, comment="当前权重")
+    weight_source = Column(String(20), nullable=True, comment="权重的最后写入规则: decay/scenario/boost")
     
     # 审核
     review_status = Column(String(20), default="pending", comment="审核状态: pending/approved/rejected")
