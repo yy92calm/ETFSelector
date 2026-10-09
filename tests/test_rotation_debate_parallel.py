@@ -52,15 +52,16 @@ class TestRotationDebateParallel(unittest.TestCase):
         self.assertEqual(args[0]["tag"], "momentum")
         self.assertEqual(args[1]["tag"], "stability")
 
-    def test_one_side_error_still_reaches_judge(self):
-        """一方失败不应中断流程，仍要把可用意见交给裁决官"""
+    def test_one_side_error_skips_judge_and_marks_degraded(self):
+        """一派观点缺失时裁决官没有对抗材料：跳过裁决并显式标记降级"""
         self.o.momentum.analyze.return_value = {"error": "LLM超时"}
         self.o.stability.analyze.return_value = {"proposed_swaps": [], "stance": "hold"}
-        self.o.judge.analyze.return_value = {"decision": "hold", "final_swaps": []}
 
         out = self.o.debate(HOLDINGS, CANDIDATES)
-        self.assertEqual(out["decision"], "hold")
-        self.o.judge.analyze.assert_called_once()
+        self.o.judge.analyze.assert_not_called()
+        self.assertTrue(out["debate_degraded"])
+        self.assertTrue(out["degrade_reason"].startswith("upstream_missing"))
+        self.assertIn("动量派", out["degrade_reason"])
 
     def test_judge_error_falls_back_to_hold(self):
         self.o.momentum.analyze.return_value = {"stance": "rotate"}
@@ -69,7 +70,16 @@ class TestRotationDebateParallel(unittest.TestCase):
 
         out = self.o.debate(HOLDINGS, CANDIDATES)
         self.assertEqual(out, {"decision": "hold", "final_swaps": [],
-                               "reason": "辩论异常，维持持仓"})
+                               "reason": "辩论异常，维持持仓",
+                               "debate_degraded": True, "degrade_reason": "judge_failed"})
+
+    def test_full_debate_is_not_marked_degraded(self):
+        self.o.momentum.analyze.return_value = {"stance": "rotate"}
+        self.o.stability.analyze.return_value = {"stance": "hold"}
+        self.o.judge.analyze.return_value = {"decision": "rotate", "final_swaps": [{"remove": "510300", "add": "512880"}]}
+
+        out = self.o.debate(HOLDINGS, CANDIDATES)
+        self.assertNotIn("debate_degraded", out)
 
     def test_rule_context_still_injected(self):
         self.o.momentum.analyze.return_value = {}

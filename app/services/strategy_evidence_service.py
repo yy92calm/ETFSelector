@@ -407,6 +407,9 @@ class StrategyEvidenceService:
             "sources_cited": list(evidence.get("sources_cited") or []),
             "experience_used": evidence.get("experience_used") or 0,
             "snapshot": evidence.get("snapshot"),
+            # 结论是否出自完整辩论（降级路径下 LLM 未参与，前端须显式提示）
+            "debate_degraded": bool(ar.get("debate_degraded")),
+            "degrade_reason": ar.get("degrade_reason"),
         }
 
 

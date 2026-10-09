@@ -222,15 +222,22 @@ class RotationService:
 
         debate_result = self._run_debate(eligible_holdings, enter_candidates, rule_signal,
                                          sector_context, sentiment_context, suggestion_context)
+        # 降级标记随计划与回执一路带到留痕，避免「纯量化结论」被当成辩论结论
+        debate_degraded = bool(debate_result.get("debate_degraded"))
+        degrade_reason = debate_result.get("degrade_reason")
+        degrade_note = "【未经辩论·降级】" if debate_degraded else ""
 
         if debate_result.get("decision") != "rotate" or not debate_result.get("final_swaps"):
             if suggestions:
                 suggestion_svc.settle(db, strategy_id, "rejected",
-                                      "辩论驳回：" + str(debate_result.get("summary") or "")[:200])
+                                      degrade_note + "辩论驳回：" +
+                                      str(debate_result.get("summary") or "")[:200])
             return {
                 "action": "hold",
                 "reason": debate_result.get("summary", "辩论裁决维持持仓"),
                 "debate": debate_result,
+                "debate_degraded": debate_degraded,
+                "degrade_reason": degrade_reason,
                 "rule_signal": rule_signal,
                 "sector_meta": sector_meta,
                 "sector_context": sector_context,
@@ -262,15 +269,17 @@ class RotationService:
 
         if not rotations:
             suggestion_svc.settle(db, strategy_id, "rejected",
-                                  "辩论裁决无有效替换：" + str(debate_result.get("summary") or "")[:200])
+                                  degrade_note + "辩论裁决无有效替换：" +
+                                  str(debate_result.get("summary") or "")[:200])
             return {"action": "hold", "reason": "辩论裁决无有效替换", "debate": debate_result,
+                    "debate_degraded": debate_degraded, "degrade_reason": degrade_reason,
                     "rule_signal": rule_signal, "sector_meta": sector_meta,
                     "sector_context": sector_context, "gap_threshold": threshold}
 
         if suggestions:
             suggestion_svc.settle(
                 db, strategy_id, "adopted",
-                "轮动通道采纳（%s）：%s" % (
+                degrade_note + "轮动通道采纳（%s）：%s" % (
                     "；".join("%s→%s" % (r["remove"], r["add"]) for r in rotations),
                     str(debate_result.get("summary") or "")[:150]),
             )
@@ -280,6 +289,8 @@ class RotationService:
             "holdings_before": current_holdings,
             "scan_date": scan_date.isoformat(),
             "debate": debate_result,
+            "debate_degraded": debate_degraded,
+            "degrade_reason": degrade_reason,
             "rule_signal": rule_signal,
             "sector_meta": sector_meta,
             "sector_context": sector_context,
@@ -468,19 +479,28 @@ class RotationService:
         settings = get_settings()
         if not (settings.llm_api_key and settings.llm_api_key.strip()):
             logger.info("[Rotation] LLM未配置，降级为纯量化裁决")
-            return self._fallback_quant_decision(holdings, candidates)
+            return self._fallback_quant_decision(holdings, candidates, "llm_not_configured")
 
         try:
             debate = RotationDebateOrchestrator()
-            return debate.debate(holdings, candidates, rule_signal=rule_signal,
-                                 sector_context=sector_context,
-                                 sentiment_context=sentiment_context,
-                                 suggestion_context=suggestion_context)
+            result = debate.debate(holdings, candidates, rule_signal=rule_signal,
+                                   sector_context=sector_context,
+                                   sentiment_context=sentiment_context,
+                                   suggestion_context=suggestion_context)
+            reason = str(result.get("degrade_reason") or "")
+            if reason.startswith("upstream_missing"):
+                # 某一派观点缺失时裁决官没有对抗材料，残缺输入只会产出偏向存活一方的结论；
+                # 退回量化通道而不是硬裁决（与 LLM 未配置同一口径：量化仍能决策）
+                logger.warning(f"[Rotation] 辩论上游缺失（{reason}），降级纯量化")
+                return self._fallback_quant_decision(holdings, candidates, reason)
+            return result
         except Exception as e:
             logger.warning(f"[Rotation] 辩论异常，降级纯量化: {e}")
-            return self._fallback_quant_decision(holdings, candidates)
+            return self._fallback_quant_decision(holdings, candidates, f"debate_exception: {str(e)[:120]}")
 
-    def _fallback_quant_decision(self, holdings: List[Dict], candidates: List[Dict]) -> Dict:
+    def _fallback_quant_decision(self, holdings: List[Dict], candidates: List[Dict],
+                                 degrade_reason: str) -> Dict:
+        """纯量化兜底裁决：结论不是 LLM 辩论产物，必须带显式降级标记留痕"""
         from app.services.sector_selection_service import get_sector_selection_service
         sorted_holdings = get_sector_selection_service().ordering_key(holdings)
         sorted_candidates = sorted(candidates, key=lambda x: -x["composite_score"])
@@ -503,10 +523,13 @@ class RotationService:
             if len(swaps) >= 2:
                 break
 
+        degraded = {"debate_degraded": True, "degrade_reason": degrade_reason}
         if not swaps:
-            return {"decision": "hold", "final_swaps": [], "summary": "得分差距不足，维持持仓"}
+            return {"decision": "hold", "final_swaps": [],
+                    "summary": "得分差距不足，维持持仓（未经辩论）", **degraded}
 
-        return {"decision": "rotate", "final_swaps": swaps, "summary": f"纯量化裁决替换{len(swaps)}只"}
+        return {"decision": "rotate", "final_swaps": swaps,
+                "summary": f"纯量化裁决替换{len(swaps)}只（未经辩论）", **degraded}
 
     def _collect_proposals(self, base_allocation: Dict, suggestions: List,
                            scan_date: date, db: Session, banned: Dict,

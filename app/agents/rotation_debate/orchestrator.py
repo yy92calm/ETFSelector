@@ -70,13 +70,23 @@ class RotationDebateOrchestrator:
         if "error" in stability_opinion:
             logger.warning(f"[RotationDebate] 稳定派失败: {stability_opinion.get('error')}")
 
+        missing = [label for label, op in (("动量派", momentum_opinion), ("稳定派", stability_opinion))
+                   if "error" in op]
+        if missing:
+            # 只剩一派的辩论材料不再是对抗式论证，硬让裁决官在残缺材料上裁决只会给出
+            # 偏向存活一方的结论；跳过裁决（省一次必废的 LLM 调用）并交由量化通道兜底
+            logger.warning(f"[RotationDebate] {'、'.join(missing)}观点缺失，跳过裁决官（降级）")
+            return {"decision": "hold", "final_swaps": [], "summary": "辩论材料残缺，未经裁决官裁决",
+                    "debate_degraded": True, "degrade_reason": f"upstream_missing: {'、'.join(missing)}"}
+
         final = self.judge.analyze(momentum_opinion, stability_opinion, holdings, candidates,
                                    rule_context, sector_context, sentiment_context,
                                    suggestion_context)
 
         if "error" in final:
             logger.warning(f"[RotationDebate] 裁决失败: {final.get('error')}")
-            return {"decision": "hold", "final_swaps": [], "reason": "辩论异常，维持持仓"}
+            return {"decision": "hold", "final_swaps": [], "reason": "辩论异常，维持持仓",
+                    "debate_degraded": True, "degrade_reason": "judge_failed"}
 
         logger.info(f"[RotationDebate] 裁决: {final.get('decision')} | {final.get('summary', '')[:60]}")
         return final

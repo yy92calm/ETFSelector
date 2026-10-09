@@ -410,6 +410,8 @@ def _record_condition_review(strategy, plan, guard, result, db):
         "source": "sentiment_condition",
         "trigger": "condition",
         "gap_threshold": plan.get("gap_threshold"),
+        "debate_degraded": bool(plan.get("debate_degraded")),
+        "degrade_reason": plan.get("degrade_reason"),
     }
     try:
         analysis["evidence"] = {

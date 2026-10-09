@@ -3276,6 +3276,7 @@ tr.mkt-top .mkt-rank { color: var(--accent); }
 .ev-dec-action { padding: 1px 8px; border-radius: 10px; background: rgba(2, 132, 199, 0.12); color: var(--accent); font-weight: 600; }
 .ev-dec-reason { flex: 1; min-width: 120px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ev-dec-sources { display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text-secondary); }
+.ev-dec-degraded { padding: 1px 8px; border-radius: 10px; background: rgba(217, 119, 6, 0.12); color: var(--warning); font-weight: 600; cursor: help; }
 .ev-cite { padding: 1px 7px; border-radius: 3px; background: rgba(2, 132, 199, 0.1); color: var(--accent); font-weight: 600; }
 .ev-cite-none { background: rgba(92, 111, 130, 0.12); color: var(--text-secondary); font-weight: 500; }
 

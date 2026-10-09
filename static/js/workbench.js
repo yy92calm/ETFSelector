@@ -895,6 +895,17 @@ const Workbench = {
         const num = v => (v == null ? '-' : v);
         const pct = v => (v == null ? '-' : (v * 100).toFixed(0) + '%');
         const sourceLabels = { market: '行情', research: '研究', rules: '规则', sentiment: '舆情' };
+        // 降级原因码 → 中文（tooltip 里给原始 reason 细节）
+        const degradeLabels = {
+            llm_not_configured: 'LLM未配置',
+            upstream_missing: '辩论材料残缺',
+            judge_failed: '裁决官失败',
+            debate_exception: '辩论调用异常',
+        };
+        const degradeLabel = (r) => {
+            const key = Object.keys(degradeLabels).find(k => String(r || '').startsWith(k));
+            return key ? degradeLabels[key] : '未经完整辩论';
+        };
 
         if (sub) sub.textContent = d.as_of ? `数据截至 ${d.as_of}` : '';
 
@@ -909,6 +920,7 @@ const Workbench = {
             ? `<div class="ev-decision">
                     <span class="ev-dec-date">${this.esc(dec.log_date || '-')}</span>
                     <span class="ev-dec-action">${this.esc(this.zh(dec.action || '-'))}</span>
+                    ${dec.debate_degraded ? `<span class="ev-dec-degraded" title="${this.esc(dec.degrade_reason || '')}">${this.esc(degradeLabel(dec.degrade_reason))}·未经辩论</span>` : ''}
                     <span class="ev-dec-reason" title="${this.esc(dec.reason || '')}">${this.esc(this.zhText((dec.reason || '').substring(0, 60)))}</span>
                     <span class="ev-dec-sources">依据 ${citedHtml}</span>
                </div>`

@@ -18,7 +18,7 @@
 | P2 | 3.1 管道阶段关键路径阻断 | ✅ | 15 条单测：quotes 失败 → rebalance/market_scan/regime/rotation/autonomous 全部 skipped_dependency 不执行；检查点不标 completed 且未成功阶段不进 done_stages；失败经验只对真失败阶段写；LLM 返回 error 转降级；双路径失败抛 [failed_both_paths] |
 | P2 | 3.2 上下文压缩 Token 估算 + 分层压缩 | ✅ | `TestCompaction` 15 条（新增 10）：同一批中文消息新估算 2035 > 旧口径 800（x2.54；旧口径需约 41 万中文字符才触发 0.8×128k 重度压缩，新口径约 15.4 万）；档位边界 70399/70400/102400 → None/light/heavy；tool_calls 计入；摘要预算随规模伸缩；trim 保留最近 4 条 assistant；loop 实测选中 light 档 |
 | P2 | 3.3 经验权重指数衰减 + 单一权威写入 | ✅ | 7 条单测：60 天经验衰减为 e^(-0.2)=0.819（旧线性口径 0.8）；`initial_weight=1.5` 衰减后 1.357 仍高于 1.0；boost 到 2.0 再跑 decay 值与来源都保持（核心回归）；boost/场景调权重复调用不放大（2 次仍 1.3）；评分 2.0 + pending → 停用，无使用数据的新经验不被误停 |
-| P2 | 3.4 辩论降级显式标记 debate_degraded | ⬜ | 单测：LLM 失败路径带标记 |
+| P2 | 3.4 辩论降级显式标记 debate_degraded | ✅ | 8 条新单测 + 3 条改写：LLM 未配置时计划 `degrade_reason=llm_not_configured` 且量化仍决策（缺口 40 分 → rotate）；一派观点缺失 → 跳过裁决官、量化接管（`upstream_missing: 动量派`）；裁决官失败 → 维持 hold 但带 `judge_failed`；完整辩论无任何标记；建议回执前缀「【未经辩论·降级】」；依据接口透出两字段 |
 | P2 | 3.5 N+1 查询清理（最短持有期/建议校验/禁入缓存） | ⬜ | 单测：批量查询生效 |
 | P3 | 4.1 风控工具补全（相关性/VaR/what-if 熔断） | ⬜ | 单测：工具注册 + 计算正确 |
 | P3 | 4.2 因子表现与板块影响分析工具 | ⬜ | 单测：工具返回结构 |
@@ -277,6 +277,15 @@ app/config.py                                # 新增配置项（见下）
 - Orchestrator 中前序 Agent 失败 → 依赖它的下游 Agent 跳过并置 `upstream_missing`，最终 `debate_degraded`
 - 前端「决策依据」展示该标记（只读字段，新增不改契约）
 - 验证：单测——LLM 不可用路径返回体含 `debate_degraded`
+
+实施记录（2026-10-10）：
+- `degrade_reason` 用**原因码前缀**承载机器可判读的口径，中文只作展示：`llm_not_configured` / `upstream_missing: 动量派` / `judge_failed` / `debate_exception: <异常前120字>`。前端 `degradeLabels` 做码→中文映射，原始 reason 放 tooltip，避免把中文文案当契约。
+- **偏离方案字面（有意的行为变更）**：原实现是「一派失败仍把单边材料交给裁决官」（`test_one_side_error_still_reaches_judge` 明确断言过）。现改为一派缺失即**跳过裁决官**并返回 `upstream_missing`，由 `rotation_service._run_debate` 接管退回量化通道——对抗式辩论缺一派就只剩一面之词，硬裁决只会产出偏向存活一方的结论，且白花一次 LLM 调用。该用例已改写为 `test_one_side_error_skips_judge_and_marks_degraded`（断言 `judge.analyze` 未被调用）。
+- 三类降级的**处置不同**：`llm_not_configured` / `upstream_missing` / `debate_exception` → 量化兜底**仍可换仓**（缺口 40 分实测 action=rotate）；`judge_failed`（裁决官自己出错）→ 沿用原口径**维持持仓**，只补标记。理由是前者是"没有 LLM 但材料完整"，后者是"材料完整而裁决环节出错"。
+- 降级标记的落点：`evaluate_rotation` 三个含辩论的返回体（hold-after-debate / hold-无有效替换 / rotate）、`_record_condition_review` 的 `analysis_result`、`strategy_evidence_service._last_decision`。**未在每日 `rotation_review` 阶段的返回体加**——该阶段本就不写 `action_type="analyzed"` 日志，前端「决策依据」读不到它，加了也没有消费方；对用户可见的两处是条件复核留痕与**建议回执**（`settle` 的 note 前缀「【未经辩论·降级】」，3 处 settle 全带）。
+- 附：`static/js/workbench.js` 徽章 `.ev-dec-degraded` 用 `var(--warning)` 橙（非红非绿，避开 A股涨跌色语义），静态资源 bump 至 v44/v52。**该徽章未在浏览器实测**：本地库没有带 `debate_degraded` 的 analyzed 日志，为造数据而写运行时库不合适；仅做了 `node --check` 语法校验与 diff 复核。
+- 踩坑记录：`rotation_service` 是在函数内 `from app.config import get_settings`，故 patch 目标必须是 `app.config.get_settings`，写成 `app.services.rotation_service.get_settings` 会报「module does not have the attribute」；另因 `make_db()` 只按「当前已导入的模型」建表，测试文件须在模块顶导入 `AllocationSuggestion`，否则首个用例先跑 `make_db()` 会报 `no such table: allocation_suggestion`（即 3.3 附带发现②的同一坑）。
+- 附带发现（未改）：`rotation_service.py:167` 与 `:173` 是同一个返回体里的重复键 `"suggestion_execution"`，后者覆盖前者且值相同，属无害冗余；与本次需求无关，按精准修改原则不动。
 
 **3.5 剩余 N+1 清理**
 - `_check_min_hold_period`：一次查所有持仓 code 的最近买入记录
