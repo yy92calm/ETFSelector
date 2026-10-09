@@ -1,9 +1,10 @@
 """因子表现服务 - 计算IC（信息系数）、自适应权重"""
 
+import bisect
 import logging
 from collections import defaultdict
 from datetime import date, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from sqlalchemy import func
@@ -36,24 +37,25 @@ class FactorPerformanceService:
         """
         from app.models.etf import ETFDailyIndicator
 
-        existing = set(db.query(FactorPerformance.factor_name).distinct().all())
-        if existing:
-            # 已有数据则跳过（避免重复）
-            existing_dates = set(r[0] for r in db.query(FactorPerformance.trade_date).distinct().all())
-        else:
-            existing_dates = set()
-
         indicators = db.query(ETFDailyIndicator).all()
         if not indicators:
             return 0
+
+        # 按记录身份（代码+日期+因子）去重，只跳过真正已存在的那一条：
+        # 逐个因子补齐时不能因为某日已有部分因子就跳过整日，否则缺失因子永远补不上
+        existing = {(r[0], r[1], r[2]) for r in db.query(
+            FactorPerformance.etf_code,
+            FactorPerformance.trade_date,
+            FactorPerformance.factor_name,
+        ).filter(FactorPerformance.trade_date.in_(
+            {i.trade_date for i in indicators}
+        )).distinct().all()}
 
         from app.services.market_scanner_service import get_market_scanner_service
         scanner = get_market_scanner_service()
 
         added = 0
         for ind in indicators:
-            if ind.trade_date in existing_dates:
-                continue
             scores = {
                 "momentum": scanner._normalize_momentum(ind.momentum_score or 0),
                 "trend": (ind.trend_strength or 0) / 3.0 * 100,
@@ -62,6 +64,10 @@ class FactorPerformanceService:
                 "capital_flow": scanner._flow_score(ind.obv_slope or 0, ind.amount_avg_5d or 0),
             }
             for fname, score in scores.items():
+                key = (ind.etf_code, ind.trade_date, fname)
+                if key in existing:
+                    continue
+                existing.add(key)
                 db.add(FactorPerformance(
                     etf_code=ind.etf_code,
                     trade_date=ind.trade_date,
@@ -88,28 +94,28 @@ class FactorPerformanceService:
         if not pending:
             return 0
 
-        dates = sorted({p.trade_date for p in pending})
+        # 逐条查「T 之后 5 日行情」会让回填产生与记录数同阶的 SQL 往返，
+        # 这里一次性拉平整个日期区间的收盘价后在内存定位 T+5
+        trade_dates_by_code, close_prices = self._load_close_prices(
+            {p.etf_code for p in pending},
+            min(p.trade_date for p in pending),
+            db,
+        )
+
         filled = 0
         for p in pending:
-            # 找到 T+5 日的收盘价
-            future_quotes = db.query(ETFQuotation).filter(
-                ETFQuotation.etf_code == p.etf_code,
-                ETFQuotation.trade_date > p.trade_date,
-            ).order_by(ETFQuotation.trade_date.asc()).limit(5).all()
-
-            if len(future_quotes) < 5:
+            dates = trade_dates_by_code.get(p.etf_code)
+            if not dates:
                 continue
 
-            base_price = None
-            base_q = db.query(ETFQuotation).filter(
-                ETFQuotation.etf_code == p.etf_code,
-                ETFQuotation.trade_date == p.trade_date,
-            ).first()
-            if base_q:
-                base_price = base_q.close_price
+            # bisect 定位 T 之后的第一个交易日，第5个即 T+5
+            start = bisect.bisect_right(dates, p.trade_date)
+            if start + 4 >= len(dates):
+                continue
 
-            target_price = future_quotes[4].close_price
-            if base_price and base_price > 0:
+            base_price = close_prices.get((p.etf_code, p.trade_date))
+            target_price = close_prices.get((p.etf_code, dates[start + 4]))
+            if base_price and target_price and base_price > 0:
                 p.forward_return_5d = round((target_price - base_price) / base_price * 100, 4)
                 filled += 1
 
@@ -117,6 +123,29 @@ class FactorPerformanceService:
             db.commit()
             logger.info(f"[FactorPerf] 回填 {filled} 条未来5日收益")
         return filled
+
+    @staticmethod
+    def _load_close_prices(codes: set, since_date: date,
+                           db: Session) -> Tuple[Dict[str, List[date]], Dict[Tuple[str, date], float]]:
+        """一次查询取回区间内收盘价
+
+        返回 ({代码: 升序交易日列表}, {(代码, 日期): 收盘价})。
+        收盘价为空的行情不参与交易日计数，避免把停牌日算进 T+5。
+        """
+        rows = db.query(ETFQuotation.etf_code, ETFQuotation.trade_date, ETFQuotation.close_price) \
+            .filter(ETFQuotation.etf_code.in_(codes),
+                    ETFQuotation.trade_date >= since_date,
+                    ETFQuotation.close_price != None) \
+            .order_by(ETFQuotation.trade_date.asc()) \
+            .all()
+
+        trade_dates_by_code: Dict[str, List[date]] = defaultdict(list)
+        close_prices: Dict[Tuple[str, date], float] = {}
+        for code, trade_date, close_price in rows:
+            close_prices[(code, trade_date)] = close_price
+            trade_dates_by_code[code].append(trade_date)
+
+        return trade_dates_by_code, close_prices
 
     def compute_daily_ic(self, target_date: date, db: Session) -> Dict[str, float]:
         """计算某日各因子的截面IC（Spearman秩相关：因子值 vs 未来5日收益）"""
