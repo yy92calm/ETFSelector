@@ -21,7 +21,7 @@
 | P2 | 3.4 辩论降级显式标记 debate_degraded | ✅ | 8 条新单测 + 3 条改写：LLM 未配置时计划 `degrade_reason=llm_not_configured` 且量化仍决策（缺口 40 分 → rotate）；一派观点缺失 → 跳过裁决官、量化接管（`upstream_missing: 动量派`）；裁决官失败 → 维持 hold 但带 `judge_failed`；完整辩论无任何标记；建议回执前缀「【未经辩论·降级】」；依据接口透出两字段 |
 | P2 | 3.5 N+1 查询清理（最短持有期/建议校验/禁入缓存/行情补全/上下文遗留） | ✅ | 14 条新单测：SQL 计数断言次数不随实体数增长（1 持仓 vs 4 持仓均 1 次 trade_record 查询、1 vs 4 代码均 1 次 etf_basic、3 vs 20 只 ETF 均 1 次 etf_quotation、1 vs 4 策略均 1 次 portfolio_snapshot）；禁入名单二次调用 0 查询、record_failure 后重查；过期失败模式不再规避；批量与逐标的结果逐字段相等 |
 | P3 | 4.1 风控工具补全（相关性/VaR/what-if 熔断） | ✅ | 21 条新单测：VaR 用解析期望值断言（5 个亏损日+55 个+0.2%，60 观测下 95% 分位=2%、ES=3.5%）+ √t 缩放 + 置信度夹取 + 待生效优先；相关矩阵 ±1/均值/样本不足/缺行情分支；what-if 四结构与越线组合，并断言 what-if 后 allocation_config/pending_allocation 逐字段不变；工具注册为 read 且经 registry 可执行 |
-| P3 | 4.2 因子表现与板块影响分析工具 | ⬜ | 单测：工具返回结构 |
+| P3 | 4.2 因子表现与板块影响分析工具 | ✅ | 21 条新单测：ICIR 用解析值锁 ddof=1（`[0.1,0.3]` → std 0.1414、ICIR 1.4142，总体口径会得 0.1/1.0）；IC 三分支用**真实秩相关**构造（每日恒 +1 → ICIR 无定义、±1 摆动 → 均值 0 判噪声、因子值全同 → 0 观测判样本不足）；板块侧锁逆风名单与合计权重、集中度超限/合规、待生效优先、`mode=off` 无逆风、无板块数据、策略不存在、空配置；两工具 `risk_level=read` 且经 registry 可执行 |
 | P3 | 4.3 复盘 avg_return 改期间收益率 | ⬜ | 单测：期间收益率计算 |
 | P3 | 4.4 delete_strategy 软删除 | ⬜ | 单测：删除后数据可查回 |
 
@@ -331,6 +331,21 @@ app/config.py                                # 新增配置项（见下）
 **4.2 分析工具补全**
 - `get_factor_performance(db)`：当前自适应权重 + 各因子近 20 日 IC 均值/ICIR（复用 `factor_performance_service`）
 - `get_sector_impact_analysis(db, strategy_id)`：持仓所在申万板块的当前评分/低配标记 + 逆风持仓清单（复用 `sector_selection_service`）
+
+实施记录（2026-10-11）：
+- 两个工具都落 `app/tools/analysis_tools.py`（与 `run_multi_agent_analysis`/`get_review_report` 同层的只读分析工具），service 不改；IC 统计放工具层私有函数 `_ic_stats`/`_ic_reliability`，与 `get_sentiment_data` 在工具内做正负计数的既有先例一致，不为一个消费方新增 service API。
+- **与 `get_sector_rotation` 的分工**（避免重复工具）：那个是**板块视角**——全市场 31 个申万一级按评分排名，回答「现在哪些板块强」；新工具是**持仓视角**——我持有的标的各自站在什么板块信号里、谁逆风、板块集中度是否超限。数据源同为 `sw_industry_service.get_sector_view`，但输入集合与结论不同，不合并。
+- ICIR = `mean(IC) / std(IC, ddof=1)`。只看 IC 均值会把「今天 +1、明天 -1」的因子当有效（均值 0 但完全不可用），除以标准差惩罚的正是这种不稳定；一个稳定在 0.05 的因子比在 ±0.6 之间跳荡的均值 0.2 更可用。样本标准差用 ddof=1（截面观测是总体的抽样）。`n<2` 与 `std=0` 都返回 **None 而不是 0**：0 会被读成「稳定地没用」，None 才是「没法判断」，`reliability` 相应分「样本不足 / IC 无波动」两档。
+- 因子列按 **|IC 均值| 降序**排（与自适应权重的 |IC| 归一口径一致，权重列与因子列不会互相打脸），ICIR 只作 `reliability` 注脚（稳定 ≥0.5 / 一般 ≥0.3 / 噪声）。
+- 方案里的「近 20 日」实现为 `ic_days=20` **自然日**（沿用 `get_ic_history` 已有的 `today - timedelta(days)` 窗口口径，不新造一套交易日窗口语义），实测约对应 14 个交易日截面；`ic_days`/`lookback_days` 夹到 `[5, 250]`，避免 LLM 传 0 或 100000。
+- 截面因子值全相同（如停更的 `capital_flow`）时 Spearman 分母为 0，service 已丢弃该日 → 工具里表现为 `obs_days=0` + 「样本不足」，**不会伪装成 IC=0**。
+- 板块判定不自己写阈值：直接调 `sector_selection_service.annotate()` + `split()` 取 `meta["headwind_holdings"]`，因此逆风口径与选型/辩论材料**同源**（改阈值只有一处真值）。`sector_rotation_mode=off` 时信号照常展示、但 `headwind` 全 False，`text` 明写「板块层未启用…仅为展示，不参与选型」，防止 LLM 把展示当指令。
+- 板块集中度阈值取 `RiskController.RISK_CONFIG["risk_budget"]["max_sector_concentration"]`（0.40）——该配置此前**没有任何消费方**（`_eval_risk_budget` 只校验单只仓位），本工具是第一个；不在工具里另写 40%，避免与风控预算两处真值。
+- 基准口径与 4.1 一致用 `get_effective_target_allocation`（待生效优先），ETF 名称一次 `in_()` 取回（板块归类靠名称关键词反查，逐只查就是 N+1）。
+- 两种「没有板块」分开表达：`status=no_sector_data`（sw_sector 阶段未同步，全部持仓 `sector=None`，信息是「数据缺失别下结论」）vs `unmatched_codes`（宽基/跨行业 ETF 本就不在关键词表，属正常、按中性）。
+- 踩坑记录：测试 helper 写 `alloc or {默认三持仓}` 会把显式传入的 `{}` 当「没传」（`{} or x → x`），于是「空配置 → error」分支拿到的是默认持仓而 `KeyError: 'error'`，改 `if alloc is None else`；`_ic_stats([0.1,0.3])` 的样本标准差是 0.1414 不是 0.2（首版按总体口径写断言）；构造 IC 摆动分支必须用**偶数个**观测日——3 天时 ±1 的均值是 +0.333 而非 0，噪声分支不成立。
+- 附带发现（未改）：本工具要扫两遍 `factor_performance`（`get_ic_history` 与 `get_adaptive_weights` 各自重算逐日截面 IC），因两个窗口独立（`ic_days` vs `lookback_days`）不能简单合并成一次查询；每轮决策只调一次，暂不优化。另 `docs/工作流程.md` 的工具清单表已与实际注册名不符（`get_sentiment_summary`、`match_experience` 均非注册工具名，也缺 4.1/4.2 新增工具），属历史文档，未整理。
+- 附带发现（未改）：截面因子值恒定时 numpy 在 `np.corrcoef` 内抛 `invalid value encountered in divide` RuntimeWarning（service 既有行为，已用 `isnan` 兜住并跳过该因子），测试造常量因子会看到该告警。
 
 **4.3 复盘统计口径**
 - `avg_return` → `period_return = (last.total_asset - first.total_asset) / first.total_asset`，并另给 `daily_avg_return`（按相邻**交易日**快照，跳过周末间隔）

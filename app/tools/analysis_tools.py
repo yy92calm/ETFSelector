@@ -1,7 +1,9 @@
 """分析工具 - 多Agent分析、舆情、技术指标、经验匹配"""
 
 import logging
+import math
 from datetime import date, timedelta
+from typing import Dict, List
 
 from sqlalchemy.orm import Session
 
@@ -260,4 +262,204 @@ def smart_match_experiences(db: Session, strategy_id: int) -> dict:
         "current_scenario": scenario,
         "matched_experiences": items[:10],
         "total_matched": len(items),
+    }
+
+
+def _ic_stats(values: List[float]) -> Dict:
+    """IC 序列统计：均值 / 样本标准差（ddof=1）/ ICIR
+
+    ICIR = mean(IC) / std(IC)：只看均值会把「一天很准、一天反向」的噪声因子当有效因子，
+    除以标准差惩罚的正是这种不稳定。观测<2 或标准差为 0 时 ICIR 不可算（返回 None）。
+    """
+    n = len(values)
+    if n == 0:
+        return {"obs_days": 0, "ic_mean": None, "ic_std": None, "icir": None}
+    mean = sum(values) / n
+    if n < 2:
+        return {"obs_days": 1, "ic_mean": round(mean, 4), "ic_std": None, "icir": None}
+    std = math.sqrt(sum((v - mean) ** 2 for v in values) / (n - 1))
+    return {
+        "obs_days": n,
+        "ic_mean": round(mean, 4),
+        "ic_std": round(std, 4),
+        "icir": round(mean / std, 4) if std > 1e-12 else None,
+    }
+
+
+def _ic_reliability(stats: Dict) -> str:
+    """IC 稳定性标签：按 |ICIR| 分档；标准差为 0 时 ICIR 无定义但方向完全一致"""
+    if stats["obs_days"] < 2:
+        return "样本不足"
+    icir = stats["icir"]
+    if icir is None:
+        return "IC 无波动"
+    return "稳定" if abs(icir) >= 0.5 else "一般" if abs(icir) >= 0.3 else "噪声"
+
+
+@tool(name="get_factor_performance", description="获取因子表现画像：当前自适应打分权重 + 各因子近期 IC 均值与 ICIR，用于判断哪个因子仍有效、哪个已失效")
+def get_factor_performance(db: Session, ic_days: int = 20, lookback_days: int = 30) -> dict:
+    """因子表现画像
+
+    Args:
+    ic_days: IC 统计窗口（自然日；每因子需≥2 个截面日才能算 ICIR）
+    lookback_days: 自适应权重的回看窗口（自然日）
+    """
+    from app.services.factor_performance_service import (
+        DEFAULT_WEIGHTS, FACTORS, get_factor_performance_service,
+    )
+
+    svc = get_factor_performance_service()
+    ic_days = max(5, min(int(ic_days), 250))
+    lookback_days = max(5, min(int(lookback_days), 250))
+
+    history = svc.get_ic_history(db, days=ic_days)
+    samples: Dict[str, List[float]] = {f: [] for f in FACTORS}
+    for day in history:
+        for fname, ic in (day.get("ic") or {}).items():
+            samples.setdefault(fname, []).append(float(ic))
+
+    factors = []
+    for fname in FACTORS:
+        stats = _ic_stats(samples.get(fname) or [])
+        factors.append({"factor": fname, **stats, "reliability": _ic_reliability(stats)})
+    # 按 |IC 均值| 降序：与自适应权重口径（|IC| 归一）一致，ICIR 只作稳定性注脚
+    factors.sort(key=lambda f: -abs(f["ic_mean"] or 0))
+
+    adaptive = svc.get_adaptive_weights(db, lookback_days=lookback_days)
+    weights = dict(adaptive or DEFAULT_WEIGHTS)
+
+    ranked = [f for f in factors if f["icir"] is not None]
+    parts = [f"IC 窗口 {ic_days} 自然日内有 {len(history)} 个交易日截面样本"]
+    if ranked:
+        best = max(ranked, key=lambda f: abs(f["icir"]))
+        worst = min(ranked, key=lambda f: abs(f["icir"]))
+        parts.append(f"最可靠因子 {best['factor']}（ICIR {best['icir']:+.2f}），"
+                     f"最弱 {worst['factor']}（ICIR {worst['icir']:+.2f}）")
+    else:
+        parts.append("IC 观测不足，ICIR 暂不可用")
+    parts.append("权重来源：" + ("自适应（按 |IC| 归一）" if adaptive else "固定默认（IC 数据不足）"))
+
+    return {
+        "status": "ok" if adaptive else "insufficient_ic",
+        "window": {"ic_days": ic_days, "lookback_days": lookback_days,
+                   "ic_observations": len(history)},
+        "weight_source": "adaptive" if adaptive else "default",
+        "weights": {k: round(v, 4) for k, v in weights.items()},
+        "default_weights": dict(DEFAULT_WEIGHTS),
+        "weight_delta": {k: round(weights[k] - DEFAULT_WEIGHTS[k], 4)
+                         for k in weights if k in DEFAULT_WEIGHTS},
+        "factors": factors,
+        "text": "；".join(parts),
+    }
+
+
+@tool(name="get_sector_impact_analysis", description="分析指定策略持仓所在的申万一级板块：板块评分/超配低配标记、板块逆风持仓与板块集中度")
+def get_sector_impact_analysis(db: Session, strategy_id: int) -> dict:
+    """持仓板块影响分析
+
+    Args:
+    strategy_id: 策略ID
+    """
+    from app.models.etf import ETFBasic
+    from app.models.strategy import Strategy
+    from app.services.risk_controller import RiskController
+    from app.services.sector_selection_service import (
+        MODE_OFF, SIGNAL_LABELS, format_sector_context,
+        get_sector_selection_service,
+    )
+    from app.services.strategy_service import get_strategy_service
+
+    strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
+    if not strategy:
+        return {"error": f"策略 {strategy_id} 不存在"}
+
+    allocation = get_strategy_service().get_effective_target_allocation(strategy)
+    codes = [c for c in allocation if c]
+    if not codes:
+        return {"error": "策略无有效持仓配置，板块影响分析不可用"}
+
+    # 板块归类靠 ETF 名称做关键词反查，一次取回名称（逐只查会随持仓数变成 N+1）
+    names = {
+        r.etf_code: (r.etf_name or "")
+        for r in db.query(ETFBasic.etf_code, ETFBasic.etf_name)
+        .filter(ETFBasic.etf_code.in_(codes)).all()
+    }
+    items = [{"etf_code": c, "etf_name": names.get(c, ""),
+              "weight": float(allocation.get(c) or 0)} for c in codes]
+
+    svc = get_sector_selection_service()
+    mode = svc.get_mode()
+    svc.annotate(db, items)
+    holdings, _, meta = svc.split(items, [], mode)
+
+    entries = []
+    for h in holdings:
+        sig = h.get("sector") or {}
+        entries.append({
+            "etf_code": h["etf_code"],
+            "etf_name": h["etf_name"],
+            "weight": round(h["weight"], 4),
+            "sector": sig.get("sector"),
+            "score": sig.get("score"),
+            "signal": sig.get("signal"),
+            "signal_label": SIGNAL_LABELS.get(sig.get("signal"), "中性"),
+            "rank": sig.get("rank"),
+            "total": sig.get("total"),
+            "as_of": sig.get("as_of"),
+            "headwind": bool(h.get("sector_headwind")),
+        })
+    matched = [e for e in entries if e["sector"]]
+    unmatched = [e["etf_code"] for e in entries if not e["sector"]]
+
+    if not matched:
+        return {
+            "strategy_id": strategy_id, "mode": mode, "status": "no_sector_data",
+            "holdings": entries, "unmatched_codes": unmatched,
+            "message": "持仓未匹配到申万板块（sw_sector 阶段未同步或名称无法归类），板块信号按中性处理",
+        }
+
+    exposure: Dict[str, Dict] = {}
+    for e in matched:
+        item = exposure.setdefault(e["sector"], {
+            "sector": e["sector"], "weight": 0.0, "count": 0,
+            "score": e["score"], "signal": e["signal"], "codes": [],
+        })
+        item["weight"] += e["weight"]
+        item["count"] += 1
+        item["codes"].append(e["etf_code"])
+    exposure_list = sorted(exposure.values(), key=lambda x: -x["weight"])
+    for item in exposure_list:
+        item["weight"] = round(item["weight"], 4)
+
+    # 板块集中度阈值与风控预算同源（该阈值此前只在配置里、没有消费方）
+    limit = RiskController.RISK_CONFIG["risk_budget"]["max_sector_concentration"]
+    concentrated = [x for x in exposure_list if x["weight"] > limit]
+    headwind_weight = round(sum(e["weight"] for e in entries if e["headwind"]), 4)
+
+    if concentrated:
+        detail = "超限：" + "、".join(f"{x['sector']} {x['weight']:.0%}" for x in concentrated)
+    else:
+        detail = "合规"
+
+    parts = [f"持仓 {len(entries)} 只，命中板块 {len(matched)} 只（未归类 {len(unmatched)} 只）"]
+    parts.append(f"逆风（低配板块）持仓 {len(meta['headwind_holdings'])} 只，合计权重 {headwind_weight:.0%}")
+    parts.append(f"板块集中度{detail}（单板块上限 {limit:.0%}）")
+    parts.append("板块层未启用（sector_rotation_mode=off），以下仅为展示，不参与选型"
+                 if mode == MODE_OFF else
+                 "板块口径：申万一级评分 ≥67 超配 / ≤33 低配")
+
+    return {
+        "strategy_id": strategy_id,
+        "mode": mode,
+        "status": "ok",
+        "as_of": matched[0]["as_of"],
+        "holdings": entries,
+        "unmatched_codes": unmatched,
+        "headwind_holdings": meta["headwind_holdings"],
+        "headwind_weight": headwind_weight,
+        "sector_exposure": exposure_list,
+        "concentrated_sectors": [x["sector"] for x in concentrated],
+        "sector_concentration_limit": limit,
+        "context_text": format_sector_context(holdings, [], meta),
+        "text": "；".join(parts),
     }
