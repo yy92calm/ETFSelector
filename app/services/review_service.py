@@ -32,8 +32,10 @@ class ReviewService:
 - 总执行次数: {total_count}
 - 成功次数: {success_count}
 - 失败次数: {failure_count}
-- 平均收益率: {avg_return}
-- 最大损失: {max_loss}
+- 跳过次数: {skipped_count}（未执行 ≠ 执行失败，例如非交易日、熔断冷却）
+- 区间收益率: {period_return}%（期末净值相对期初净值）
+- 日均收益率: {daily_avg_return}%（按相邻交易日快照，共 {return_days} 个间隔）
+- 最差单日: {max_loss}%
 
 ## 典型失败案例（最近3次）
 {failure_cases}
@@ -443,35 +445,40 @@ class ReviewService:
                     "message": f"单日大幅亏损{abs(day_return):.2%}",
                 })
         
-        consecutive_failures = 0
+        failure_streak = 0
+        skipped_in_streak = 0
         logs = db.query(AutoStrategyLog).filter(
             AutoStrategyLog.strategy_id == strategy_id
         ).order_by(AutoStrategyLog.log_date.desc()).limit(10).all()
-        
+
         for log in logs:
-            if log.status != "success":
-                consecutive_failures += 1
+            if log.status == "failed":
+                failure_streak += 1
+            elif log.status == "skipped":
+                # 跳过（非交易日、熔断冷却、无候选）不是失败，不能计入连续失败告警
+                skipped_in_streak += 1
             else:
                 break
-        
-        if consecutive_failures >= self.REVIEW_CONFIG["anomaly_thresholds"]["consecutive_failure"]:
+
+        if failure_streak >= self.REVIEW_CONFIG["anomaly_thresholds"]["consecutive_failure"]:
             anomalies.append({
                 "type": "consecutive_failure",
                 "severity": "medium",
-                "count": consecutive_failures,
-                "message": f"连续{consecutive_failures}次策略调整失败",
+                "count": failure_streak,
+                "skipped_count": skipped_in_streak,
+                "message": f"连续{failure_streak}次策略调整失败"
+                           + (f"（其间跳过{skipped_in_streak}次）" if skipped_in_streak else ""),
             })
-        
-        if len(snapshots) >= 5:
-            recent_drawdown = self._calculate_recent_drawdown(snapshots[:5])
-            if recent_drawdown < self.REVIEW_CONFIG["anomaly_thresholds"]["drawdown_spike"]:
-                anomalies.append({
-                    "type": "drawdown_spike",
-                    "severity": "high",
-                    "drawdown_pct": round(recent_drawdown * 100, 2),
-                    "message": f"近期回撤突增{abs(recent_drawdown):.2%}",
-                })
-        
+
+        recent_drawdown = self._calculate_recent_drawdown(snapshots)
+        if recent_drawdown < self.REVIEW_CONFIG["anomaly_thresholds"]["drawdown_spike"]:
+            anomalies.append({
+                "type": "drawdown_spike",
+                "severity": "high",
+                "drawdown_pct": round(recent_drawdown * 100, 2),
+                "message": f"近期回撤突增{abs(recent_drawdown):.2%}",
+            })
+
         return anomalies
     
     def trigger_anomaly_review(self, strategy_id: int, anomaly: Dict, db: Session) -> Dict:
@@ -504,14 +511,23 @@ class ReviewService:
         }
     
     def _calculate_recent_drawdown(self, snapshots: List[PortfolioSnapshot]) -> float:
-        """计算近期回撤"""
-        if not snapshots:
+        """窗口内回撤（**负数**分数）：最新净值相对窗口峰值的跌幅
+
+        两处修正：
+        1. 峰值取**全窗口**而不是最近几个快照——高点若在 6 个快照之前，只扫最近 5 个会把
+           深回撤读成「基本没回撤」；
+        2. 返回负号口径——阈值 `drawdown_spike=-0.03` 与文案 `abs(recent_drawdown)` 都按
+           「跌幅为负」写，原实现返回 `(peak-current)/peak`（恒为正），`< -0.03` 永不成立，
+           回撤突增告警与其「建议暂停策略」联动实际上从未触发。
+        """
+        values = [s.total_asset for s in snapshots if s.total_asset]
+        if len(values) < 2:
             return 0
-        
-        peak = max(s.total_asset for s in snapshots if s.total_asset)
-        current = snapshots[0].total_asset
-        
-        return (peak - current) / peak if peak > 0 else 0
+
+        peak = max(values)
+        current = values[0]        # 快照按 trade_date 倒序，[0] 即最新
+
+        return (current - peak) / peak if peak > 0 else 0
     
     def _collect_anomaly_related_data(self, strategy_id: int, anomaly: Dict, db: Session) -> Dict:
         """收集异常相关数据"""
@@ -704,21 +720,21 @@ class ReviewService:
                 "start": period1_start.isoformat(),
                 "end": period1_end.isoformat(),
                 "success_rate": period1_data["success_count"] / period1_data["total_count"] if period1_data["total_count"] > 0 else 0,
-                "avg_return": period1_data["avg_return"],
+                "period_return": period1_data["period_return"],
             },
             "period2": {
                 "start": period2_start.isoformat(),
                 "end": period2_end.isoformat(),
                 "success_rate": period2_data["success_count"] / period2_data["total_count"] if period2_data["total_count"] > 0 else 0,
-                "avg_return": period2_data["avg_return"],
+                "period_return": period2_data["period_return"],
             },
             "performance_change": {
                 "success_rate_diff": round(
                     (period2_data["success_count"] / period2_data["total_count"] - 
                      period1_data["success_count"] / period1_data["total_count"]) * 100, 2
                 ) if period1_data["total_count"] > 0 and period2_data["total_count"] > 0 else 0,
-                "avg_return_diff": round(
-                    period2_data["avg_return"] - period1_data["avg_return"], 2
+                "period_return_diff": round(
+                    period2_data["period_return"] - period1_data["period_return"], 2
                 ),
             },
         }
@@ -745,8 +761,11 @@ class ReviewService:
                 "total_executions": period_data["total_count"],
                 "success_count": period_data["success_count"],
                 "failure_count": period_data["failure_count"],
+                "skipped_count": period_data["skipped_count"],
                 "success_rate": round(period_data["success_count"] / period_data["total_count"] * 100, 1) if period_data["total_count"] > 0 else 0,
-                "avg_return": period_data["avg_return"],
+                "period_return": period_data["period_return"],
+                "daily_avg_return": period_data["daily_avg_return"],
+                "return_days": period_data["return_days"],
                 "max_loss": period_data["max_loss"],
             },
             "sentiment_analysis": period_data["sentiment_patterns"],
@@ -762,19 +781,22 @@ class ReviewService:
         """生成复盘总结"""
         total = period_data["total_count"]
         success = period_data["success_count"]
-        avg_return = period_data["avg_return"]
-        
+        period_return = period_data["period_return"]
+
         if total == 0:
             return "本周无自动策略执行记录"
-        
+
         success_rate = success / total * 100
-        
+
         if success_rate >= 80:
-            return f"本周策略执行表现优秀，成功率{success_rate:.0f}%，平均收益{avg_return:.2f}%"
+            return (f"本周策略执行表现优秀，成功率{success_rate:.0f}%，"
+                    f"区间收益{period_return:.2f}%（日均{period_data['daily_avg_return']:.3f}%）")
         elif success_rate >= 50:
-            return f"本周策略执行表现中等，成功率{success_rate:.0f}%，需关注失败案例分析"
+            return (f"本周策略执行表现中等，成功率{success_rate:.0f}%，"
+                    f"区间收益{period_return:.2f}%，需关注失败案例分析")
         else:
-            return f"本周策略执行表现欠佳，成功率{success_rate:.0f}%，建议暂停并调整策略参数"
+            return (f"本周策略执行表现欠佳，成功率{success_rate:.0f}%，"
+                    f"区间收益{period_return:.2f}%，建议暂停并调整策略参数")
     
     def _collect_period_data(self, strategy_id: int, start_date: date, end_date: date, db: Session) -> Dict:
         """收集周期数据"""
@@ -797,19 +819,14 @@ class ReviewService:
         
         total_count = len(logs)
         success_count = sum(1 for l in logs if l.status == "success")
-        failure_count = total_count - success_count
-        
-        avg_return = 0
-        max_loss = 0
-        if snapshots:
-            returns = [s.profit_pct for s in snapshots if s.profit_pct]
-            if returns:
-                avg_return = sum(returns) / len(returns)
-                max_loss = min(returns)
-        
+        failure_count = sum(1 for l in logs if l.status == "failed")
+        skipped_count = sum(1 for l in logs if l.status == "skipped")
+
+        returns = self._period_returns(snapshots)
+
         failure_cases = [
             {"date": l.log_date, "reason": l.safety_reason or l.analysis_result}
-            for l in logs if l.status != "success" or l.action_type == "skipped"
+            for l in logs if l.status == "failed"
         ][:3]
         
         success_cases = [
@@ -827,11 +844,39 @@ class ReviewService:
             "total_count": total_count,
             "success_count": success_count,
             "failure_count": failure_count,
-            "avg_return": round(avg_return, 2),
-            "max_loss": round(max_loss, 2),
+            "skipped_count": skipped_count,
+            "period_return": returns["period_return"],
+            "daily_avg_return": returns["daily_avg_return"],
+            "return_days": returns["return_days"],
+            "max_loss": returns["max_loss"],
             "failure_cases": failure_cases,
             "success_cases": success_cases,
             "sentiment_patterns": sentiment_patterns,
+        }
+
+    @staticmethod
+    def _period_returns(snapshots: List[PortfolioSnapshot]) -> Dict:
+        """期间收益：区间收益率 / 日均收益率 / 最差单日（全部按百分数）
+
+        旧口径对 `profit_pct`（相对初始资金的**累计**收益率）取平均：一路涨 20% 的策略
+        本周横盘也会报「本周平均收益 20%」，那个数没有金融含义；min(profit_pct) 同理是
+        「历史最低累计水位」而不是损失。改为只由相邻净值快照推导。
+        快照来自 DB 且顺序不定，先按日期升序；间隔即「一个交易日」，周末/长假不产生快照，
+        因此 Fri→Mon 只算一个间隔（日均口径是「每交易日」，不是「每自然日」）。
+        """
+        assets = [s.total_asset for s in
+                  sorted((s for s in snapshots if s.total_asset), key=lambda s: s.trade_date)]
+        if len(assets) < 2:
+            return {"period_return": 0.0, "daily_avg_return": 0.0,
+                    "return_days": 0, "max_loss": 0.0}
+
+        daily = [(assets[i] - assets[i - 1]) / assets[i - 1] * 100
+                 for i in range(1, len(assets))]
+        return {
+            "period_return": round((assets[-1] - assets[0]) / assets[0] * 100, 2),
+            "daily_avg_return": round(sum(daily) / len(daily), 4) if daily else 0.0,
+            "return_days": len(daily),
+            "max_loss": round(min(daily), 2) if daily else 0.0,
         }
     
     def _generate_experiences_with_llm(self, period_data: Dict) -> List[Dict]:
@@ -844,7 +889,10 @@ class ReviewService:
             total_count=period_data["total_count"],
             success_count=period_data["success_count"],
             failure_count=period_data["failure_count"],
-            avg_return=period_data["avg_return"],
+            skipped_count=period_data["skipped_count"],
+            period_return=period_data["period_return"],
+            daily_avg_return=period_data["daily_avg_return"],
+            return_days=period_data["return_days"],
             max_loss=period_data["max_loss"],
             failure_cases=json.dumps(period_data["failure_cases"], ensure_ascii=False),
             success_cases=json.dumps(period_data["success_cases"], ensure_ascii=False),

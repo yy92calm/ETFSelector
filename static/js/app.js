@@ -2556,8 +2556,8 @@ function renderReviewReport(report) {
                 <div class="stat-mini-label">成功率</div>
             </div>
             <div class="stat-mini">
-                <div class="stat-mini-value">${stats.avg_return >= 0 ? '+' : ''}${stats.avg_return || 0}%</div>
-                <div class="stat-mini-label">平均收益</div>
+                <div class="stat-mini-value">${stats.period_return >= 0 ? '+' : ''}${stats.period_return || 0}%</div>
+                <div class="stat-mini-label">区间收益</div>
             </div>
         </div>
 

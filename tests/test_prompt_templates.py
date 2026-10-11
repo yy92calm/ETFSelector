@@ -105,12 +105,18 @@ class TestKnownTemplateContent(unittest.TestCase):
     def test_experience_prompt_keeps_json_and_data(self):
         from app.services.review_service import ReviewService
         rendered = ReviewService.EXPERIENCE_GENERATION_PROMPT.format(
-            period_days=7, total_count=3, success_count=1, failure_count=2,
-            avg_return=-0.5, max_loss=-2.0, failure_cases="[]", success_cases="[]",
+            period_days=7, total_count=3, success_count=1, failure_count=1,
+            skipped_count=1, period_return=-0.5, daily_avg_return=-0.125,
+            return_days=4, max_loss=-2.0, failure_cases="[]", success_cases="[]",
             sentiment_patterns="{}",
         )
         self.assertIn('"experience_type"', rendered)
         self.assertIn("分析周期: 7天", rendered)
+        # 期间口径（区间收益率 + 日均），不再出现「平均收益率」这种无含义的累计值平均
+        self.assertIn("区间收益率: -0.5%", rendered)
+        self.assertIn("日均收益率: -0.125%", rendered)
+        self.assertIn("跳过次数: 1", rendered)
+        self.assertNotIn("平均收益率", rendered)
 
 
 if __name__ == "__main__":

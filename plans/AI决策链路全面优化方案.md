@@ -22,7 +22,7 @@
 | P2 | 3.5 N+1 查询清理（最短持有期/建议校验/禁入缓存/行情补全/上下文遗留） | ✅ | 14 条新单测：SQL 计数断言次数不随实体数增长（1 持仓 vs 4 持仓均 1 次 trade_record 查询、1 vs 4 代码均 1 次 etf_basic、3 vs 20 只 ETF 均 1 次 etf_quotation、1 vs 4 策略均 1 次 portfolio_snapshot）；禁入名单二次调用 0 查询、record_failure 后重查；过期失败模式不再规避；批量与逐标的结果逐字段相等 |
 | P3 | 4.1 风控工具补全（相关性/VaR/what-if 熔断） | ✅ | 21 条新单测：VaR 用解析期望值断言（5 个亏损日+55 个+0.2%，60 观测下 95% 分位=2%、ES=3.5%）+ √t 缩放 + 置信度夹取 + 待生效优先；相关矩阵 ±1/均值/样本不足/缺行情分支；what-if 四结构与越线组合，并断言 what-if 后 allocation_config/pending_allocation 逐字段不变；工具注册为 read 且经 registry 可执行 |
 | P3 | 4.2 因子表现与板块影响分析工具 | ✅ | 21 条新单测：ICIR 用解析值锁 ddof=1（`[0.1,0.3]` → std 0.1414、ICIR 1.4142，总体口径会得 0.1/1.0）；IC 三分支用**真实秩相关**构造（每日恒 +1 → ICIR 无定义、±1 摆动 → 均值 0 判噪声、因子值全同 → 0 观测判样本不足）；板块侧锁逆风名单与合计权重、集中度超限/合规、待生效优先、`mode=off` 无逆风、无板块数据、策略不存在、空配置；两工具 `risk_level=read` 且经 registry 可执行 |
-| P3 | 4.3 复盘 avg_return 改期间收益率 | ⬜ | 单测：期间收益率计算 |
+| P3 | 4.3 复盘 avg_return 改期间收益率 | ✅ | 18 条新单测 + 1 条改写：解析值断言 period_return 1.0%、日均 0.5098%、最差单日 -0.98%；横盘 5 快照（累计水位递增）三口径全 0（旧口径会读出 ~22%）；`statistics` 断言已无 `avg_return`；3 次跳过不再误报连续失败、失败夹跳过时 count=3 且 skipped_count=2；高点在 6 个快照之前仍报 -10% 回撤，并修正回撤符号约定使 `drawdown_spike` 与其「建议暂停」首次可达；全量 511 passed |
 | P3 | 4.4 delete_strategy 软删除 | ⬜ | 单测：删除后数据可查回 |
 
 ## 实测修正（P0.1 完成后 · 2026-10-10）
@@ -351,6 +351,19 @@ app/config.py                                # 新增配置项（见下）
 - `avg_return` → `period_return = (last.total_asset - first.total_asset) / first.total_asset`，并另给 `daily_avg_return`（按相邻**交易日**快照，跳过周末间隔）
 - 连续失败检测只对 `status == "error"` 计数，`skipped` 单独统计
 - 回撤 peak 改为全周期扫描而非仅最近 5 个快照
+
+实施记录（2026-10-11）：
+- 口径改在 `_collect_period_data`，新增纯静态方法 `_period_returns(snapshots)`（先按 trade_date 升序、过滤 None/0 资产，再由**相邻净值**推导），`profit_pct` 彻底退出收益统计：它是相对初始资金的**累计**水位（`portfolio_service.py:180`），对它求平均会把「成立以来涨 20%、本周横盘」读成「本周平均收益 20%」；对它取 min 同理是「历史最低累计水位」而不是损失。
+- **偏离方案字面 1**：方案写的 `status == "error"` 在实际枚举里不存在——`auto_strategy_executor.py:340` 落的是 `success`/`failed`/`skipped`（模型注释同源），照字面实现会让连续失败检测**永不触发**。现按 `status == "failed"` 计数，`skipped` 单独 tally 进 `skipped_count`，异常体带 `skipped_count` 且 message 写「其间跳过 N 次」。
+- **偏离方案字面 2**：`max_loss` 一并改口径为「期间最差单日」。它与 avg_return 同病（都对累计值取 min），只改一个会让同一张 prompt 里一个说区间、一个说成立以来。
+- skipped 既不进 `failure_count` 也不进 `failure_cases`（prompt 的「典型失败案例」），但 `success_rate` 分母仍是 `total_count`：跳过是「当天跑过管道但没动作」（非交易日、熔断冷却、无候选），把它从分母摘掉会让成功率虚高，故保留分母、另列 `skipped_count` 供读者判断。
+- **顺带修一处静默失效**：`_calculate_recent_drawdown` 原返回 `(peak-current)/peak`（恒 ≥0），而调用处比的是 `< -0.03`、文案用 `abs()`——符号约定不一致使 `drawdown_spike` 异常**从未触发过**，连带 `suggest_parameter_adjustments` 的「回撤突增 → 建议暂停」也是死分支。现返回**负数**跌幅并在 docstring 写明两处修正。这是真实行为变更：以前不会提的暂停建议现在会提（该函数只在 GET 路由 `auto_strategy_routes.py:656` 出参、不写库，需人工确认）。
+- 峰值扫描由 `snapshots[:5]` 改**全窗口**（查询本身 `limit(30)`），去掉 `len(snapshots) >= 5` 闸门（已有 `<2 return` 保护）；`large_loss` 仍只看最近 5 个间隔——它的语义是「近期单日」，不是全周期。
+- 消费方同步：prompt 字段 `{avg_return}` → `{period_return}`/`{daily_avg_return}`/`{skipped_count}`/`{return_days}`（`{max_loss}` 文案改「最差单日」）、`_build_review_report.statistics`、`_generate_summary`（三档都带区间收益）、`compare_periods` 的 `avg_return`→`period_return`、`avg_return_diff`→`period_return_diff`、前端 `app.js` 复盘卡片「平均收益」→「区间收益」（`index.html` 引 app.js 无 `?v`，workbench 不加载 app.js，故无资源 bump）。`trigger_review` 工具只透传 `statistics`、不点名字段，无需改。
+- `return_days`（间隔数）随 period/日均一起进 prompt 与 statistics：日均 0.3% 在「3 个间隔」和「20 个间隔」下的可信度完全不同，不给样本数的日均是没法用的数。
+- 验证方式：18 条新单测（`tests/test_review_period_stats.py`）+ 1 条改写（`test_prompt_templates.py`）。解析值：`[100000,102000,101000]` → period 1.0%、日均 0.5098%、最差单日 -0.98%；**横盘回归**（5 个相同资产 + 递增 profit_pct）→ 三口径全 0，锁死旧口径不复活；顺序不敏感（升序与倒序同结果）；脏快照（None/0）被跳过而不炸；`statistics` 断言 `assertNotIn("avg_return")`；skipped 分账 4 条（3 次跳过不误报、跳过夹失败中间时 count=3/skipped_count=2、success 断链）；回撤 3 条（符号解析值 -1/11、**高点在 6 个快照之前**仍报 -10%、-2.5% 不报）+ 1 条端到端「建议暂停现在可达」；LLM prompt 用真实 period_data 渲染（防漏键 KeyError）。全量 511 passed。
+- 踩坑记录：`_calculate_recent_drawdown` 沿用 DB 的**倒序**快照（`values[0]` 是最新），而 `_period_returns` 自己排序——两个方法对同一名参数的顺序期望不同，测试 helper 最初按升序喂 drawdown 结果把「上涨序列」判成 -9% 回撤；现 `snap()` 明确「assets[0] 最早，倒序传 `[::-1]`」。另 `detect_anomalies` 在快照 <2 时直接返回空，所以纯状态分账用例也必须铺净值序列。
+- 附带发现（未改）：`docs/AI全自动驱动策略模块设计文档.md:1165-1166` 复制了一份旧 prompt 文本（仍是 `{avg_return}`/`{max_loss}`），属历史设计文档，不作真值来源。
 
 **4.4 delete_strategy 软删除**
 - `Strategy` 增 `status` 字段（`active`/`deleted`，ALTER TABLE 迁移），删除改置 `deleted` 并记录 `deleted_at`
