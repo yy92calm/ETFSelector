@@ -656,14 +656,15 @@ def _step_rotation_review():
 def _run_anomaly_reviews(db):
     """异常检测与条件触发复盘：大额亏损/连续失败/回撤突增 → 纠正性经验 + 失败模式
 
-    覆盖全部自动策略（含暂停：暂停期同样需要沉淀失败经验）。
+    覆盖全部自动策略（含暂停：暂停期同样需要沉淀失败经验；不含软删除策略）。
     """
     from app.models.strategy import Strategy
     from app.services.review_service import ReviewService
 
     svc = ReviewService()
     auto_strategies = db.query(Strategy).filter(
-        Strategy.strategy_source == "auto_generated"
+        Strategy.strategy_source == "auto_generated",
+        Strategy.not_deleted(),
     ).all()
     for strategy in auto_strategies:
         try:
@@ -886,9 +887,10 @@ def _job_weekly_review():
     db = SessionLocal()
     try:
         svc = ReviewService()
-        # 暂停的策略同样需要复盘（暂停期恰恰最需要总结经验）；不再按 running 过滤
+        # 暂停的策略同样需要复盘（暂停期恰恰最需要总结经验）；不再按 running 过滤，但软删除策略不参与
         auto_strategies = db.query(Strategy).filter(
             Strategy.strategy_source == 'auto_generated',
+            Strategy.not_deleted(),
         ).all()
 
         if not auto_strategies:

@@ -3,11 +3,11 @@
 """
 
 import logging
-from datetime import date
+from datetime import date, datetime
 from typing import List, Optional, Dict
 from sqlalchemy.orm import Session
 
-from app.models.strategy import Strategy
+from app.models.strategy import Strategy, STATUS_DELETED
 from app.strategies.portfolio_rebalance import PortfolioRebalanceStrategy
 
 logger = logging.getLogger(__name__)
@@ -86,24 +86,41 @@ class StrategyService:
         return db.query(Strategy).filter(Strategy.id == strategy_id).first()
 
     def list_strategies(self, db: Session) -> List[Strategy]:
-        """列出所有策略"""
-        return db.query(Strategy).order_by(Strategy.created_at.desc()).all()
+        """列出所有策略（软删除的策略不在列表中）"""
+        return (
+            db.query(Strategy)
+            .filter(Strategy.not_deleted())
+            .order_by(Strategy.created_at.desc())
+            .all()
+        )
 
     def update_strategy_status(self, strategy_id: int, status: str, db: Session) -> Optional[Strategy]:
         strategy = self.get_strategy(strategy_id, db)
         if strategy:
             strategy.status = status
+            # 改回非 deleted 即恢复：清空删除时间，否则「active 但带 deleted_at」是矛盾状态
+            if status != STATUS_DELETED:
+                strategy.deleted_at = None
             db.commit()
             db.refresh(strategy)
         return strategy
 
+    def mark_deleted(self, strategy: Strategy, db: Session) -> None:
+        """软删除落库：置 deleted 并停止自动运行，关联数据一行不删"""
+        strategy.status = STATUS_DELETED
+        strategy.deleted_at = datetime.utcnow()
+        # 复盘/异动复核覆盖非 running 策略，只靠 status 过滤，这里同时停掉自动状态避免歧义
+        strategy.auto_strategy_status = "stopped"
+        db.commit()
+
     def delete_strategy(self, strategy_id: int, db: Session) -> bool:
+        """删除策略（软删除）：快照、交易、持仓、日志、经验全部保留在库中"""
         strategy = self.get_strategy(strategy_id, db)
-        if strategy:
-            db.delete(strategy)
-            db.commit()
-            return True
-        return False
+        if not strategy:
+            return False
+        if strategy.status != STATUS_DELETED:
+            self.mark_deleted(strategy, db)
+        return True
 
     def update_strategy(self, strategy_id: int, data: dict, db: Session) -> Optional[Strategy]:
         """更新策略信息"""

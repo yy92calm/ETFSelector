@@ -4,6 +4,9 @@ from sqlalchemy import Column, String, Integer, Text, DateTime, JSON, Float, Boo
 from datetime import datetime
 from app.db.database import Base
 
+# 软删除状态值：策略列表/枚举入口不再展示，但行与全部关联数据保留在库中
+STATUS_DELETED = "deleted"
+
 
 class Strategy(Base):
     """ETF配置组合策略"""
@@ -26,7 +29,7 @@ class Strategy(Base):
     
     # 其他字段
     initial_capital = Column(Integer, nullable=False, default=100000, comment="初始资金")
-    status = Column(String(20), nullable=False, default="active", comment="active / paused / archived")
+    status = Column(String(20), nullable=False, default="active", comment="active / paused / archived / deleted")
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -60,6 +63,17 @@ class Strategy(Base):
     paused_reason = Column(String(200), nullable=True, comment="策略暂停原因")
     paused_cooldown_days = Column(Integer, nullable=True, comment="熔断冷却天数（到期自动恢复；人工/LLM 暂停为空）")
     paused_date = Column(Date, nullable=True, comment="策略暂停日期")
+
+    # 软删除
+    deleted_at = Column(DateTime, nullable=True, comment="软删除时间（status=deleted 时记录）")
+
+    @classmethod
+    def not_deleted(cls):
+        """未软删除的查询条件：列表与定时任务枚举统一用它过滤
+
+        按 ID 单点查询不过滤——已删策略的净值/交易/经验/决策依据仍需可查回与恢复。
+        """
+        return cls.status != STATUS_DELETED
 
     def __repr__(self):
         return f"<Strategy {self.id}: {self.name}>"

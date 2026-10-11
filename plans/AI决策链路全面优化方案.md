@@ -23,7 +23,7 @@
 | P3 | 4.1 风控工具补全（相关性/VaR/what-if 熔断） | ✅ | 21 条新单测：VaR 用解析期望值断言（5 个亏损日+55 个+0.2%，60 观测下 95% 分位=2%、ES=3.5%）+ √t 缩放 + 置信度夹取 + 待生效优先；相关矩阵 ±1/均值/样本不足/缺行情分支；what-if 四结构与越线组合，并断言 what-if 后 allocation_config/pending_allocation 逐字段不变；工具注册为 read 且经 registry 可执行 |
 | P3 | 4.2 因子表现与板块影响分析工具 | ✅ | 21 条新单测：ICIR 用解析值锁 ddof=1（`[0.1,0.3]` → std 0.1414、ICIR 1.4142，总体口径会得 0.1/1.0）；IC 三分支用**真实秩相关**构造（每日恒 +1 → ICIR 无定义、±1 摆动 → 均值 0 判噪声、因子值全同 → 0 观测判样本不足）；板块侧锁逆风名单与合计权重、集中度超限/合规、待生效优先、`mode=off` 无逆风、无板块数据、策略不存在、空配置；两工具 `risk_level=read` 且经 registry 可执行 |
 | P3 | 4.3 复盘 avg_return 改期间收益率 | ✅ | 18 条新单测 + 1 条改写：解析值断言 period_return 1.0%、日均 0.5098%、最差单日 -0.98%；横盘 5 快照（累计水位递增）三口径全 0（旧口径会读出 ~22%）；`statistics` 断言已无 `avg_return`；3 次跳过不再误报连续失败、失败夹跳过时 count=3 且 skipped_count=2；高点在 6 个快照之前仍报 -10% 回撤，并修正回撤符号约定使 `drawdown_spike` 与其「建议暂停」首次可达；全量 511 passed |
-| P3 | 4.4 delete_strategy 软删除 | ⬜ | 单测：删除后数据可查回 |
+| P3 | 4.4 delete_strategy 软删除 | ✅ | 18 条新单测：删除后五类关联数据**逐字段计数相等**（快照/交易/持仓/日志/经验各 1 条不减）、策略行仍在（`status=deleted` + `deleted_at` + `auto_strategy_status=stopped`）；列表工具/service/工作台总览/自动策略列表/异动复核/每周复盘共 6 个枚举入口不再拾取，而按 ID 仍可查回（`get_strategy_detail` 返回 deleted、快照 JOIN 策略名可用）；二次删除幂等（`already_deleted=True` 且 `deleted_at` 不变）；`paused`/`archived` 仍留在列表（口径是排除 deleted 而非只留 active）；旧库迁移用真实 `etf_selector.db` 副本实测——1 行策略保留、`integrity_check` ok、老行 `deleted_at` 为 NULL 按未删除处理；全量 529 passed |
 
 ## 实测修正（P0.1 完成后 · 2026-10-10）
 
@@ -369,6 +369,19 @@ app/config.py                                # 新增配置项（见下）
 - `Strategy` 增 `status` 字段（`active`/`deleted`，ALTER TABLE 迁移），删除改置 `deleted` 并记录 `deleted_at`
 - 所有查询策略的入口默认过滤 `status == 'active'`
 - 验证：单测——软删后列表不含该策略，但 DB 记录仍在
+
+实施记录（2026-10-11）：
+- 三个落点全在模型层：`STATUS_DELETED` 常量、`deleted_at` 列、`Strategy.not_deleted()` 过滤条件；软删除动作本身只有 `strategy_service.mark_deleted` 一处，LLM 工具 `delete_strategy` 与人工 API `DELETE /api/strategy/{id}` 都走它——两条删除路径语义不分叉（同一策略此前一个物理删五张表、一个只删策略行，本身就不一致）。
+- **偏离方案字面 1**：方案写「入口默认过滤 `status == 'active'`」，实现是 `not_deleted()`（`status <> 'deleted'`）。`status` 实际有四个合法值，暂停/归档策略必须继续出现在列表、复盘与依据视图里——`_run_anomaly_reviews`/`_job_weekly_review` 的既有注释就明确「暂停期恰恰最需要总结经验」，照字面做白名单会把暂停策略从复盘里抹掉，那比物理删除更彻底地隐身。`test_paused_and_archived_stay_visible` 锁死这条口径。
+- **偏离方案字面 2**：方案写「`Strategy` 增 `status` 字段」，该字段本就存在（`models/strategy.py:29`），实为补 `deleted_at` 列 + 新增 `deleted` 取值；迁移项加进 `init_db()` 既有的 strategy `migrations` 列表（与 `paused_cooldown_days` 同风格，不引入 Alembic）。
+- **真实行为变更**：原工具一次调用会 `.delete()` 净值快照/交易/持仓/执行日志/经验五张表再删策略本身，而这是 AI 可自主触发、审批通过后不可逆的操作。现只改状态，返回体带 `retained_records` 五类计数，让调用方（人和 LLM）看得见「删掉了可见性、留下了什么数据」。
+- **按 ID 单点查询故意不过滤**（`get_strategy(id)` 及 40+ 处按 strategy_id 的工具/service/agent 查询保持原样）：已删策略的净值曲线、决策依据、进化提示词仍需可查回，恢复路径也依赖它（`update_strategy_status(id, "active")` 即复活，并清空 `deleted_at`，不留「active 却带删除时间」的矛盾态）。若按 ID 也过滤，删除就变成「查不到但外键仍指向」的半死状态。
+- 停自动运行：`mark_deleted` 同时置 `auto_strategy_status="stopped"`，管道里按 `running` 过滤的作业（轮动复核、资金流向、情绪极端复核、自主决策及其经验回写）与 `resume_if_cooldown_expired` 的 `paused` 过滤天然不再拾取，无需逐个加条件；只有**覆盖非 running 策略**的两个复盘入口需要显式 `not_deleted()`，否则删掉的策略每周照样跑 LLM 复盘并沉淀经验。`portfolio_service` / `context.py` 的三处 `status == "active"` 过滤无需改。
+- `pending_allocation` 不清空：删除后该策略已脱离全部枚举，待生效配置再无消费方；清空反而违背「数据保留可查回」。
+- 前端两处确认弹窗的「删除后无法恢复，相关…也会被清除」在软删除下是假话，改为说明保留范围（`index.html` 引 app.js 无 `?v`，workbench 不加载 app.js，故无静态资源 bump；两处文案改动未在浏览器实测，仅 `node --check`）。
+- 验证：18 条单测（`tests/test_soft_delete.py`，含 legacy 表 DDL 跑 `init_db` 两次不报错的幂等迁移用例）+ 真实本地库副本迁移实测（复制 `etf_selector.db` → patch `app.db.database.engine` → `init_db()`：列补上、1 行策略保留、`PRAGMA integrity_check` ok、老行按未删除处理）。
+- 踩坑记录：`Experience.expires_date` 是 `nullable=False` 且无列默认（由业务代码传），seed helper 漏填直接撞 NOT NULL；`_job_weekly_review` 带 `@log_task_execution` 装饰器，装饰器与任务体各开一个 session，沿用仓内既有写法 `patch("app.db.database.SessionLocal", return_value=db)`（内存库走 SingletonThreadPool，`close()` 后 session 仍复用同一份数据）。
+- 附带发现（未改）：`agent_core/context.py:335` 的进化提示词 JOIN 用 `Strategy.status == "active"`，于是**暂停策略的进化提示词从不注入 LLM 上下文**，与复盘侧「暂停期最需总结经验」的口径相左；属既有行为、与本项无关，未动。
 
 ## 配置新增（`app/config.py` + `.env.example`）
 

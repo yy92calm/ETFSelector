@@ -442,7 +442,8 @@ def resume_auto_strategy(strategy_id: int, db: Session = Depends(get_db)):
 def list_auto_strategies(db: Session = Depends(get_db)):
     """获取所有自动策略"""
     strategies = db.query(Strategy).filter(
-        Strategy.strategy_source == 'auto_generated'
+        Strategy.strategy_source == 'auto_generated',
+        Strategy.not_deleted(),
     ).all()
     
     return APIResponse(data={

@@ -91,6 +91,7 @@ def init_db():
                 ("last_triggered_date", "DATE"),
                 ("target_monthly_min", "FLOAT DEFAULT 0.05"),
                 ("target_monthly_max", "FLOAT DEFAULT 0.10"),
+                ("deleted_at", "DATETIME"),
             ]
 
             for col_name, col_type in migrations:

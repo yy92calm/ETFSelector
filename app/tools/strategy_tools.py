@@ -26,11 +26,11 @@ class SwapPair(_SwapPairRequired, total=False):
     reason: str
 
 
-@tool(name="list_strategies", description="列出所有策略，包含名称、类型、状态、配置比例等信息")
+@tool(name="list_strategies", description="列出所有未删除策略，包含名称、类型、状态、配置比例等信息")
 def list_strategies(db: Session) -> dict:
     from app.models.strategy import Strategy
 
-    strategies = db.query(Strategy).order_by(Strategy.id.desc()).all()
+    strategies = db.query(Strategy).filter(Strategy.not_deleted()).order_by(Strategy.id.desc()).all()
     data = [
         {
             "id": s.id,
@@ -89,31 +89,40 @@ def create_strategy(
         return {"success": False, "error": str(e)}
 
 
-@tool(name="delete_strategy", description="删除指定策略及其所有关联数据（持仓、交易记录、快照、经验）。不可恢复，谨慎操作。")
+@tool(name="delete_strategy", description="删除指定策略（软删除）：置为 deleted 并停止自动运行，策略不再出现在列表与定时任务中；持仓、交易记录、快照、执行日志、经验等关联数据全部保留在库中可查回。")
 def delete_strategy(db: Session, strategy_id: int) -> dict:
-    from app.models.strategy import Strategy
+    from app.models.strategy import Strategy, STATUS_DELETED
     from app.models.portfolio import PortfolioSnapshot, TradeRecord, Holding
     from app.models.auto_strategy_log import AutoStrategyLog
     from app.models.experience import Experience
+    from app.services.strategy_service import get_strategy_service
 
     strategy = db.query(Strategy).filter(Strategy.id == strategy_id).first()
     if not strategy:
         return {"error": f"策略 {strategy_id} 不存在"}
 
-    name = strategy.name
-    db.query(PortfolioSnapshot).filter(PortfolioSnapshot.strategy_id == strategy_id).delete()
-    db.query(TradeRecord).filter(TradeRecord.strategy_id == strategy_id).delete()
-    db.query(Holding).filter(Holding.strategy_id == strategy_id).delete()
-    db.query(AutoStrategyLog).filter(AutoStrategyLog.strategy_id == strategy_id).delete()
-    db.query(Experience).filter(Experience.strategy_id == strategy_id).delete()
-    db.delete(strategy)
-    db.commit()
+    already_deleted = strategy.status == STATUS_DELETED
+    if not already_deleted:
+        get_strategy_service().mark_deleted(strategy, db)
+
+    # 保留下来的数据量：让调用方确信「删除」只摘走可见性，没有抹掉历史
+    retained = {
+        "snapshots": db.query(PortfolioSnapshot).filter(PortfolioSnapshot.strategy_id == strategy_id).count(),
+        "trades": db.query(TradeRecord).filter(TradeRecord.strategy_id == strategy_id).count(),
+        "holdings": db.query(Holding).filter(Holding.strategy_id == strategy_id).count(),
+        "auto_logs": db.query(AutoStrategyLog).filter(AutoStrategyLog.strategy_id == strategy_id).count(),
+        "experiences": db.query(Experience).filter(Experience.strategy_id == strategy_id).count(),
+    }
 
     return {
         "success": True,
         "strategy_id": strategy_id,
-        "name": name,
-        "message": f"策略 '{name}'(ID={strategy_id}) 已删除",
+        "name": strategy.name,
+        "already_deleted": already_deleted,
+        "retained_records": retained,
+        "message": (f"策略 '{strategy.name}'(ID={strategy_id}) 此前已是删除状态，数据仍在库中"
+                    if already_deleted else
+                    f"策略 '{strategy.name}'(ID={strategy_id}) 已删除（数据保留 {sum(retained.values())} 条关联记录，可按 ID 查回）"),
     }
 
 

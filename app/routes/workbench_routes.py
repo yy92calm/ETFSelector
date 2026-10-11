@@ -25,10 +25,11 @@ def get_workbench_overview(db: Session = Depends(get_db)):
     from app.models.portfolio import PortfolioSnapshot
     from sqlalchemy import func
 
-    # 策略统计
-    total_strategies = db.query(Strategy).count()
+    # 策略统计（软删除的策略不计入总量，也不参与「运行中」统计）
+    total_strategies = db.query(Strategy).filter(Strategy.not_deleted()).count()
     active_strategies = db.query(Strategy).filter(Strategy.status == "active").count()
     auto_running = db.query(Strategy).filter(
+        Strategy.not_deleted(),
         Strategy.strategy_source == "auto_generated",
         Strategy.auto_strategy_status == "running",
     ).count()

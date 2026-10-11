@@ -706,7 +706,7 @@ function showDeleteConfirm(id) {
                 <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
                 <div class="modal-title">确认删除策略？</div>
                 <div style="color:var(--text-secondary);font-size:14px;margin:12px 0 24px;">
-                    删除后无法恢复，相关回测记录也会被清除
+                    删除后策略退出列表与每日管道，历史数据（快照/交易/经验）保留在库中
                 </div>
                 <div class="modal-actions" style="justify-content:center;">
                     <button class="btn btn-outline" onclick="closeDeleteConfirm()">取消</button>
@@ -2147,7 +2147,7 @@ async function deleteAutoStrategy(strategyId) {
                 <div style="font-size:48px;margin-bottom:16px;">⚠️</div>
                 <div class="modal-title">确认删除自动策略？</div>
                 <div style="color:var(--text-secondary);font-size:14px;margin:12px 0 24px;">
-                    删除后无法恢复，相关执行日志和经验也会被清除
+                    删除后策略不再自动运行与复盘，执行日志和经验保留在库中
                 </div>
                 <div class="modal-actions" style="justify-content:center;">
                     <button class="btn btn-outline" onclick="document.getElementById('modal-delete-auto-strategy').remove();document.body.style.overflow='';">取消</button>
