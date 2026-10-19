@@ -123,6 +123,7 @@ const Workbench = {
         if (view === 'analyses') this.loadAnalysesView();
         if (view === 'research') this.loadResearchView();
         if (view === 'rules') this.loadRulesView();
+        if (typeof Chat !== 'undefined' && Chat.onViewChange) Chat.onViewChange(view);
     },
 
     async loadOverview() {
