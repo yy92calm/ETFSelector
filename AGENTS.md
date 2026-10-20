@@ -333,7 +333,7 @@ python -m app.services.replay_service
 ### 服务器部署要点（历史踩坑）
 
 - 线上路径 `/home/ubuntu/workspace/ETFSelector`，SSH `ssh -i ~/.ssh/yang.pem ubuntu@43.133.82.137`（无 systemd/tmux，进程为 `venv/bin/python main.py`，端口 12958）。
-- 启动方式：`cd ~/workspace/ETFSelector && nohup setsid venv/bin/python main.py >> server.log 2>&1 < /dev/null &`
+- 启动方式：`cd ~/workspace/ETFSelector && nohup setsid venv/bin/python main.py >> ~/logs/etfselector.log 2>&1 < /dev/null &`（日志必须落在 reload 监听目录之外；首次部署先 `mkdir -p ~/logs`）
 - 线上库 `etf_selector.db` 已取消 git 跟踪（`.gitignore` 忽略 `*.db`），git 不会再动它；若又遇到仍被跟踪的情况，先 `git rm --cached etf_selector.db` 再 pull，**切勿让 git 删掉线上库**。
 - 部署顺序：停服 → pull → 核验 DB（大小/md5/integrity_check）→ 启服 → 健康检查 + 新接口验证。
-- `.env` 的 `DEBUG=True` 开启 uvicorn reload，而 `server.log` 在监听目录内会自我触发 `change detected`（历史累计数百万条、日志 368MB）；生产建议 `DEBUG=False` 或日志重定向到项目目录外。
+- `.env` 的 `DEBUG=True` 开启 uvicorn reload，而日志文件落在监听目录内会自我触发 `change detected` 无限膨胀（2026-10 线上累计 837MB，已 gzip 归档至 `~/logs/etfselector-server.log.2026-10-20.gz`）。线上已设 `DEBUG=False` + 日志重定向 `~/logs/etfselector.log`（实测约 0.4MB/天）；代价是 pull 后不再自动重载，每次部署按「停服 → pull → 启服」显式重启。
