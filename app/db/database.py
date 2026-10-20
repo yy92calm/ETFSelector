@@ -126,6 +126,40 @@ def init_db():
     except Exception as e:
         print(f"experience 表迁移警告: {e}")
 
+    # 兼容旧数据库：experience.strategy_id 旧表为 NOT NULL，模型自引入系统级经验起为 nullable
+    # （空 strategy_id 的管道失败经验，此前每次写入都撞 IntegrityError）。
+    # SQLite 无法 ALTER 放宽约束，须一次性表重建；幂等：按 PRAGMA notnull 检测跳过。
+    # 顺序必须「建新表(临时名) → 拷贝 → 删原表 → 改名回来」：若先把原表改名再 DROP，
+    # SQLite 3.25+ 会同步改写引用方（experience_usage_record）的外键指向被删表，留下悬空引用。
+    try:
+        with engine.connect() as conn:
+            cols = conn.execute(text("PRAGMA table_info(experience)")).fetchall()
+            strategy_col = next((c for c in cols if c[1] == "strategy_id"), None)
+            if strategy_col and strategy_col[3] == 1:  # notnull=1
+                from sqlalchemy.schema import CreateTable, CreateIndex
+                from app.models.experience import Experience
+
+                old_cols = {c[1] for c in cols}
+                # 仅迁移旧表已有的列；新表缺列由上面的 ADD COLUMN 迁移保证已补齐
+                common = [c.name for c in Experience.__table__.columns if c.name in old_cols]
+                col_list = ", ".join(common)
+
+                ddl = str(CreateTable(Experience.__table__).compile(dialect=engine.dialect)).strip()
+                _, body = ddl.split("(", 1)  # 模型 DDL 的表名换成临时名
+                conn.execute(text(f"CREATE TABLE experience_new ({body}"))
+                conn.execute(text(
+                    f"INSERT INTO experience_new ({col_list}) SELECT {col_list} FROM experience"
+                ))
+                conn.execute(text("DROP TABLE experience"))
+                conn.execute(text("ALTER TABLE experience_new RENAME TO experience"))
+                for idx in Experience.__table__.indexes:
+                    conn.execute(text(str(CreateIndex(idx)).strip()))
+                conn.commit()
+                print("✓ 已放宽 experience.strategy_id 为可空（表重建，全部行保留）")
+
+    except Exception as e:
+        print(f"experience 表约束迁移警告: {e}")
+
     # 兼容旧数据库：trade_record 表新增字段
     try:
         with engine.connect() as conn:
