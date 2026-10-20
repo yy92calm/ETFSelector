@@ -112,8 +112,12 @@ class CapitalFlowService:
                 "volume_surge_ratio": round(vol_surge, 2),
                 "avg_amount_5d": round(np.mean(amounts[-5:]), 0) if amounts else 0,
                 "obv_trend": obv_trend,
-                "price_volume_divergence": (price_chg_5d > 0 and vol_surge < 0.8) or
-                                           (price_chg_5d < 0 and vol_surge > 1.3),
+                # vol_surge 是 np.float64，比较结果是 numpy 标量 bool（类名恰为 "bool" 但非内置 bool），
+                # json.dumps 会拒绝；np.float64 本身可序列化（float 子类），仅此字段须转内置 bool
+                "price_volume_divergence": bool(
+                    (price_chg_5d > 0 and vol_surge < 0.8) or
+                    (price_chg_5d < 0 and vol_surge > 1.3)
+                ),
             }
 
         return result
