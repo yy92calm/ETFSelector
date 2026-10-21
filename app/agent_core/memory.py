@@ -14,6 +14,41 @@ logger = logging.getLogger(__name__)
 MAX_HISTORY_ROUNDS = 20  # 保留最近N轮对话
 
 
+def _rebuild_history(messages: List[ChatMessage]) -> List[dict]:
+    """把 canonical 消息行重建为 OpenAI messages（assistant 在前、tool 紧随其后）
+
+    工具结果与工具调用存在同一行；没有配套结果的 tool_call 剔除，
+    窗口头部孤立的 tool 消息丢弃，保证出站序列不违反 tool_calls 协议。
+    """
+    history = []
+    for msg in messages:
+        entry = {"role": msg.role, "content": msg.content or ""}
+        calls = msg.tool_calls or []
+        results = msg.tool_results or []
+        result_ids = {tr.get("tool_call_id") for tr in results if tr.get("tool_call_id")}
+        paired = [tc for tc in calls
+                  if isinstance(tc, dict) and tc.get("id") in result_ids]
+        if calls and not paired:
+            logger.warning(f"历史消息 {msg.id} 的 tool_calls 无配套结果，已从出站视图剔除")
+        if paired:
+            entry["tool_calls"] = paired
+            history.append(entry)
+            paired_ids = {tc["id"] for tc in paired}
+            for tr in results:
+                if tr.get("tool_call_id") in paired_ids:
+                    history.append({
+                        "role": "tool",
+                        "tool_call_id": tr["tool_call_id"],
+                        "content": tr.get("content", ""),
+                    })
+        else:
+            history.append(entry)
+
+    while history and history[0]["role"] == "tool":
+        history.pop(0)
+    return history
+
+
 class ChatMemory:
     """对话记忆管理器"""
 
@@ -56,6 +91,10 @@ class ChatMemory:
         有摘要时出站视图只保留最近若干轮，canonical 历史不变。
         exclude_message_id 按主键排除单条消息（当前刚写入的用户消息），
         比「内容相同就丢弃末条」可靠——用户重复问同一句话时不会误删上一条历史。
+
+        出站序列必须满足 OpenAI 协议：assistant(tool_calls) 在前、对应 tool 结果紧随其后。
+        工具结果与工具调用存在同一行，重建时先发 assistant 再发 tool；
+        没有配套结果的 tool_call 直接剔除（中断/异常轮次），不留下孤儿。
         """
         if self.get_summary(session_id, db):
             # 压缩后只保留最近若干轮，避免超长（轮数与压缩模块的出站视图口径同源）
@@ -64,27 +103,13 @@ class ChatMemory:
         query = db.query(ChatMessage).filter(ChatMessage.session_id == session_id)
         if exclude_message_id:
             query = query.filter(ChatMessage.id != exclude_message_id)
-        messages = query.order_by(ChatMessage.created_at.desc()) \
+        # 按自增主键排序：同一秒写入的多条消息用 created_at 会得到不稳定顺序
+        messages = query.order_by(ChatMessage.id.desc()) \
             .limit(limit * 3)  # 每轮可能有 user + assistant + tool 多条
         messages = messages.all()
         messages.reverse()
 
-        history = []
-        for msg in messages:
-            entry = {"role": msg.role, "content": msg.content or ""}
-            if msg.tool_calls:
-                entry["tool_calls"] = msg.tool_calls
-            if msg.tool_results:
-                # tool results 作为独立 tool role 消息
-                for tr in msg.tool_results:
-                    history.append({
-                        "role": "tool",
-                        "tool_call_id": tr.get("tool_call_id", ""),
-                        "content": tr.get("content", ""),
-                    })
-            history.append(entry)
-
-        return history
+        return _rebuild_history(messages)
 
     def get_summary(self, session_id: str, db: Session) -> str:
         """获取会话的上下文压缩摘要"""
@@ -115,7 +140,7 @@ class ChatMemory:
         messages = (
             db.query(ChatMessage)
             .filter(ChatMessage.session_id == session_id)
-            .order_by(ChatMessage.created_at.asc())
+            .order_by(ChatMessage.id.asc())
             .all()
         )
         return [m.to_dict() for m in messages]
