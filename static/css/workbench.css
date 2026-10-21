@@ -780,6 +780,12 @@ body {
 /* 审批卡片 */
 .msg.tool-info.approval { border-color: rgba(234, 179, 8, 0.5); }
 .msg.tool-info.approval .tool-state { color: #eab308; }
+.approval-reason {
+    margin-top: 6px;
+    font-size: 11px;
+    line-height: 1.5;
+    color: #eab308;
+}
 .approval-actions {
     display: flex;
     gap: 6px;

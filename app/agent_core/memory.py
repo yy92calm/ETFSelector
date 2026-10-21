@@ -2,6 +2,7 @@
 
 import logging
 import uuid
+from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy.orm import Session
@@ -79,6 +80,10 @@ class ChatMemory:
             usage=usage,
         )
         db.add(msg)
+        # 会话列表按最近活动排序：只插消息不会触发 ChatSession 的 onupdate
+        db.query(ChatSession).filter(ChatSession.session_id == session_id).update(
+            {"updated_at": datetime.utcnow()}, synchronize_session=False
+        )
         db.commit()
         return msg.id
 

@@ -38,7 +38,7 @@
 | H1.4 | 快照补当前视图与数据新鲜度 | P1 | ✅ 6 条新单测：视图中文标签注入、非法视图忽略、三类最新日期、管道未运行/运行中/完成/失败四态、空库走初始化兜底、失败原因截断。全量 576 passed |
 | H1.5 | 工具耗时与累计 token 用量 | P1 | ✅ 5 条新单测：单工具耗时、并行工具各自计时、跨轮累计（110→280）、最终消息落累计、无 usage 不炸。浏览器实测工具气泡「完成 · 1.2s」、在线态「本次 120 tokens」。全量 581 passed |
 | H2.1 | 工具结果头尾截断 + SSE 防缓冲头 | P2 | ✅ 4 条新单测：短结果不变、长结果保头保尾且带原长、各上限下长度不越界、SSE 三响应头齐备。全量 585 passed |
-| H2.2 | 侧边栏会话体验（审批理由/停止态/压缩提示/链接协议/活跃时间） | P2 | ⬜ |
+| H2.2 | 侧边栏会话体验（审批理由/停止态/压缩提示/链接协议/活跃时间） | P2 | ✅ 1 条新单测（updated_at 刷新 + 排序）；node 链接白名单 16/16；浏览器实测审批理由、停止中→复位、压缩提示、tokens、链接降级。全量 586 passed |
 
 ## 三、各项规格
 
@@ -208,6 +208,16 @@
 - `ChatMemory.save_message` touch `ChatSession.updated_at`，会话列表按最近活动排序。
 
 验证：node 校验链接白名单 + 浏览器实测（审批理由/停止态/压缩提示/耗时/tokens/会话排序）+ 1 条后端单测（updated_at 刷新）。
+
+实施记录：
+- 审批卡片把后端 `permission_required.reason` 渲染在按钮上方（黄色小字），按钮仍是 once/always/deny 三键。
+- 停止按钮点击后文案改「停止中…」并禁用；`interrupted`/`turn_end`/`error` 统一走 `hideStopButton` 复位，实测中断后按钮隐藏且文案恢复「停止」。
+- `compacting` 更新在线态文案为「正在整理上下文…」，`compacted` 仍追加「已整理上下文（历史摘要）」气泡。
+- usage 事件把累计值存入 `_lastUsage`，`turn_end` 优先用自身 `usage`、缺失时回退；解决「usage 事件到了但 turn_end 没带用量」时提示丢失。
+- 链接白名单 `_safeLinkUrl`：先剥离控制字符/空白再判协议，放行 http(s)/mailto、锚点、站内绝对路径与无协议相对路径；`javascript:`/`data:`/`vbscript:`、协议相对 `//host`、反斜杠路径一律降级 `#`，链接补 `rel="noopener noreferrer"`。node vm 实测 16/16。
+- 会话活跃时间：`save_message` 显式 update `ChatSession.updated_at`（只插消息不会触发 onupdate），`list_sessions` 既有 `updated_at desc` 排序因此生效；后端单测覆盖「旧会话发消息后排到第一」。
+- 浏览器实测受限于内置浏览器点击不可用，改为 `dispatchEvent` 回放：审批理由文案与 3 个按钮、停止中→复位、压缩提示、`usage` 回退显示「本次 321 tokens」、Markdown 三种安全/一种危险链接。耗时显示沿用 H1.5 的实测。
+- 1 条新单测；全量 586 passed。
 
 ## 四、非目标
 

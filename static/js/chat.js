@@ -414,6 +414,7 @@ const Chat = {
         this.streaming = true;
         this._toolSeq = 0;
         this._toolBubbles = new Map();
+        this._lastUsage = null;
         try {
             const resp = await fetch('/api/chat/stream', {
                 method: 'POST',
@@ -516,10 +517,15 @@ const Chat = {
             this.hideStopButton();
             this.refreshWorkbench(d.tool_calls);
             this.updateAiState('online');
-            this.showTurnUsage(d.usage);
+            this.showTurnUsage(d.usage || this._lastUsage);
+            this._lastUsage = null;
             this.markNews();
+        } else if (t === 'compacting') {
+            this.updateAiState('thinking', '正在整理上下文…');
         } else if (t === 'compacted') {
             this.addToolInfo('已整理上下文（历史摘要）');
+        } else if (t === 'usage') {
+            this._lastUsage = d.total || d.usage || null;
         } else if (t === 'interrupted') {
             this._finalizeStreamState();
             this.setLoading(false);
@@ -547,6 +553,14 @@ const Chat = {
         if (spinner) spinner.remove();
         const stateEl = bubble.querySelector('.tool-state');
         if (stateEl) stateEl.textContent = '等待授权';
+
+        const reason = String(d.reason || '').trim();
+        if (reason) {
+            const reasonEl = document.createElement('div');
+            reasonEl.className = 'approval-reason';
+            reasonEl.textContent = reason;
+            bubble.appendChild(reasonEl);
+        }
 
         const actions = document.createElement('div');
         actions.className = 'approval-actions';
@@ -607,7 +621,8 @@ const Chat = {
 
     async stopStreaming() {
         const btn = document.getElementById('chat-stop');
-        if (btn) { btn.disabled = true; btn.textContent = '已停止'; }
+        // 等后端在事件边界真正停下（interrupted/turn_end 会复位按钮）
+        if (btn) { btn.disabled = true; btn.textContent = '停止中…'; }
         if (this.sessionId) {
             try {
                 await fetch('/api/chat/stop', {
@@ -862,6 +877,21 @@ const Chat = {
         this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     },
 
+    _safeLinkUrl(raw) {
+        const url = String(raw || '').trim();
+        if (!url) return '#';
+        // 去掉控制字符后再判协议，防 java\tscript: 这类绕过
+        const probe = url.replace(/[\u0000-\u0020\u007f]+/g, '').toLowerCase();
+        if (probe.startsWith('http://') || probe.startsWith('https://') || probe.startsWith('mailto:')) {
+            return url;
+        }
+        // 显式协议（javascript:/data:/vbscript: 等）一律拒绝
+        if (/^[a-z][a-z0-9+.-]*:/.test(probe)) return '#';
+        // 协议相对 //host 与反斜杠路径会外跳，按不安全处理；其余无协议路径/锚点放行
+        if (url.startsWith('//') || url.startsWith('\\')) return '#';
+        return url;
+    },
+
     renderMarkdown(text) {
         if (!text) return '';
         let html = this.escapeHtml(text);
@@ -888,7 +918,8 @@ const Chat = {
             return '<div class="md-tr">' + cells.map(c => `<span class="md-td">${c}</span>`).join('') + '</div>';
         });
 
-        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" class="md-link">$1</a>');
+        html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_, label, url) =>
+            `<a href="${this._safeLinkUrl(url)}" target="_blank" rel="noopener noreferrer" class="md-link">${label}</a>`);
 
         html = html.replace(/^---$/gm, '<hr class="md-hr">');
 

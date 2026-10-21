@@ -819,6 +819,35 @@ class TestToolMetricsUsage(unittest.TestCase):
         self.assertIsNone(persisted[-1]["usage"])
 
 
+class TestSessionActivity(unittest.TestCase):
+    """H2.2 - 消息写入刷新会话活跃时间，会话列表按最近活动排序"""
+
+    def setUp(self):
+        self.db = make_db()
+        self.mem = ChatMemory()
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_save_message_touches_updated_at(self):
+        from app.models.chat import ChatSession
+
+        sid_old = self.mem.get_or_create_session("h22-old", self.db)
+        self.mem.get_or_create_session("h22-new", self.db)
+        old_time = datetime(2020, 1, 1)
+        self.db.query(ChatSession).filter(ChatSession.session_id == sid_old).update(
+            {"updated_at": old_time})
+        self.db.commit()
+
+        self.mem.save_message(sid_old, "user", "继续聊", db=self.db)
+        self.db.expire_all()
+
+        refreshed = self.db.query(ChatSession).filter(
+            ChatSession.session_id == sid_old).one()
+        self.assertGreater(refreshed.updated_at, old_time)
+        self.assertEqual(self.mem.list_sessions(self.db)[0]["session_id"], sid_old)
+
+
 class TestToolResultTruncation(unittest.TestCase):
     """H2.1 - 工具结果头尾截断 + SSE 防缓冲头"""
 
