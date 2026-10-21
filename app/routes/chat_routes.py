@@ -114,7 +114,15 @@ def chat_stream(request: ChatRequest):
         finally:
             db.close()
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # nginx 反代下禁用缓冲，否则 SSE 会攒批下发
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.get("/history", response_model=APIResponse)

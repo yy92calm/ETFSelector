@@ -819,5 +819,48 @@ class TestToolMetricsUsage(unittest.TestCase):
         self.assertIsNone(persisted[-1]["usage"])
 
 
+class TestToolResultTruncation(unittest.TestCase):
+    """H2.1 - 工具结果头尾截断 + SSE 防缓冲头"""
+
+    def test_short_result_unchanged(self):
+        from app.agent_core.loop import _truncate_tool_result
+
+        text = '{"ok": true, "data": "短结果"}'
+        self.assertEqual(_truncate_tool_result(text), text)
+
+    def test_long_result_keeps_tail(self):
+        from app.agent_core.loop import _truncate_tool_result
+
+        original = "HEAD" + "x" * 5000 + "TAIL_ERROR"
+
+        out = _truncate_tool_result(original, 300)
+
+        self.assertTrue(out.startswith("HEAD"))
+        self.assertTrue(out.endswith("TAIL_ERROR"))
+        self.assertIn("已截断", out)
+        self.assertIn(str(len(original)), out)
+        head_len = len(out.split("…（已截断")[0])
+        tail_len = len(out.rsplit("…\n", 1)[-1])
+        self.assertGreater(head_len, tail_len * 1.8)
+
+    def test_truncated_length_bounded(self):
+        from app.agent_core.loop import _truncate_tool_result
+
+        original = "x" * 100000
+        for limit in (10, 300, 1500, 3000):
+            self.assertLessEqual(len(_truncate_tool_result(original, limit)), limit)
+
+    def test_sse_headers_prevent_buffering(self):
+        from app.routes.chat_routes import ChatRequest, chat_stream
+
+        with patch("app.agent_core.loop.AgentLoop"):
+            resp = chat_stream(ChatRequest(message="hi"))
+
+        self.assertEqual(resp.media_type, "text/event-stream")
+        self.assertEqual(resp.headers.get("cache-control"), "no-cache")
+        self.assertEqual(resp.headers.get("x-accel-buffering"), "no")
+        self.assertEqual(resp.headers.get("connection"), "keep-alive")
+
+
 if __name__ == "__main__":
     unittest.main()

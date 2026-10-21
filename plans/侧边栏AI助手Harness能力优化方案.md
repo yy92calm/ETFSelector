@@ -37,7 +37,7 @@
 | H1.3 | 模型选择首轮生效与会话同步 | P1 | ✅ 4 条后端单测 + 浏览器实测：新会话请求体携带 `qwen3.8-max-preview`；切到保存 `deepseek-chat` 的会话时下拉同步并补选项。全量 570 passed |
 | H1.4 | 快照补当前视图与数据新鲜度 | P1 | ✅ 6 条新单测：视图中文标签注入、非法视图忽略、三类最新日期、管道未运行/运行中/完成/失败四态、空库走初始化兜底、失败原因截断。全量 576 passed |
 | H1.5 | 工具耗时与累计 token 用量 | P1 | ✅ 5 条新单测：单工具耗时、并行工具各自计时、跨轮累计（110→280）、最终消息落累计、无 usage 不炸。浏览器实测工具气泡「完成 · 1.2s」、在线态「本次 120 tokens」。全量 581 passed |
-| H2.1 | 工具结果头尾截断 + SSE 防缓冲头 | P2 | ⬜ |
+| H2.1 | 工具结果头尾截断 + SSE 防缓冲头 | P2 | ✅ 4 条新单测：短结果不变、长结果保头保尾且带原长、各上限下长度不越界、SSE 三响应头齐备。全量 585 passed |
 | H2.2 | 侧边栏会话体验（审批理由/停止态/压缩提示/链接协议/活跃时间） | P2 | ⬜ |
 
 ## 三、各项规格
@@ -189,6 +189,14 @@
 - `StreamingResponse` 增加 `Cache-Control: no-cache`、`X-Accel-Buffering: no`、`Connection: keep-alive`。
 
 验证：4 条单测（短结果不变/长结果保尾/长度受控/响应头）。
+
+实施记录：
+- `_truncate_tool_result` 的截断标记计入预算，输出总长严格 ≤ limit；limit 小到放不下标记时退化为纯头部截断，保证任何上限都不越界。
+- 三处上限：入模 3000、SSE preview 1500、落库 1000。落库也改成头尾截断——历史轮次是靠 `tool_results` 重建后回灌模型的，只留头部会让「尾部错误」只在第一轮可见。
+- `run_autonomous` 的同类硬编码 `[:3000] + "(截断)"` 一并替换为新助手（同样是「错误在尾部看不见」的问题，非侧边栏路径但同一根因）。
+- `tool_calls_made.result_preview` 仍只取头部 200 字：该字段仅供 `refreshWorkbench` 判断是否要刷新面板，不展示给用户/模型，未改。
+- SSE 响应补 `Cache-Control: no-cache`、`X-Accel-Buffering: no`、`Connection: keep-alive`；单测直接检查 `StreamingResponse.headers`，未在 nginx 反代下做线上链路实测。
+- 4 条新单测；全量 585 passed。
 
 ### H2.2 侧边栏会话体验
 

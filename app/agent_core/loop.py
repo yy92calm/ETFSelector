@@ -36,6 +36,23 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 MAX_TOOL_ROUNDS = 10  # 防止无限循环（settings.chat_max_tool_rounds 未配置时的兜底）
+TOOL_RESULT_MAX_CHARS = 3000       # 入模 tool 消息上限
+TOOL_RESULT_PREVIEW_MAX_CHARS = 1500  # SSE 预览上限
+TOOL_RESULT_DB_MAX_CHARS = 1000    # 落库（后续轮次重建历史时回灌给模型）上限
+
+
+def _truncate_tool_result(text: str, limit: int = TOOL_RESULT_MAX_CHARS) -> str:
+    """超长结果保留头 2/3 与尾 1/3：异常栈/失败原因通常落在尾部，只截尾会让模型看不到"""
+    if len(text) <= limit:
+        return text
+    marker = f"\n…（已截断，原长 {len(text)} 字符）…\n"
+    budget = limit - len(marker)
+    if budget <= 0:
+        return text[:limit]
+    head_len = budget * 2 // 3
+    tail_len = budget - head_len
+    return text[:head_len] + marker + text[-tail_len:]
+
 
 
 def _max_tool_rounds() -> int:
@@ -457,9 +474,8 @@ class AgentLoop:
                     duration_ms = max(0, round((perf_counter() - t0) * 1000))
 
                 result_str = json.dumps(result, ensure_ascii=False, default=str)
-                # 截断过长结果
-                if len(result_str) > 3000:
-                    result_str = result_str[:3000] + "...(截断)"
+                # 截断过长结果：保头保尾，避免异常尾巴被吃掉
+                result_str = _truncate_tool_result(result_str)
 
                 messages.append({
                     "role": "tool",
@@ -476,7 +492,7 @@ class AgentLoop:
                         "arguments": arguments,
                         "status": status,
                         "duration_ms": duration_ms,
-                        "preview": result_str[:1500],
+                        "preview": _truncate_tool_result(result_str, TOOL_RESULT_PREVIEW_MAX_CHARS),
                     },
                 }
 
@@ -489,7 +505,7 @@ class AgentLoop:
                 tool_results_for_db.append({
                     "tool_call_id": tc.id,
                     "tool_name": tool_name,
-                    "content": result_str[:1000],
+                    "content": _truncate_tool_result(result_str, TOOL_RESULT_DB_MAX_CHARS),
                 })
 
             # 保存工具调用记录
@@ -717,8 +733,7 @@ class AgentLoop:
                 result = self.registry.execute(tool_name, arguments, db)
 
                 result_str = json.dumps(result, ensure_ascii=False, default=str)
-                if len(result_str) > 3000:
-                    result_str = result_str[:3000] + "...(截断)"
+                result_str = _truncate_tool_result(result_str)
 
                 messages.append({
                     "role": "tool",
