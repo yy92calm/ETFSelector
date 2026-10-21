@@ -1,12 +1,14 @@
 """侧边栏 AI 助手 harness 测试（方案：plans/侧边栏AI助手Harness能力优化方案.md）"""
 
 import unittest
+from datetime import date, datetime, time
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.agent_core.context import ContextBuilder
 from app.agent_core.approvals import (
     APPROVAL_OUTCOME_ALWAYS,
     APPROVAL_OUTCOME_DENY,
@@ -598,6 +600,96 @@ class TestModelSelection(unittest.TestCase):
         resp = get_chat_history(self.sid, self.db)
 
         self.assertEqual(resp.data["model"], "qwen-max")
+
+
+class TestContextFreshness(unittest.TestCase):
+    """H1.4 - 快照带当前视图与数据新鲜度"""
+
+    def setUp(self):
+        self.db = make_db()
+        self.builder = ContextBuilder()
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_view_label_injected(self):
+        snapshot = self.builder.build_turn_snapshot(self.db, view="strategies")
+        self.assertIn("当前视图: 策略", snapshot)
+
+    def test_invalid_view_ignored(self):
+        snapshot = self.builder.build_turn_snapshot(self.db, view="<script>")
+        self.assertNotIn("当前视图", snapshot)
+
+    def test_freshness_dates(self):
+        from app.models.etf import ETFDailyIndicator, ETFQuotation
+        from app.models.portfolio import PortfolioSnapshot
+
+        self.db.add_all([
+            ETFQuotation(etf_code="510300", trade_date=date(2026, 10, 20),
+                         close_price=4.0, change_pct=0.5),
+            ETFDailyIndicator(etf_code="510300", trade_date=date(2026, 10, 19)),
+            PortfolioSnapshot(strategy_id=1, trade_date=date(2026, 10, 18)),
+        ])
+        self.db.commit()
+
+        text = self.builder._get_data_freshness(self.db)
+
+        self.assertIn("行情 2026-10-20", text)
+        self.assertIn("指标扫描 2026-10-19", text)
+        self.assertIn("组合快照 2026-10-18", text)
+
+    def _set_pipeline_logs(self, *rows):
+        from app.models.task_log import TaskExecutionLog
+
+        self.db.query(TaskExecutionLog).delete()
+        for row in rows:
+            self.db.add(TaskExecutionLog(**row))
+        self.db.commit()
+
+    def test_pipeline_status_states(self):
+        from app.models.etf import ETFQuotation
+        from app.utils.trading_calendar import now_cn
+
+        today = now_cn().date()
+        started = datetime.combine(today, time(20, 0))
+        # 空库时 section 整体留空（由"系统刚初始化"兜底），先落一条行情
+        self.db.add(ETFQuotation(etf_code="510300", trade_date=date(2026, 10, 20),
+                                 close_price=4.0, change_pct=0.5))
+        self.db.commit()
+
+        self.assertIn("今日管道: 未运行", self.builder._get_data_freshness(self.db))
+
+        self._set_pipeline_logs({"task_name": "daily_pipeline", "status": "running",
+                                 "started_at": started})
+        self.assertIn("今日管道: 运行中（开始 20:00）",
+                      self.builder._get_data_freshness(self.db))
+
+        self._set_pipeline_logs({"task_name": "daily_pipeline", "status": "success",
+                                 "started_at": started, "duration_seconds": 312.0})
+        self.assertIn("今日管道: 完成（20:00 启动，耗时 312s）",
+                      self.builder._get_data_freshness(self.db))
+
+        self._set_pipeline_logs({"task_name": "daily_pipeline", "status": "failed",
+                                 "started_at": started, "error_message": "boom"})
+        text = self.builder._get_data_freshness(self.db)
+        self.assertIn("今日管道: 失败", text)
+        self.assertIn("最近失败: [daily_pipeline] 20:00 boom", text)
+
+    def test_empty_db_falls_back_to_init_message(self):
+        snapshot = self.builder.build_turn_snapshot(self.db)
+        self.assertIn("系统刚初始化", snapshot)
+
+    def test_failure_reason_truncated(self):
+        from app.utils.trading_calendar import now_cn
+
+        started = datetime.combine(now_cn().date(), time(20, 0))
+        self._set_pipeline_logs({"task_name": "daily_pipeline.rebalance", "status": "failed",
+                                 "started_at": started, "error_message": "x" * 300})
+
+        text = self.builder._get_data_freshness(self.db)
+
+        self.assertIn("x" * 120, text)
+        self.assertNotIn("x" * 121, text)
 
 
 if __name__ == "__main__":

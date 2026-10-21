@@ -8,7 +8,7 @@
 
 import logging
 from collections import defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import List, Optional
 
 from sqlalchemy import func
@@ -28,21 +28,38 @@ INDEX_ETF_CODES = {
 # 快照里最多展开的策略数
 CONTEXT_STRATEGY_LIMIT = 5
 
+# 工作台视图 → 中文标签（只用于快照，非法值静默忽略）
+VIEW_LABELS = {
+    "overview": "总览",
+    "market": "行情",
+    "strategies": "策略",
+    "sentiment": "舆情",
+    "tasks": "任务",
+    "analyses": "分析",
+    "research": "研究",
+    "rules": "规则",
+}
+
+# 新鲜度 section 中失败原因的最大展示长度
+FRESHNESS_ERROR_LIMIT = 120
+
 
 class ContextBuilder:
     """构建系统状态上下文，组装为每轮注入的快照消息"""
 
-    def build_turn_snapshot(self, db: Session, summary: str = "") -> str:
+    def build_turn_snapshot(self, db: Session, summary: str = "",
+                            view: Optional[str] = None) -> str:
         """组装一轮的完整快照文本（时间头 + 可选历史摘要 + 状态 section）
 
         Args:
             db: 数据库会话
             summary: 上下文压缩摘要（压缩触发过时非空），置于快照头部
+            view: 用户当前所在工作台视图（白名单外的值忽略）
 
         Returns:
             快照文本（注入为 user-role 消息，不落库）
         """
-        parts = [self._time_header()]
+        parts = [self._time_header(view)]
         if summary:
             parts.append(f"[历史对话摘要]\n{summary}")
         sections = self.build_state_sections(db)
@@ -52,8 +69,8 @@ class ContextBuilder:
             parts.append("系统刚初始化，暂无历史数据。")
         return "\n\n".join(parts)
 
-    def _time_header(self) -> str:
-        """时间上下文头：模型获得「现在几点、是否交易日」的事实来源"""
+    def _time_header(self, view: Optional[str] = None) -> str:
+        """时间上下文头：模型获得「现在几点、是否交易日、用户在看哪」的事实来源"""
         now = now_cn()
         weekday_names = ["一", "二", "三", "四", "五", "六", "日"]
         trading = is_trading_day(now.date())
@@ -61,8 +78,11 @@ class ContextBuilder:
             session_state = "交易时段内" if is_market_open_now() else "非交易时段"
         else:
             session_state = "非交易日"
-        return (f"当前时间: {now.strftime('%Y-%m-%d %H:%M')}（北京时间，"
-                f"周{weekday_names[now.weekday()]}）| {session_state}")
+        header = (f"当前时间: {now.strftime('%Y-%m-%d %H:%M')}（北京时间，"
+                  f"周{weekday_names[now.weekday()]}）| {session_state}")
+        if view in VIEW_LABELS:
+            header += f" | 当前视图: {VIEW_LABELS[view]}"
+        return header
 
     def build_state_sections(self, db: Session) -> str:
         """构建系统状态 section（压缩版，避免token过长）
@@ -70,6 +90,7 @@ class ContextBuilder:
         单 section 独立容错：查询失败记录日志并跳过，不影响其余部分。
         """
         builders = [
+            ("数据新鲜度", self._get_data_freshness),
             ("活跃策略", self._get_strategies_summary),
             ("策略进化提示词", self._get_evolved_prompts),
             ("市场概况", self._get_market_summary),
@@ -100,6 +121,54 @@ class ContextBuilder:
         from app.models.strategy import Strategy
 
         return db.query(Strategy).filter(Strategy.status == "active").all()
+
+    def _get_data_freshness(self, db: Session) -> str:
+        """数据截止日期与今日管道状态（防止 LLM 拿断更数据下结论）"""
+        from app.models.etf import ETFDailyIndicator, ETFQuotation
+        from app.models.portfolio import PortfolioSnapshot
+        from app.models.task_log import TaskExecutionLog
+
+        quote_date = db.query(func.max(ETFQuotation.trade_date)).scalar()
+        indicator_date = db.query(func.max(ETFDailyIndicator.trade_date)).scalar()
+        snapshot_date = db.query(func.max(PortfolioSnapshot.trade_date)).scalar()
+
+        lines = []
+        if quote_date or indicator_date or snapshot_date:
+            lines.append(
+                f"数据截止: 行情 {quote_date or '无'} | 指标扫描 {indicator_date or '无'} | "
+                f"组合快照 {snapshot_date or '无'}"
+            )
+
+        today_start = datetime.combine(now_cn().date(), time.min)
+        logs = (
+            db.query(TaskExecutionLog)
+            .filter(TaskExecutionLog.task_name.like("daily_pipeline%"),
+                    TaskExecutionLog.started_at >= today_start)
+            .order_by(TaskExecutionLog.started_at.desc(), TaskExecutionLog.id.desc())
+            .all()
+        )
+        overall = next((log for log in logs if log.task_name == "daily_pipeline"), None)
+        if not overall:
+            status_text = "未运行"
+        elif overall.status == "running":
+            status_text = f"运行中（开始 {overall.started_at:%H:%M}）"
+        elif overall.status == "success":
+            duration = (f"，耗时 {overall.duration_seconds:.0f}s"
+                        if overall.duration_seconds is not None else "")
+            status_text = f"完成（{overall.started_at:%H:%M} 启动{duration}）"
+        elif overall.status == "failed":
+            status_text = "失败"
+        else:
+            status_text = overall.status or "未知"
+        lines.append(f"今日管道: {status_text}")
+
+        failure = next((log for log in logs if log.status == "failed"), None)
+        if failure:
+            stage = failure.task_name.replace("daily_pipeline.", "")
+            reason = (failure.error_message or "无错误信息")[:FRESHNESS_ERROR_LIMIT]
+            lines.append(f"最近失败: [{stage}] {failure.started_at:%H:%M} {reason}")
+
+        return "\n".join(lines) if (quote_date or indicator_date or snapshot_date or logs) else ""
 
     @staticmethod
     def _truncation_note(total: int) -> str:

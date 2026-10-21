@@ -163,10 +163,11 @@ class AgentLoop:
         )
 
     def run_streaming(self, user_message: str, session_id: Optional[str], db: Session,
-                      model: Optional[str] = None):
+                      model: Optional[str] = None, view: Optional[str] = None):
         """流式执行：逐条产出事件字典，配合 SSE 推送给前端实时渲染。
 
         model: 本轮指定模型（空串恢复默认，None 保持会话已有值）。
+        view: 用户当前工作台视图（写入快照，白名单外的值忽略）。
 
         事件类型:
             turn_start          {"session_id"}
@@ -181,10 +182,10 @@ class AgentLoop:
             interrupted         {"session_id"}
             error               {"error"}
         """
-        yield from self._iter_events(user_message, session_id, db, model=model)
+        yield from self._iter_events(user_message, session_id, db, model=model, view=view)
 
     def _iter_events(self, user_message: str, session_id: Optional[str], db: Session,
-                     model: Optional[str] = None):
+                     model: Optional[str] = None, view: Optional[str] = None):
         """一次完整对话的事件流生成器（run 与 run_streaming 共用）"""
         # 确保会话存在
         session_id = self.memory.get_or_create_session(session_id, db)
@@ -247,7 +248,7 @@ class AgentLoop:
         # 系统状态快照：动态状态（时间/摘要/策略/市场/风控）以 user-role 消息注入，
         # 不落库；与静态 system prompt 分离以保 provider prompt cache
         snapshot = self.context_builder.build_turn_snapshot(
-            db, summary=self.memory.get_summary(session_id, db)
+            db, summary=self.memory.get_summary(session_id, db), view=view
         )
         messages.append({"role": "user", "content": f"[系统状态快照]\n{snapshot}"})
 

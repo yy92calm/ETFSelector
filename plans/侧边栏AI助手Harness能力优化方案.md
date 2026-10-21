@@ -35,7 +35,7 @@
 | H1.1 | 工具轮数耗尽后的收尾合成 | P1 | ✅ 3 条新单测：跑满后第 3 次调用为无 tools 收尾并落库；收尾失败 error 含上限与原因；未跑满不额外调用。全量 560 passed |
 | H1.2 | 思考流健壮性（跨 chunk 标签 / reasoning_content / 空 tool id） | P1 | ✅ 6 条新单测：开/闭标签跨 chunk、同 chunk 开闭、残留前缀 flush 为正文、reasoning_content、空 id 补齐。全量 566 passed |
 | H1.3 | 模型选择首轮生效与会话同步 | P1 | ✅ 4 条后端单测 + 浏览器实测：新会话请求体携带 `qwen3.8-max-preview`；切到保存 `deepseek-chat` 的会话时下拉同步并补选项。全量 570 passed |
-| H1.4 | 快照补当前视图与数据新鲜度 | P1 | ⬜ |
+| H1.4 | 快照补当前视图与数据新鲜度 | P1 | ✅ 6 条新单测：视图中文标签注入、非法视图忽略、三类最新日期、管道未运行/运行中/完成/失败四态、空库走初始化兜底、失败原因截断。全量 576 passed |
 | H1.5 | 工具耗时与累计 token 用量 | P1 | ⬜ |
 | H2.1 | 工具结果头尾截断 + SSE 防缓冲头 | P2 | ⬜ |
 | H2.2 | 侧边栏会话体验（审批理由/停止态/压缩提示/链接协议/活跃时间） | P2 | ⬜ |
@@ -154,6 +154,15 @@
 - 单 section 独立容错；空库返回空由「系统刚初始化」兜底。
 
 验证：6 条单测（视图注入/非法值忽略/三类日期/管道四态/空库/截断）。
+
+实施记录：
+- 视图走白名单 `VIEW_LABELS`，未知值（含前端注入串）整段不拼，避免把任意字符串塞进 system 可见文本；前端 `sendStreaming` 随消息带 `view: this.getView()`。
+- 「数据新鲜度」放在 builders 首位：日期取 `ETFQuotation`/`ETFDailyIndicator`/`PortfolioSnapshot` 各自 `max(trade_date)`；今日管道只认 `task_name == daily_pipeline` 的总行判总体状态，`daily_pipeline.%` 的失败行取最近一条（按 `started_at desc, id desc`）展示阶段与原因。
+- 空库（三类日期与今日日志全无）返回空串，保留「系统刚初始化」兜底；有历史行情但今日未跑管道时显示「今日管道: 未运行」——这要求表里已有数据，测试据此先落一条行情。
+- 失败原因截断 120 字符（`FRESHNESS_ERROR_LIMIT`），避免单条异常刷爆快照 token。
+- 时区假设：`TaskExecutionLog.started_at` 是 naive UTC，而「今日」按北京日期取，凌晨 0–8 点运行的管道可能被算到前一天；当前管道固定 20:00 跑，暂不受影响，未为此改全链路时间口径。
+- 既有 `_get_evolved_prompts` 的 `status == 'active'` 口径未动（与复盘覆盖暂停策略的口径差异属既有行为）。
+- 6 条新单测；全量 576 passed。
 
 ### H1.5 工具耗时与累计 token 用量
 

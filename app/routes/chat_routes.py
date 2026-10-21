@@ -21,6 +21,8 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, description="会话ID，不传则新建")
     model: Optional[str] = Field(None, max_length=100,
                                  description="会话模型；空串恢复默认，不传保持会话已有值")
+    view: Optional[str] = Field(None, max_length=20,
+                                description="当前工作台视图（写入上下文快照）")
 
 
 class ApproveRequest(BaseModel):
@@ -107,7 +109,7 @@ def chat_stream(request: ChatRequest):
         db = SessionLocal()
         try:
             for ev in agent.run_streaming(request.message, request.session_id, db,
-                                          model=request.model):
+                                          model=request.model, view=request.view):
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
         finally:
             db.close()

@@ -414,6 +414,7 @@ const Chat = {
                     message: text,
                     session_id: this.sessionId,
                     model: this.getSelectedModel(),
+                    view: this.getView(),
                 }),
             });
             if (!resp.ok || !resp.body) return false;
