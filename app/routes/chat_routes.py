@@ -148,6 +148,13 @@ def delete_session(session_id: str, db: Session = Depends(get_db)):
 
     if not deleted:
         return APIResponse(code=404, message="会话不存在", data=None)
+
+    # 会话授权/中断标志是进程级状态，随会话一起清理，避免复用 session_id 时继承
+    from app.agent_core.loop import clear_interrupt
+    from app.agent_core.permissions import clear_session_permissions
+
+    clear_session_permissions(session_id)
+    clear_interrupt(session_id)
     return APIResponse(data={"session_id": session_id, "deleted": True})
 
 

@@ -464,7 +464,7 @@ class AgentLoop:
         """执行单个工具：权限判定 + 写操作审批（生成器，yield 权限事件并返回执行结果）"""
         tool_def = self.registry.get_tool(tool_name)
         risk_level = getattr(tool_def, "risk_level", "read") if tool_def else "read"
-        decision = self.permissions.evaluate(tool_name, risk_level)
+        decision = self.permissions.evaluate(tool_name, risk_level, session_id=session_id)
 
         if decision.allowed:
             return self.registry.execute(tool_name, arguments, db)
@@ -500,7 +500,7 @@ class AgentLoop:
                 return {"error": "用户中断，写操作未执行"}
             return {"error": "用户拒绝授权，写操作未执行"}
         if outcome == APPROVAL_OUTCOME_ALWAYS:
-            self.permissions.allow_tool_for_session(tool_name)
+            self.permissions.allow_tool_for_session(tool_name, session_id=session_id)
         return self.registry.execute(tool_name, arguments, db)
 
     def _complete_text(self, msgs: List[dict], client=None, model: str = "") -> str:

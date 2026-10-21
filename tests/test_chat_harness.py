@@ -8,6 +8,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.agent_core.approvals import (
+    APPROVAL_OUTCOME_ALWAYS,
     APPROVAL_OUTCOME_DENY,
     APPROVAL_OUTCOME_ONCE,
     ApprovalStore,
@@ -18,7 +19,13 @@ from app.agent_core.loop import (
     request_interrupt,
 )
 from app.agent_core.memory import ChatMemory, _rebuild_history
-from app.agent_core.permissions import Mode, PermissionEngine
+from app.agent_core.permissions import (
+    Mode,
+    PermissionEngine,
+    clear_session_permissions,
+    is_session_tool_allowed,
+    remember_session_allow,
+)
 from app.db.database import Base
 
 
@@ -263,6 +270,97 @@ class TestStopClosure(unittest.TestCase):
         finally:
             clear_interrupt("h02-iso-a")
             clear_interrupt("h02-iso-b")
+
+
+class TestSessionPermissions(unittest.TestCase):
+    """H0.3 - 「本会话允许」跨请求持久化，删除会话时清理"""
+
+    def setUp(self):
+        self.db = make_db()
+        self.loop = make_loop(self.db)
+        self.sid = "h03-session"
+        clear_session_permissions(self.sid)
+        clear_interrupt(self.sid)
+
+    def tearDown(self):
+        clear_session_permissions(self.sid)
+        clear_interrupt(self.sid)
+        self.db.close()
+
+    def _write_tool_loop(self):
+        self.loop.permissions = PermissionEngine(mode=Mode.INTERACTIVE)
+        self.loop.registry.get_tool.return_value = SimpleNamespace(risk_level="write")
+        self.loop.registry.execute.return_value = {"ok": True}
+        return self.loop
+
+    def test_allow_persists_across_engine_instances(self):
+        eng1 = PermissionEngine(mode=Mode.INTERACTIVE)
+        eng1.allow_tool_for_session("execute_rebalance", session_id=self.sid)
+
+        eng2 = PermissionEngine(mode=Mode.INTERACTIVE)
+        d = eng2.evaluate("execute_rebalance", "write", session_id=self.sid)
+
+        self.assertTrue(d.allowed)
+        self.assertEqual(d.reason, "本会话已放行")
+
+    def test_other_sessions_not_affected(self):
+        remember_session_allow(self.sid, "execute_rebalance")
+        eng = PermissionEngine(mode=Mode.INTERACTIVE)
+
+        other = eng.evaluate("execute_rebalance", "write", session_id="h03-other")
+        anonymous = eng.evaluate("execute_rebalance", "write")
+
+        self.assertTrue(other.needs_user)
+        self.assertTrue(anonymous.needs_user)
+
+    def test_always_outcome_is_shared(self):
+        """审批选 always 后，下一个请求新建的 PermissionEngine 直接放行"""
+        store = ApprovalStore()
+        self._write_tool_loop()
+
+        with patch("app.agent_core.loop.settings") as st, \
+             patch("app.agent_core.loop.get_approval_store", return_value=store):
+            patch_loop_settings(st)
+            gen = self.loop._exec_tool("execute_rebalance", {}, self.db, 1, self.sid)
+            ev = next(gen)
+            self.assertEqual(ev["type"], "permission_required")
+            store.resolve(ev["data"]["request_id"], APPROVAL_OUTCOME_ALWAYS)
+            with self.assertRaises(StopIteration) as ctx:
+                next(gen)
+
+        self.assertEqual(ctx.exception.value, {"ok": True})
+        self.assertTrue(is_session_tool_allowed(self.sid, "execute_rebalance"))
+        fresh = PermissionEngine(mode=Mode.INTERACTIVE)
+        self.assertTrue(fresh.evaluate("execute_rebalance", "write",
+                                       session_id=self.sid).allowed)
+
+    def test_auto_approve_does_not_write_session_allow(self):
+        """全局自动审批只影响当次执行，不污染会话授权清单"""
+        store = ApprovalStore()
+        store.auto_approve = True
+        self._write_tool_loop()
+
+        with patch("app.agent_core.loop.get_approval_store", return_value=store):
+            gen = self.loop._exec_tool("execute_rebalance", {}, self.db, 1, self.sid)
+            with self.assertRaises(StopIteration) as ctx:
+                next(gen)
+
+        self.assertEqual(ctx.exception.value, {"ok": True})
+        self.loop.registry.execute.assert_called_once()
+        self.assertFalse(is_session_tool_allowed(self.sid, "execute_rebalance"))
+
+    def test_delete_session_clears_process_state(self):
+        from app.routes.chat_routes import delete_session
+
+        sid = self.loop.memory.get_or_create_session("h03-del", self.db)
+        remember_session_allow(sid, "execute_rebalance")
+        request_interrupt(sid)
+
+        resp = delete_session(sid, self.db)
+
+        self.assertEqual(resp.code, 200)
+        self.assertFalse(is_session_tool_allowed(sid, "execute_rebalance"))
+        self.assertFalse(check_interrupted(sid))
 
 
 if __name__ == "__main__":

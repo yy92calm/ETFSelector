@@ -31,7 +31,7 @@
 |----|----|--------|------|
 | H0.1 | 历史消息序列完整性 | P0 | ✅ 6 条新单测：assistant 先于 tool；同时间戳仍按 id 排序；全/部分无结果 tool_calls 剔除；孤立 tool 头丢弃；全孤立返回空。全量 547 passed |
 | H0.2 | stop 闭环（流中 + 审批等待） | P0 | ✅ 5 条新单测：流中中断只保留已产出增量；审批等待直测返回「用户中断」且不执行；完整 loop 链路工具标 error 后 yield interrupted 且不再调 LLM；pending 清空；跨会话隔离。全量 552 passed |
-| H0.3 | 会话级授权持久化 | P0 | ⬜ |
+| H0.3 | 会话级授权持久化 | P0 | ✅ 5 条新单测：跨引擎实例放行；其他会话/无会话不受影响；always 经 `_exec_tool` 落共享清单；auto_approve 不写授权；删除会话清授权+中断。全量 557 passed |
 | H1.1 | 工具轮数耗尽后的收尾合成 | P1 | ⬜ |
 | H1.2 | 思考流健壮性（跨 chunk 标签 / reasoning_content / 空 tool id） | P1 | ⬜ |
 | H1.3 | 模型选择首轮生效与会话同步 | P1 | ⬜ |
@@ -86,6 +86,15 @@
 - 单进程部署假设（与现有进程内 ApprovalStore 一致），不做多 worker 共享。
 
 验证：新增 4 条单测（跨实例生效、会话隔离、删除清理、auto_approve 不受影响）。
+
+实施记录：
+- `permissions.py` 增加进程级 `_SESSION_ALLOW`（`{session_id: {tool_name}}`）+ 锁，以及 `remember_session_allow` / `is_session_tool_allowed` / `clear_session_permissions` 三个模块函数；`PermissionEngine` 的实例清单保留（无 session_id 的旧调用语义不变）。
+- `evaluate(..., session_id=None)` 先查实例清单再查共享清单；只读模式的拒绝判定仍在最前，切换 discuss 后旧授权不会绕过。
+- `_exec_tool` 的 `evaluate` 与 `always` 落库都传当前 `session_id`，所以审批「本会话允许」跨 HTTP 请求、跨 AgentLoop 实例生效。
+- `DELETE /api/chat/sessions/{id}` 在 DB 删除成功后清理该会话授权与中断标志；session_id 复用不会继承旧授权。
+- 单进程假设与 `ApprovalStore` 一致；多 worker 不共享，未引入外部存储。
+- 偏离：方案写 4 条单测，实际 5 条，补了一条 `_exec_tool` 审批 always 后新引擎实例直接放行的链路测试。
+- 全量 557 passed。
 
 ### H1.1 工具轮数耗尽后的收尾合成
 
