@@ -1,0 +1,148 @@
+# 侧边栏 AI 助手 Harness 能力优化方案
+
+> 目标：把侧边栏对话的 Agent 运行时（loop / 历史 / 权限 / 审批 / 流式 / 上下文 / 观测）补到「可长时间对话、可中断、可审计、出错可恢复」的 harness 水平。
+> 范围：`app/routes/chat_routes.py`、`app/agent_core/*`、`static/js/chat.js`、`static/workbench.html`；不改轮动/交易主链路。
+> 节奏：方案一行 = 一个 commit；每行完成后置 ✅ 并写实测验证与实施记录。
+
+## 一、现状体检（2026-10-21）
+
+| 症状 | 证据 | 影响 |
+|------|------|------|
+| 历史重建把 tool 结果排在 assistant(tool_calls) 之前 | `memory.py:72-85` 先 append tool，再 append assistant | 严格 OpenAI 兼容端会报 `tool message without preceding tool_calls`，带工具的多轮对话第二轮起可能 400 |
+| 历史按 `created_at` 排序、截断窗口可能从 tool 消息开始 | `memory.py:64-69` | 同一秒消息顺序不稳；窗口头部留下孤儿 tool 消息 |
+| 无结果的 tool_call 仍进历史 | `memory.py:75-85` | 中断/异常轮次留下无法配对的 tool_calls |
+| 「本会话允许」只活一轮 | `permissions.py:31,45-56`；`chat_routes.py:102` 每请求新建 AgentLoop | 用户点「本会话允许」后下一条消息又弹审批，UI 语义与行为不符 |
+| stop 只在本轮工具边界生效 | `loop.py:249,384`；流式循环 `270-307` 不检查中断 | 长回答/长工具期间点停止无反应 |
+| stop 不能解除审批等待 | `loop.py:480` 阻塞 `store.wait` | 停服按钮在「等待授权」时形同虚设，最长等 120s 超时 |
+| 工具轮数耗尽后静默空回复 | `loop.py:247-332,439` | 跑满 10 轮无最终文本，前端只看到工具气泡后结束 |
+| `<think>` 跨 chunk 解析失效 | `provider.py:150-169` 只匹配完整标签 | 模型把 `<thi`/`nk>` 分片时标签漏进正文；`reasoning_content` 原生字段被忽略 |
+| 首轮模型选择丢失 | `chat.js:211-223` 无 session 直接 return；`ChatRequest` 无 model | 新会话先选模型等于没选；切会话后下拉也不同步 |
+| 工具耗时/token 不可见 | `loop.py:404-413` 无 duration；`usage` 每轮覆盖 | 长工具像卡死；无法判断上下文/成本 |
+| 上下文不知道「用户在看哪个视图」与数据新鲜度 | `context.py:72-82` 无 view / freshness section | 回答泛化；行情断更时模型仍按旧数据下结论 |
+| 工具结果尾部被砍 | `loop.py:392-395` 直接截前 3000 字 | 错误堆栈/结论常在尾部，模型看到的是开头寒暄 |
+| SSE 无防缓冲头 | `chat_routes.py:112` | 反向代理可能攒帧，流式变批量 |
+| 会话列表时间不刷新 | `memory.py:34-48` 只写消息，不 touch ChatSession | 有活动的会话不一定排前面 |
+| Markdown 链接未限协议 | `chat.js:841` | `javascript:`/`data:` 链接可被注入 |
+| 审批理由、压缩开始、用量、耗时未展示 | `chat.js:461-525,481` | 用户不知道在等什么、为什么慢 |
+
+## 二、优化项
+
+| ID | 项 | 优先级 | 验证 |
+|----|----|--------|------|
+| H0.1 | 历史消息序列完整性 | P0 | ⬜ |
+| H0.2 | stop 闭环（流中 + 审批等待） | P0 | ⬜ |
+| H0.3 | 会话级授权持久化 | P0 | ⬜ |
+| H1.1 | 工具轮数耗尽后的收尾合成 | P1 | ⬜ |
+| H1.2 | 思考流健壮性（跨 chunk 标签 / reasoning_content / 空 tool id） | P1 | ⬜ |
+| H1.3 | 模型选择首轮生效与会话同步 | P1 | ⬜ |
+| H1.4 | 快照补当前视图与数据新鲜度 | P1 | ⬜ |
+| H1.5 | 工具耗时与累计 token 用量 | P1 | ⬜ |
+| H2.1 | 工具结果头尾截断 + SSE 防缓冲头 | P2 | ⬜ |
+| H2.2 | 侧边栏会话体验（审批理由/停止态/压缩提示/链接协议/活跃时间） | P2 | ⬜ |
+
+## 三、各项规格
+
+### H0.1 历史消息序列完整性
+
+- `get_history` 按 `ChatMessage.id` 升序重建（替代 `created_at`，避免同秒并列）。
+- 每条 assistant 行：先输出 assistant（含 `tool_calls`），再输出对应 tool 结果。
+- `tool_calls` 只保留有匹配 `tool_results.tool_call_id` 的项；无匹配则整轮降级为普通 assistant 文本，防止孤儿 tool_calls。
+- 截断窗口头部若为 tool / 带 tool_calls 的 assistant，丢弃到第一条 user 为止（一轮对话必以 user 开头）；避免「半截工具链」。
+- 不引入新表、不改 canonical 历史。
+
+验证：新增单测覆盖顺序、主键排序、截断边界、缺失结果、孤儿 tool、无 user 窗口；现有 history 测试保持通过。
+
+### H0.2 stop 闭环
+
+- 流式循环每收到一个 provider 事件检查一次中断；命中即停止消费并 yield `interrupted`（不落半截 assistant 消息）。
+- `PendingApproval` 增加 `session_id`；`ApprovalStore.resolve_session(session_id, deny)` 唤醒该会话所有待审批。
+- `request_interrupt(session_id)` 同时调用 `resolve_session`，审批等待立即返回 deny，`_exec_tool` 返回「用户中断」，循环在下一轮边界 yield `interrupted`。
+- 保持现有中断标志语义：turn_start 清理；不同会话隔离。
+
+验证：新增 4 条单测（流中中断、审批中 stop、pending 清空、跨会话隔离）；现有 `TestInterrupt` 通过。
+
+### H0.3 会话级授权持久化
+
+- `permissions.py` 增加进程级、线程安全的 `{session_id: {tool_name}}` 存储，供多个 AgentLoop 实例共享。
+- `PermissionEngine.evaluate(..., session_id=None)` 先查实例清单，再查会话存储；`allow_tool_for_session(tool_name, session_id=None)` 有 session 时写共享存储。
+- `AgentLoop._exec_tool` 传入当前 `session_id`；`always` 结果落共享存储。
+- `DELETE /api/chat/sessions/{id}` 同步清理授权与中断标志；新建会话天然隔离。
+- 单进程部署假设（与现有进程内 ApprovalStore 一致），不做多 worker 共享。
+
+验证：新增 4 条单测（跨实例生效、会话隔离、删除清理、auto_approve 不受影响）。
+
+### H1.1 工具轮数耗尽后的收尾合成
+
+- `MAX_TOOL_ROUNDS` 改为 `settings.chat_max_tool_rounds`（默认 10，保留常量兜底）。
+- 循环结束且 `final_content` 为空（跑满轮数）时，再发一次不带 tools 的流式调用，要求「基于以上工具结果给出结论」；正文照常流式输出并落库。
+- 若收尾调用也失败，yield `error` 并明确「已达到工具调用上限」，不再静默空回复。
+- `turn_end` 带 `round_limit_reached: true`，前端可提示。
+
+验证：3 条单测（跑满后合成、收尾调用 tools=None、收尾失败有明确错误）；现有轮次测试通过。
+
+### H1.2 思考流健壮性
+
+- `provider.stream_completion` 用缓冲状态机解析 `<think>`/`</think>`：跨 chunk 的标签前缀暂存，流结束 flush。
+- 支持 `delta.reasoning_content` 原生思考字段（DeepSeek 风格）：直接产 `thinking_delta`，首个正文前补一次 `thinking_done`。
+- tool_call id 为空时用 `call_{index}_{uuid8}` 补齐，避免 tool 消息配对失败。
+- 保持 `<think>` 与正文混排时的现有事件顺序。
+
+验证：6 条单测（开/闭标签跨 chunk、原生 reasoning、空 id、现有 thinking 测试）。
+
+### H1.3 模型选择首轮生效与会话同步
+
+- `ChatRequest` 增加可选 `model`（≤100）；`chat_stream` → `run_streaming` → `_iter_events` 透传。
+- 传入时先写会话模型再解析 Provider；空串表示恢复默认；不传保持服务端已有值（旧客户端行为不变）。
+- `/api/chat/history` 返回 `model`；前端 `selectSession` 同步下拉，`newSession` 保留当前选择，`send` 每次携带当前下拉值。
+- 模型不在 options（配置变更）时动态补一个 option，避免下拉静默归零。
+
+验证：4 条后端单测 + 前端浏览器实测（新会话首轮即用所选模型、切会话同步）。
+
+### H1.4 快照补当前视图与数据新鲜度
+
+- `ChatRequest` 增加可选 `view`；后端白名单校验（overview/market/strategies/sentiment/tasks/analyses/research/rules），映射中文标签后拼入时间头。
+- `ContextBuilder` 新增「数据新鲜度」section：最新行情日、最新指标扫描日、最新组合快照日、今日管道状态（未运行/运行中/完成/失败 + 最近失败原因）。
+- 单 section 独立容错；空库返回空由「系统刚初始化」兜底。
+
+验证：6 条单测（视图注入/非法值忽略/三类日期/管道四态/空库/截断）。
+
+### H1.5 工具耗时与累计 token 用量
+
+- 每个工具记录 `perf_counter` 耗时，`tool_finished` 与 `tool_calls_made` 带 `duration_ms`（并行工具各自计时）。
+- 一轮内累计 `prompt_tokens/completion_tokens/total_tokens`；`turn_end.usage` 输出累计值，最终 assistant 消息落库累计 usage。
+- 前端工具气泡显示耗时；在线状态短暂显示本次 tokens；不新增页面。
+
+验证：5 条单测（单工具/并行工具耗时、跨轮累计、最终落库、无 usage 不炸）+ 浏览器实测。
+
+### H2.1 工具结果头尾截断 + SSE 防缓冲头
+
+- 新增 `_truncate_tool_result`：短结果原样；超限保留头 2/3、尾 1/3，中间标记原长，确保错误尾部可见。
+- 入模 tool 消息与前端 preview 同口径（preview 用更小上限）。
+- `StreamingResponse` 增加 `Cache-Control: no-cache`、`X-Accel-Buffering: no`、`Connection: keep-alive`。
+
+验证：4 条单测（短结果不变/长结果保尾/长度受控/响应头）。
+
+### H2.2 侧边栏会话体验
+
+- 审批卡片显示后端 `reason`（写操作原因），按钮仍是 once/always/deny。
+- stop 后按钮显示「停止中…」，直到 `interrupted`/`turn_end` 才复位。
+- 处理 `compacting` 事件：显示「正在整理上下文…」；`compacted` 保留。
+- `usage` 事件更新侧边栏 token 提示；工具气泡显示耗时。
+- Markdown 链接仅允许 http(s)/mailto/相对路径/锚点，其余降级为 `#`。
+- `ChatMemory.save_message` touch `ChatSession.updated_at`，会话列表按最近活动排序。
+
+验证：node 校验链接白名单 + 浏览器实测（审批理由/停止态/压缩提示/耗时/tokens/会话排序）+ 1 条后端单测（updated_at 刷新）。
+
+## 四、非目标
+
+- 不引入 WebSocket / 持久化审批队列 / 多 worker 共享状态（当前单进程部署）。
+- 不改轮动通道、交易执行、风控阈值。
+- 不改 `suggest_allocation_change` 的 read 风险归类：该工具只写建议表，真实换仓仍由轮动通道裁决；如要审批建议本身，属于权限策略调整，另案讨论。
+- 不重写前端框架，不引入构建工具。
+
+## 五、验收
+
+- 全量 pytest 通过（基线 541）。
+- 每行独立 commit，方案表对应行置 ✅ 并附实测数字。
+- 侧边栏改动在本地浏览器实测；无法实测的部分显式说明。
+- 部署到生产需用户确认（本方案只提交代码，不自动上线）。
