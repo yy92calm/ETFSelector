@@ -16,12 +16,14 @@ APPROVAL_OUTCOME_DENY = "deny"
 
 
 class PendingApproval:
-    def __init__(self, tool: str, arguments: dict, timeout: int = 120):
+    def __init__(self, tool: str, arguments: dict, timeout: int = 120,
+                 session_id: Optional[str] = None):
         self.request_id = uuid.uuid4().hex[:16]
         self.tool = tool
         self.arguments = arguments
         self.created_at = time.time()
         self.timeout = timeout
+        self.session_id = session_id
         self.event = threading.Event()
         self.outcome: Optional[str] = None  # once / always / deny
 
@@ -42,8 +44,9 @@ class ApprovalStore:
     def auto_approve(self, value: bool):
         self._auto_approve = value
 
-    def create(self, tool: str, arguments: dict, timeout: int = 120) -> PendingApproval:
-        req = PendingApproval(tool, arguments, timeout)
+    def create(self, tool: str, arguments: dict, timeout: int = 120,
+               session_id: Optional[str] = None) -> PendingApproval:
+        req = PendingApproval(tool, arguments, timeout, session_id=session_id)
         with self._lock:
             self._pending[req.request_id] = req
         return req
@@ -57,6 +60,19 @@ class ApprovalStore:
         req.outcome = outcome
         req.event.set()
         return True
+
+    def resolve_session(self, session_id: str, outcome: str = APPROVAL_OUTCOME_DENY) -> int:
+        """结束某会话的全部待审批（用户停止对话时使用），返回处理条数"""
+        if not session_id:
+            return 0
+        with self._lock:
+            reqs = [r for r in self._pending.values() if r.session_id == session_id]
+            for req in reqs:
+                self._pending.pop(req.request_id, None)
+        for req in reqs:
+            req.outcome = outcome
+            req.event.set()
+        return len(reqs)
 
     def wait(self, req: PendingApproval) -> str:
         """阻塞等待审批结果，超时返回 deny"""

@@ -44,6 +44,11 @@ _INTERRUPT_LOCK = threading.Lock()
 def request_interrupt(session_id: str) -> None:
     with _INTERRUPT_LOCK:
         _INTERRUPT_FLAGS[session_id] = True
+    # 审批等待中的 turn 不会自己醒来；置位中断时同步结束该会话的待审批
+    try:
+        get_approval_store().resolve_session(session_id)
+    except Exception as e:
+        logger.warning(f"解除会话 {session_id} 待审批失败: {e}")
 
 
 def check_interrupted(session_id: str) -> bool:
@@ -256,6 +261,7 @@ class AgentLoop:
             thinking_acc = ""
             tool_calls_acc = {}
             got_stream_error = False
+            interrupted_mid_stream = False
             stream_error_msg = ""
             max_retries = getattr(settings, "llm_stream_retries", 2)
             retry_base = getattr(settings, "llm_stream_retry_base", 1.0)
@@ -268,6 +274,11 @@ class AgentLoop:
                 emitted_any = False
                 try:
                   for ev in provider.stream_completion(client, model, messages, tools if tools else None):
+                    # 停止按钮在流式期间也要生效：每个 chunk 边界检查一次，
+                    # 命中后立即停止消费（关闭 provider 连接），交给下方统一发 interrupted
+                    if check_interrupted(session_id):
+                        interrupted_mid_stream = True
+                        break
                     etype = ev["type"]
                     if etype == "thinking_delta":
                         thinking_acc += ev["content"]
@@ -298,13 +309,17 @@ class AgentLoop:
                     stream_error_msg = f"流式响应异常: {_stream_exc}"
                     got_stream_error = True
 
-                if not got_stream_error:
+                if interrupted_mid_stream or not got_stream_error:
                     break
-                if emitted_any or attempt >= max_retries or check_interrupted(session_id):
+                if emitted_any or attempt >= max_retries:
                     break
                 backoff = retry_base * (2 ** attempt)
                 logger.warning(f"[AgentLoop] 流式错误（第{attempt + 1}次），{backoff}s后重试: {stream_error_msg}")
                 time.sleep(backoff)
+
+            if interrupted_mid_stream:
+                yield {"type": "interrupted", "data": {"session_id": session_id}}
+                return
 
             if got_stream_error:
                 yield {"type": "error", "data": {"error": stream_error_msg or "流式响应异常"}}
@@ -465,7 +480,8 @@ class AgentLoop:
 
         # 需要审批的写操作：发权限事件，阻塞等待用户在前端审批
         req = store.create(
-            tool_name, arguments, timeout=getattr(settings, "chat_approval_timeout", 120)
+            tool_name, arguments, timeout=getattr(settings, "chat_approval_timeout", 120),
+            session_id=session_id,
         )
         yield {
             "type": "permission_required",
@@ -479,6 +495,9 @@ class AgentLoop:
         }
         outcome = store.wait(req)
         if outcome == APPROVAL_OUTCOME_DENY:
+            # 停止按钮会同时解除待审批，需与「用户主动拒绝」区分开
+            if check_interrupted(session_id):
+                return {"error": "用户中断，写操作未执行"}
             return {"error": "用户拒绝授权，写操作未执行"}
         if outcome == APPROVAL_OUTCOME_ALWAYS:
             self.permissions.allow_tool_for_session(tool_name)

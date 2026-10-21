@@ -30,7 +30,7 @@
 | ID | 项 | 优先级 | 验证 |
 |----|----|--------|------|
 | H0.1 | 历史消息序列完整性 | P0 | ✅ 6 条新单测：assistant 先于 tool；同时间戳仍按 id 排序；全/部分无结果 tool_calls 剔除；孤立 tool 头丢弃；全孤立返回空。全量 547 passed |
-| H0.2 | stop 闭环（流中 + 审批等待） | P0 | ⬜ |
+| H0.2 | stop 闭环（流中 + 审批等待） | P0 | ✅ 5 条新单测：流中中断只保留已产出增量；审批等待直测返回「用户中断」且不执行；完整 loop 链路工具标 error 后 yield interrupted 且不再调 LLM；pending 清空；跨会话隔离。全量 552 passed |
 | H0.3 | 会话级授权持久化 | P0 | ⬜ |
 | H1.1 | 工具轮数耗尽后的收尾合成 | P1 | ⬜ |
 | H1.2 | 思考流健壮性（跨 chunk 标签 / reasoning_content / 空 tool id） | P1 | ⬜ |
@@ -67,6 +67,15 @@
 - 保持现有中断标志语义：turn_start 清理；不同会话隔离。
 
 验证：新增 4 条单测（流中中断、审批中 stop、pending 清空、跨会话隔离）；现有 `TestInterrupt` 通过。
+
+实施记录：
+- `PendingApproval` / `ApprovalStore.create` 增加 `session_id`；`resolve_session` 在锁内摘除待办、锁外 `event.set()`，避免唤醒线程立刻再抢同一把锁。
+- `request_interrupt` 置位中断标志后同步解除该会话待审批；审批等待中的 turn 不再空等满 `chat_approval_timeout`（默认 120s）。
+- `_exec_tool` 在 `store.wait` 返回 deny 后先查中断标志，区分「用户中断」与「用户拒绝授权」，中断路径不执行工具。
+- 流式重试逻辑配合调整：新增 `interrupted_mid_stream`，每个 provider 事件边界检查一次中断，命中直接跳出 attempt 循环并 yield `interrupted`，不会被误判为流式错误触发重试；已产出的增量保留在前端，不落半截 assistant 消息。
+- 现有 `TestInterrupt` 保持通过（工具执行中置位中断仍走「未执行工具回填 error」路径）。
+- 偏离：方案写 4 条单测，实际 5 条，补了一条 `_iter_events` 级别的完整审批中断链路测试（permission_required → 停止 → tool_finished=error → 下一轮边界 interrupted → 第二次 LLM 调用未发生）。
+- 全量 552 passed。
 
 ### H0.3 会话级授权持久化
 
