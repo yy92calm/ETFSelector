@@ -531,5 +531,74 @@ class TestThinkingStream(unittest.TestCase):
         self.assertRegex(call_id, r"^call_0_[0-9a-f]{8}$")
 
 
+class TestModelSelection(unittest.TestCase):
+    """H1.3 - 首轮选模型即生效，会话切换同步模型"""
+
+    def setUp(self):
+        self.db = make_db()
+        self.loop = make_loop(self.db)
+        self.sid = "h13-model"
+        clear_interrupt(self.sid)
+
+    def tearDown(self):
+        clear_interrupt(self.sid)
+        self.db.close()
+
+    def _run(self, model, session_id=None):
+        from app.agent_core import provider as provider_mod
+
+        with patch("app.agent_core.loop.settings") as st, \
+             patch("app.agent_core.loop.provider.resolve_llm",
+                   return_value=("https://dashscope/v1", "sk", "qwen-max")) as resolve, \
+             patch("app.agent_core.loop.provider.build_openai_client",
+                   return_value=MagicMock()), \
+             patch.object(provider_mod, "stream_completion",
+                          return_value=iter([{"type": "text_delta", "content": "好"},
+                                             {"type": "done"}])) as sc:
+            patch_loop_settings(st)
+            events = list(self.loop._iter_events(
+                "你好", session_id if session_id is not None else self.sid,
+                self.db, model=model,
+            ))
+        return events, resolve, sc
+
+    def test_first_turn_model_applies_to_new_session(self):
+        events, resolve, sc = self._run(" qwen-max ", session_id=None)
+
+        sid = events[0]["data"]["session_id"]
+        self.assertEqual(self.loop.memory.get_session_model(sid, self.db), "qwen-max")
+        resolve.assert_called_once_with("qwen-max")
+        self.assertEqual(sc.call_args.args[1], "qwen-max")
+
+    def test_empty_model_restores_default(self):
+        self.loop.memory.get_or_create_session(self.sid, self.db)
+        self.loop.memory.set_session_model(self.sid, "qwen-max", self.db)
+
+        _, resolve, sc = self._run("")
+
+        self.assertEqual(self.loop.memory.get_session_model(self.sid, self.db), "")
+        resolve.assert_not_called()
+        self.assertEqual(sc.call_args.args[1], "mock-model")
+
+    def test_absent_model_keeps_session_value(self):
+        self.loop.memory.get_or_create_session(self.sid, self.db)
+        self.loop.memory.set_session_model(self.sid, "qwen-max", self.db)
+
+        _, _, sc = self._run(None)
+
+        self.assertEqual(self.loop.memory.get_session_model(self.sid, self.db), "qwen-max")
+        self.assertEqual(sc.call_args.args[1], "qwen-max")
+
+    def test_history_returns_session_model(self):
+        from app.routes.chat_routes import get_chat_history
+
+        self.loop.memory.get_or_create_session(self.sid, self.db)
+        self.loop.memory.set_session_model(self.sid, "qwen-max", self.db)
+
+        resp = get_chat_history(self.sid, self.db)
+
+        self.assertEqual(resp.data["model"], "qwen-max")
+
+
 if __name__ == "__main__":
     unittest.main()

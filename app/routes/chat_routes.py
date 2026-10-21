@@ -19,6 +19,8 @@ router = APIRouter(prefix="/api/chat", tags=["AI对话"])
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=2000, description="用户消息")
     session_id: Optional[str] = Field(None, description="会话ID，不传则新建")
+    model: Optional[str] = Field(None, max_length=100,
+                                 description="会话模型；空串恢复默认，不传保持会话已有值")
 
 
 class ApproveRequest(BaseModel):
@@ -104,7 +106,8 @@ def chat_stream(request: ChatRequest):
     def event_stream():
         db = SessionLocal()
         try:
-            for ev in agent.run_streaming(request.message, request.session_id, db):
+            for ev in agent.run_streaming(request.message, request.session_id, db,
+                                          model=request.model):
                 yield f"data: {json.dumps(ev, ensure_ascii=False)}\n\n"
         finally:
             db.close()
@@ -124,6 +127,7 @@ def get_chat_history(session_id: str, db: Session = Depends(get_db)):
         "session_id": session_id,
         "messages": messages,
         "total": len(messages),
+        "model": memory.get_session_model(session_id, db),
     })
 
 

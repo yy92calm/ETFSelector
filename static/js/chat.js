@@ -200,19 +200,44 @@ const Chat = {
             const resp = await fetch('/api/chat/model/options');
             const data = await resp.json();
             const models = data.data && data.data.models || [];
-            sel.innerHTML = '<option value="">默认模型</option>' + models.map(m =>
-                `<option value="${this.escapeHtml(m)}">${this.escapeHtml(m)}</option>`
-            ).join('');
+            this.renderModelOptions(models);
         } catch (err) {
-            sel.innerHTML = '<option value="">默认模型</option>';
+            this.renderModelOptions([]);
         }
     },
 
-    async switchModel(model) {
-        if (!this.sessionId) {
-            this.sessionId = null;
-            return;
+    renderModelOptions(models) {
+        const sel = document.getElementById('chat-model-select');
+        if (!sel) return;
+        const selected = sel.value || '';
+        sel.innerHTML = '<option value="">默认模型</option>' + models.map(m =>
+            `<option value="${this.escapeHtml(m)}">${this.escapeHtml(m)}</option>`
+        ).join('');
+        this.syncModelSelect(selected);
+    },
+
+    syncModelSelect(model) {
+        const sel = document.getElementById('chat-model-select');
+        if (!sel) return;
+        const value = model || '';
+        // 会话保存的模型可能已不在当前配置里，补一个选项避免下拉静默归零
+        if (value && !Array.from(sel.options).some(o => o.value === value)) {
+            const opt = document.createElement('option');
+            opt.value = value;
+            opt.textContent = `${value}（不在当前配置）`;
+            sel.appendChild(opt);
         }
+        sel.value = value;
+    },
+
+    getSelectedModel() {
+        const sel = document.getElementById('chat-model-select');
+        return sel ? sel.value : '';
+    },
+
+    async switchModel(model) {
+        // 新会话尚无 session_id：选择暂存于下拉框，由首轮请求随消息带来
+        if (!this.sessionId) return;
         try {
             await fetch('/api/chat/model', {
                 method: 'POST',
@@ -309,6 +334,7 @@ const Chat = {
             const resp = await fetch(`/api/chat/history?session_id=${encodeURIComponent(sessionId)}`);
             const data = await resp.json();
             if (data.code === 200 && data.data && data.data.messages) {
+                this.syncModelSelect(data.data.model || '');
                 data.data.messages.forEach(m => {
                     if (m.role === 'user') {
                         this.addMessage('user', m.content, m.created_at);
@@ -384,7 +410,11 @@ const Chat = {
             const resp = await fetch('/api/chat/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message: text, session_id: this.sessionId }),
+                body: JSON.stringify({
+                    message: text,
+                    session_id: this.sessionId,
+                    model: this.getSelectedModel(),
+                }),
             });
             if (!resp.ok || !resp.body) return false;
 

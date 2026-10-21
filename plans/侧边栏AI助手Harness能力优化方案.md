@@ -34,7 +34,7 @@
 | H0.3 | 会话级授权持久化 | P0 | ✅ 5 条新单测：跨引擎实例放行；其他会话/无会话不受影响；always 经 `_exec_tool` 落共享清单；auto_approve 不写授权；删除会话清授权+中断。全量 557 passed |
 | H1.1 | 工具轮数耗尽后的收尾合成 | P1 | ✅ 3 条新单测：跑满后第 3 次调用为无 tools 收尾并落库；收尾失败 error 含上限与原因；未跑满不额外调用。全量 560 passed |
 | H1.2 | 思考流健壮性（跨 chunk 标签 / reasoning_content / 空 tool id） | P1 | ✅ 6 条新单测：开/闭标签跨 chunk、同 chunk 开闭、残留前缀 flush 为正文、reasoning_content、空 id 补齐。全量 566 passed |
-| H1.3 | 模型选择首轮生效与会话同步 | P1 | ⬜ |
+| H1.3 | 模型选择首轮生效与会话同步 | P1 | ✅ 4 条后端单测 + 浏览器实测：新会话请求体携带 `qwen3.8-max-preview`；切到保存 `deepseek-chat` 的会话时下拉同步并补选项。全量 570 passed |
 | H1.4 | 快照补当前视图与数据新鲜度 | P1 | ⬜ |
 | H1.5 | 工具耗时与累计 token 用量 | P1 | ⬜ |
 | H2.1 | 工具结果头尾截断 + SSE 防缓冲头 | P2 | ⬜ |
@@ -137,6 +137,15 @@
 - 模型不在 options（配置变更）时动态补一个 option，避免下拉静默归零。
 
 验证：4 条后端单测 + 前端浏览器实测（新会话首轮即用所选模型、切会话同步）。
+
+实施记录：
+- `ChatRequest` 增加可选 `model`（`max_length=100`，空串表示恢复默认）；`chat_stream` → `run_streaming` → `_iter_events` 全链路透传。
+- `_iter_events` 在进入会话后、解析 Provider 前处理 `model is not None`：`strip()` 后写会话模型。因此新会话首轮选模型即生效；空串清空回默认；不传（旧客户端）保持服务端已有值。
+- `/api/chat/history` 增加 `model` 字段；前端 `selectSession` 拿到后同步下拉。
+- 前端 `send` 每次随消息携带当前下拉值；`switchModel` 在无 session 时直接返回（选择由首轮请求带上）；`loadModels` 改为可重入的 `renderModelOptions`，会保留当前选择。
+- `syncModelSelect` 对「会话保存但已不在配置里」的模型动态补 `xxx（不在当前配置）` option，避免下拉静默归零。
+- 4 条后端单测；本地浏览器实测：新会话选中 `qwen3.8-max-preview` 后请求体为 `{message, session_id: null, model: "qwen3.8-max-preview"}`；切换到保存 `deepseek-chat` 的会话后下拉值同步为 `deepseek-chat`（自动补 option）。
+- 全量 570 passed。
 
 ### H1.4 快照补当前视图与数据新鲜度
 

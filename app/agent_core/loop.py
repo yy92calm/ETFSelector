@@ -162,8 +162,11 @@ class AgentLoop:
             session_id=sid,
         )
 
-    def run_streaming(self, user_message: str, session_id: Optional[str], db: Session):
+    def run_streaming(self, user_message: str, session_id: Optional[str], db: Session,
+                      model: Optional[str] = None):
         """流式执行：逐条产出事件字典，配合 SSE 推送给前端实时渲染。
+
+        model: 本轮指定模型（空串恢复默认，None 保持会话已有值）。
 
         事件类型:
             turn_start          {"session_id"}
@@ -178,14 +181,20 @@ class AgentLoop:
             interrupted         {"session_id"}
             error               {"error"}
         """
-        yield from self._iter_events(user_message, session_id, db)
+        yield from self._iter_events(user_message, session_id, db, model=model)
 
-    def _iter_events(self, user_message: str, session_id: Optional[str], db: Session):
+    def _iter_events(self, user_message: str, session_id: Optional[str], db: Session,
+                     model: Optional[str] = None):
         """一次完整对话的事件流生成器（run 与 run_streaming 共用）"""
         # 确保会话存在
         session_id = self.memory.get_or_create_session(session_id, db)
         yield {"type": "turn_start", "data": {"session_id": session_id}}
         clear_interrupt(session_id)
+
+        # 前端随消息带来的模型优先：先落会话再解析 Provider，
+        # 新会话首轮选模型才会真正生效
+        if model is not None:
+            self.memory.set_session_model(session_id, model.strip(), db)
 
         # 会话级模型/Provider 解析（模型别名 → base_url/API Key）
         session_model = self.memory.get_session_model(session_id, db)
