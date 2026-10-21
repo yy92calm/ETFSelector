@@ -34,7 +34,12 @@ from app.agent_core.approvals import (
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-MAX_TOOL_ROUNDS = 10  # 防止无限循环
+MAX_TOOL_ROUNDS = 10  # 防止无限循环（settings.chat_max_tool_rounds 未配置时的兜底）
+
+
+def _max_tool_rounds() -> int:
+    value = getattr(settings, "chat_max_tool_rounds", MAX_TOOL_ROUNDS)
+    return value if isinstance(value, int) and value > 0 else MAX_TOOL_ROUNDS
 
 # 会话级中断标志（POST /api/chat/stop 置位，_iter_events 在迭代边界检查）
 _INTERRUPT_FLAGS: Dict[str, bool] = {}
@@ -249,7 +254,9 @@ class AgentLoop:
         seq = 0
         round_usage = None
 
-        for _ in range(MAX_TOOL_ROUNDS):
+        max_rounds = _max_tool_rounds()
+        round_limit_reached = False
+        for _ in range(max_rounds):
             # 中断检查：上一轮工具执行中用户点了停止
             if check_interrupted(session_id):
                 yield {"type": "interrupted", "data": {"session_id": session_id}}
@@ -444,6 +451,53 @@ class AgentLoop:
                 tool_calls=tc_list, tool_results=tool_results_for_db,
                 usage=round_usage, db=db
             )
+        else:
+            # 跑满工具轮数仍未产出最终文本：补一次不带 tools 的收尾合成，
+            # 避免前端只看到工具气泡、没有任何结论
+            round_limit_reached = True
+            messages.append({
+                "role": "user",
+                "content": (
+                    f"工具调用轮数已达到上限（{max_rounds} 轮）。"
+                    "请不要再调用工具，基于以上工具结果直接给出结论、关键数据与仍需补充的信息。"
+                ),
+            })
+            synthesis_text = ""
+            synthesis_thinking = ""
+            synthesis_error = ""
+            try:
+                for ev in provider.stream_completion(client, model, messages, None):
+                    if check_interrupted(session_id):
+                        yield {"type": "interrupted", "data": {"session_id": session_id}}
+                        return
+                    etype = ev["type"]
+                    if etype == "thinking_delta":
+                        synthesis_thinking += ev["content"]
+                        yield {"type": "thinking_delta", "data": {"content": ev["content"]}}
+                    elif etype == "text_delta":
+                        synthesis_text += ev["content"]
+                        yield {"type": "text_delta", "data": {"content": ev["content"]}}
+                    elif etype == "thinking_done":
+                        yield {"type": "thinking_done", "data": {"content": synthesis_thinking}}
+                    elif etype == "usage":
+                        round_usage = ev["usage"]
+                        yield {"type": "usage", "data": round_usage}
+                    elif etype == "done":
+                        break
+                    elif etype == "error":
+                        synthesis_error = ev.get("error", "流式响应异常")
+                        break
+            except Exception as exc:
+                logger.error(f"收尾合成流式异常: {exc}")
+                synthesis_error = f"流式响应异常: {exc}"
+
+            if not synthesis_text:
+                reason = synthesis_error or "模型未返回内容"
+                yield {"type": "error", "data": {
+                    "error": f"已达到工具调用上限（{max_rounds} 轮），收尾合成失败：{reason}"
+                }}
+                return
+            final_content = synthesis_text
 
         # 保存最终回复
         if final_content:
@@ -452,7 +506,10 @@ class AgentLoop:
             self.memory.update_session_title(session_id, user_message, db)
 
         yield {"type": "assistant_message", "data": {"content": final_content}}
-        yield {"type": "turn_end", "data": {"session_id": session_id, "tool_calls": tool_calls_made}}
+        turn_end_data = {"session_id": session_id, "tool_calls": tool_calls_made}
+        if round_limit_reached:
+            turn_end_data["round_limit_reached"] = True
+        yield {"type": "turn_end", "data": turn_end_data}
 
     def _is_parallel_safe(self, tool_name: str) -> bool:
         """只读工具可并行执行（无副作用、无需审批）"""

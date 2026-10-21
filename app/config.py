@@ -29,6 +29,7 @@ class Settings(BaseSettings):
 
     # AI 对话
     chat_approval_timeout: int = 120  # 写操作审批等待超时秒数
+    chat_max_tool_rounds: int = 10  # 单次对话最多工具轮数，耗尽后强制收尾
 
     # 上下文压缩
     context_window_tokens: int = 128000

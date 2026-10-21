@@ -148,6 +148,16 @@ def patch_loop_settings(st):
     st.llm_stream_retries = 2
     st.llm_stream_retry_base = 0
     st.chat_approval_timeout = 30
+    st.chat_max_tool_rounds = 10
+
+
+def tool_call_round(name="get_market_overview", call_id="c1"):
+    return [
+        {"type": "tool_calls", "tool_calls": [
+            {"id": call_id, "function": {"name": name, "arguments": "{}"}},
+        ]},
+        {"type": "done"},
+    ]
 
 
 class TestStopClosure(unittest.TestCase):
@@ -361,6 +371,70 @@ class TestSessionPermissions(unittest.TestCase):
         self.assertEqual(resp.code, 200)
         self.assertFalse(is_session_tool_allowed(sid, "execute_rebalance"))
         self.assertFalse(check_interrupted(sid))
+
+
+class TestRoundLimitSynthesis(unittest.TestCase):
+    """H1.1 - 工具轮数耗尽后强制收尾，不再静默空回复"""
+
+    def setUp(self):
+        self.db = make_db()
+        self.loop = make_loop(self.db)
+        self.sid = "h11-synth"
+        clear_interrupt(self.sid)
+        self.loop.registry.get_tool.return_value = SimpleNamespace(risk_level="read")
+        self.loop.registry.execute.return_value = {"ok": True}
+
+    def tearDown(self):
+        clear_interrupt(self.sid)
+        self.db.close()
+
+    def _run(self, max_rounds, rounds):
+        from app.agent_core import provider as provider_mod
+
+        with patch("app.agent_core.loop.settings") as st, \
+             patch.object(provider_mod, "stream_completion",
+                          side_effect=[iter(r) for r in rounds]) as sc:
+            patch_loop_settings(st)
+            st.chat_max_tool_rounds = max_rounds
+            events = list(self.loop._iter_events("跑满轮数", self.sid, self.db))
+        return events, sc
+
+    def test_round_limit_synthesizes_final_answer(self):
+        rounds = [
+            tool_call_round("a", "c1"),
+            tool_call_round("b", "c2"),
+            [{"type": "text_delta", "content": "汇总结论"}, {"type": "done"}],
+        ]
+        events, sc = self._run(2, rounds)
+
+        types = [ev["type"] for ev in events]
+        self.assertEqual(sc.call_count, 3)
+        self.assertIsNone(sc.call_args.args[3])  # 收尾调用不带 tools
+        self.assertEqual(events[-2]["type"], "assistant_message")
+        self.assertEqual(events[-2]["data"]["content"], "汇总结论")
+        self.assertTrue(events[-1]["data"]["round_limit_reached"])
+        self.assertNotIn("error", types)
+        persisted = self.loop.memory.get_all_messages(self.sid, self.db)
+        self.assertEqual(persisted[-1]["content"], "汇总结论")
+
+    def test_synthesis_failure_reports_round_limit(self):
+        rounds = [tool_call_round("a", "c1"), [{"type": "error", "error": "boom"}]]
+        events, _ = self._run(1, rounds)
+
+        types = [ev["type"] for ev in events]
+        self.assertIn("error", types)
+        self.assertNotIn("assistant_message", types)
+        error = next(ev for ev in events if ev["type"] == "error")
+        self.assertIn("已达到工具调用上限", error["data"]["error"])
+        self.assertIn("boom", error["data"]["error"])
+
+    def test_normal_turn_has_no_synthesis(self):
+        rounds = [[{"type": "text_delta", "content": "直接回答"}, {"type": "done"}]]
+        events, sc = self._run(3, rounds)
+
+        self.assertEqual(sc.call_count, 1)
+        self.assertEqual(events[-2]["data"]["content"], "直接回答")
+        self.assertNotIn("round_limit_reached", events[-1]["data"])
 
 
 if __name__ == "__main__":

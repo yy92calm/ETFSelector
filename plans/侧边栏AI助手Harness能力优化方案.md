@@ -32,7 +32,7 @@
 | H0.1 | 历史消息序列完整性 | P0 | ✅ 6 条新单测：assistant 先于 tool；同时间戳仍按 id 排序；全/部分无结果 tool_calls 剔除；孤立 tool 头丢弃；全孤立返回空。全量 547 passed |
 | H0.2 | stop 闭环（流中 + 审批等待） | P0 | ✅ 5 条新单测：流中中断只保留已产出增量；审批等待直测返回「用户中断」且不执行；完整 loop 链路工具标 error 后 yield interrupted 且不再调 LLM；pending 清空；跨会话隔离。全量 552 passed |
 | H0.3 | 会话级授权持久化 | P0 | ✅ 5 条新单测：跨引擎实例放行；其他会话/无会话不受影响；always 经 `_exec_tool` 落共享清单；auto_approve 不写授权；删除会话清授权+中断。全量 557 passed |
-| H1.1 | 工具轮数耗尽后的收尾合成 | P1 | ⬜ |
+| H1.1 | 工具轮数耗尽后的收尾合成 | P1 | ✅ 3 条新单测：跑满后第 3 次调用为无 tools 收尾并落库；收尾失败 error 含上限与原因；未跑满不额外调用。全量 560 passed |
 | H1.2 | 思考流健壮性（跨 chunk 标签 / reasoning_content / 空 tool id） | P1 | ⬜ |
 | H1.3 | 模型选择首轮生效与会话同步 | P1 | ⬜ |
 | H1.4 | 快照补当前视图与数据新鲜度 | P1 | ⬜ |
@@ -104,6 +104,14 @@
 - `turn_end` 带 `round_limit_reached: true`，前端可提示。
 
 验证：3 条单测（跑满后合成、收尾调用 tools=None、收尾失败有明确错误）；现有轮次测试通过。
+
+实施记录：
+- `Settings` 新增 `chat_max_tool_rounds: int = 10`；`loop._max_tool_rounds()` 读取配置，非正整数（含测试替身）回退 `MAX_TOOL_ROUNDS` 常量。
+- 用 `for ... else` 精确识别「跑满轮数未 break」：追加一条 user 指令「不要再调用工具，基于以上工具结果给出结论」，再发一次 `stream_completion(..., tools=None)`；思考/正文/usage 事件与普通轮次同协议，前端无需特判。
+- 收尾正文照常 `assistant_message` 并落库、更新会话标题；`turn_end` 仅在跑满时带 `round_limit_reached: true`，未跑满不改变事件形状。
+- 收尾失败或模型返回空文本时 yield `error`（含「已达到工具调用上限（N 轮）」与具体原因），不再静默结束；不写空 assistant 消息。
+- 收尾流同样逐事件检查中断，停止按钮在合成阶段仍生效。
+- 3 条新单测，全量 560 passed。
 
 ### H1.2 思考流健壮性
 
