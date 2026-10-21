@@ -437,5 +437,99 @@ class TestRoundLimitSynthesis(unittest.TestCase):
         self.assertNotIn("round_limit_reached", events[-1]["data"])
 
 
+def provider_delta(content=None, tool_calls=None, reasoning_content=None):
+    delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+    if reasoning_content is not None:
+        delta.reasoning_content = reasoning_content
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=delta, finish_reason=None)], usage=None,
+    )
+
+
+def provider_finish(reason="stop"):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(delta=None, finish_reason=reason)], usage=None,
+    )
+
+
+class TestThinkingStream(unittest.TestCase):
+    """H1.2 - 跨 chunk 的 <think> 标签、原生 reasoning、tool_call id 兜底"""
+
+    def _stream(self, chunks):
+        from unittest.mock import MagicMock
+
+        from app.agent_core import provider as provider_mod
+
+        client = MagicMock()
+        client.chat.completions.create.return_value = iter(chunks + [provider_finish()])
+        return list(provider_mod.stream_completion(client, "m", []))
+
+    def test_open_tag_split_across_chunks(self):
+        events = self._stream([
+            provider_delta("<thi"),
+            provider_delta("nk>思考"),
+            provider_delta("中"),
+        ])
+
+        thinking = "".join(e["content"] for e in events if e["type"] == "thinking_delta")
+        texts = [e["content"] for e in events if e["type"] == "text_delta"]
+        self.assertEqual(thinking, "思考中")
+        self.assertEqual(texts, [])
+        self.assertEqual(sum(1 for e in events if e["type"] == "thinking_done"), 1)
+
+    def test_close_tag_split_across_chunks(self):
+        events = self._stream([
+            provider_delta("<think>思考</thi"),
+            provider_delta("nk>正文"),
+        ])
+
+        types = [e["type"] for e in events]
+        self.assertEqual([e["content"] for e in events if e["type"] == "thinking_delta"], ["思考"])
+        self.assertEqual([e["content"] for e in events if e["type"] == "text_delta"], ["正文"])
+        self.assertEqual(types.count("thinking_done"), 1)
+        self.assertLess(types.index("thinking_done"), types.index("text_delta"))
+
+    def test_same_chunk_open_and_close(self):
+        """同一 chunk 内开闭标签：旧实现会把 </think> 和正文当思考内容"""
+        events = self._stream([provider_delta("<think>想</think>答")])
+
+        self.assertEqual(events[0], {"type": "thinking_delta", "content": "想"})
+        self.assertEqual(events[1], {"type": "thinking_done", "content": ""})
+        self.assertEqual(events[2], {"type": "text_delta", "content": "答"})
+
+    def test_partial_tag_flushed_as_text_at_stream_end(self):
+        events = self._stream([provider_delta("<thi")])
+
+        self.assertEqual([e["content"] for e in events if e["type"] == "text_delta"], ["<thi"])
+        self.assertFalse(any(e["type"] == "thinking_delta" for e in events))
+        self.assertFalse(any(e["type"] == "thinking_done" for e in events))
+
+    def test_native_reasoning_content(self):
+        events = self._stream([
+            provider_delta(reasoning_content="推理"),
+            provider_delta("答案"),
+        ])
+
+        types = [e["type"] for e in events]
+        self.assertEqual([e["content"] for e in events if e["type"] == "thinking_delta"], ["推理"])
+        self.assertEqual([e["content"] for e in events if e["type"] == "text_delta"], ["答案"])
+        self.assertEqual(types.count("thinking_done"), 1)
+        self.assertLess(types.index("thinking_done"), types.index("text_delta"))
+
+    def test_empty_tool_call_id_filled(self):
+        import re
+
+        events = self._stream([provider_delta(tool_calls=[
+            SimpleNamespace(
+                index=0, id="",
+                function=SimpleNamespace(name="get_market_overview", arguments="{}"),
+            ),
+        ])])
+
+        tool_event = next(e for e in events if e["type"] == "tool_calls")
+        call_id = tool_event["tool_calls"][0]["id"]
+        self.assertRegex(call_id, r"^call_0_[0-9a-f]{8}$")
+
+
 if __name__ == "__main__":
     unittest.main()

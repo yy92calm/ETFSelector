@@ -8,6 +8,7 @@
 
 import json
 import logging
+import uuid
 from typing import Dict, Optional, Tuple
 
 from app.config import get_settings
@@ -80,6 +81,14 @@ def build_openai_client(base_url: str, api_key: Optional[str]):
     )
 
 
+def _partial_tag_suffix(text: str, tag: str) -> str:
+    """返回 text 末尾可能是 tag 前缀的最长片段（跨 chunk 标签暂存用）"""
+    for size in range(min(len(text), len(tag) - 1), 0, -1):
+        if text.endswith(tag[:size]):
+            return text[-size:]
+    return ""
+
+
 def _usage_to_dict(usage) -> dict:
     """把 OpenAI usage 对象转成普通 dict（缺字段填 None，便于落库）"""
     return {
@@ -103,14 +112,63 @@ def stream_completion(client, model: str, messages: list, tools=None,
     - usage:           本轮token用量与finish_reason（对应harness usage块，done前必达区）
     - done:            流结束（对应harness finish）
 
-    Qwen的<think>标签通过状态机解析（harness用DeepSeek的reasoning_content原生字段）。
-    tool_calls延迟到流结束统一发出（参照harness translate.ts延迟关闭模式）。
+    <think>标签用带缓冲的状态机解析：跨 chunk 的标签前缀先暂存，流结束再 flush；
+    同时支持 DeepSeek 风格的 delta.reasoning_content 原生思考字段。
+    tool_calls延迟到流结束统一发出（参照harness translate.ts延迟关闭模式），
+    缺失 id 时补 call_{index}_{uuid8}，保证 tool 消息能配对。
     finish_reason后不立即break：usage通常在尾部的空choices块中，消费到流自然结束。
     """
-    in_thinking = False
     tool_calls_buf = {}
     finish_reason = None
     usage = None
+    content_pending = ""
+    in_think = False
+    thinking_open = False
+
+    def _feed_content(content: str):
+        """解析正文中的 <think> 标签，返回事件列表；未决前缀留在 content_pending"""
+        nonlocal content_pending, in_think, thinking_open
+        content_pending += content
+        events = []
+        while content_pending:
+            if in_think:
+                idx = content_pending.find("</think>")
+                if idx < 0:
+                    held = _partial_tag_suffix(content_pending, "</think>")
+                    emit = content_pending[:len(content_pending) - len(held)]
+                    content_pending = held
+                    if emit:
+                        events.append({"type": "thinking_delta", "content": emit})
+                    break
+                before = content_pending[:idx]
+                content_pending = content_pending[idx + len("</think>"):]
+                if before:
+                    events.append({"type": "thinking_delta", "content": before})
+                in_think = False
+                thinking_open = False
+                events.append({"type": "thinking_done", "content": ""})
+            else:
+                idx = content_pending.find("<think>")
+                if idx < 0:
+                    held = _partial_tag_suffix(content_pending, "<think>")
+                    emit = content_pending[:len(content_pending) - len(held)]
+                    content_pending = held
+                    if emit:
+                        if thinking_open:
+                            events.append({"type": "thinking_done", "content": ""})
+                            thinking_open = False
+                        events.append({"type": "text_delta", "content": emit})
+                    break
+                before = content_pending[:idx]
+                content_pending = content_pending[idx + len("<think>"):]
+                if before:
+                    if thinking_open:
+                        events.append({"type": "thinking_done", "content": ""})
+                        thinking_open = False
+                    events.append({"type": "text_delta", "content": before})
+                in_think = True
+                thinking_open = True
+        return events
 
     def _create(extra_kwargs: dict):
         return client.chat.completions.create(
@@ -147,26 +205,16 @@ def stream_completion(client, model: str, messages: list, tools=None,
             if not delta:
                 continue
 
+            # DeepSeek 风格原生思考字段：直接作为 thinking_delta
+            reasoning = getattr(delta, "reasoning_content", None) or ""
+            if reasoning:
+                thinking_open = True
+                yield {"type": "thinking_delta", "content": reasoning}
+
             content = getattr(delta, "content", None) or ""
             if content:
-                # Qwen <think>标签解析（状态机，处理跨chunk拆分）
-                if "<think>" in content:
-                    in_thinking = True
-                    tag_stripped = content.replace("<think>", "", 1)
-                    if tag_stripped:
-                        yield {"type": "thinking_delta", "content": tag_stripped}
-                elif in_thinking and "</think>" in content:
-                    before, after = content.split("</think>", 1)
-                    if before:
-                        yield {"type": "thinking_delta", "content": before}
-                    in_thinking = False
-                    yield {"type": "thinking_done", "content": ""}
-                    if after:
-                        yield {"type": "text_delta", "content": after}
-                elif in_thinking:
-                    yield {"type": "thinking_delta", "content": content}
-                else:
-                    yield {"type": "text_delta", "content": content}
+                for event in _feed_content(content):
+                    yield event
 
             # tool_calls增量累积（参照harness assembler.ts index稀疏数组模式）
             if delta.tool_calls:
@@ -189,13 +237,24 @@ def stream_completion(client, model: str, messages: list, tools=None,
         yield {"type": "error", "error": str(e)}
         return
 
-    # 思考块兜底闭合：流结束仍处于思考态（模型未输出</think>）时补发，
+    # flush 暂存的标签前缀；仍处于思考态时补 thinking_done，
     # 否则前端思考块永远保持展开
-    if in_thinking:
+    if content_pending:
+        if in_think:
+            yield {"type": "thinking_delta", "content": content_pending}
+        else:
+            if thinking_open:
+                yield {"type": "thinking_done", "content": ""}
+                thinking_open = False
+            yield {"type": "text_delta", "content": content_pending}
+    if in_think or thinking_open:
         yield {"type": "thinking_done", "content": ""}
 
     # 延迟发送tool_calls和finish（参照harness translate.ts延迟关闭模式）
     if tool_calls_buf:
+        for idx, tc in tool_calls_buf.items():
+            if not tc["id"]:
+                tc["id"] = f"call_{idx}_{uuid.uuid4().hex[:8]}"
         yield {"type": "tool_calls", "tool_calls": list(tool_calls_buf.values())}
     yield {"type": "usage", "usage": usage or {}, "finish_reason": finish_reason}
     yield {"type": "done"}

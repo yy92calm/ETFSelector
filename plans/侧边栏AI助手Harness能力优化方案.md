@@ -33,7 +33,7 @@
 | H0.2 | stop 闭环（流中 + 审批等待） | P0 | ✅ 5 条新单测：流中中断只保留已产出增量；审批等待直测返回「用户中断」且不执行；完整 loop 链路工具标 error 后 yield interrupted 且不再调 LLM；pending 清空；跨会话隔离。全量 552 passed |
 | H0.3 | 会话级授权持久化 | P0 | ✅ 5 条新单测：跨引擎实例放行；其他会话/无会话不受影响；always 经 `_exec_tool` 落共享清单；auto_approve 不写授权；删除会话清授权+中断。全量 557 passed |
 | H1.1 | 工具轮数耗尽后的收尾合成 | P1 | ✅ 3 条新单测：跑满后第 3 次调用为无 tools 收尾并落库；收尾失败 error 含上限与原因；未跑满不额外调用。全量 560 passed |
-| H1.2 | 思考流健壮性（跨 chunk 标签 / reasoning_content / 空 tool id） | P1 | ⬜ |
+| H1.2 | 思考流健壮性（跨 chunk 标签 / reasoning_content / 空 tool id） | P1 | ✅ 6 条新单测：开/闭标签跨 chunk、同 chunk 开闭、残留前缀 flush 为正文、reasoning_content、空 id 补齐。全量 566 passed |
 | H1.3 | 模型选择首轮生效与会话同步 | P1 | ⬜ |
 | H1.4 | 快照补当前视图与数据新鲜度 | P1 | ⬜ |
 | H1.5 | 工具耗时与累计 token 用量 | P1 | ⬜ |
@@ -121,6 +121,13 @@
 - 保持 `<think>` 与正文混排时的现有事件顺序。
 
 验证：6 条单测（开/闭标签跨 chunk、原生 reasoning、空 id、现有 thinking 测试）。
+
+实施记录：
+- 新增 `_partial_tag_suffix` + `_feed_content` 缓冲状态机：文本模式只暂存「可能是 `<think>` 前缀」的最长后缀，思考模式同理暂存 `</think>` 前缀；流结束把未决前缀按当前模式 flush（正文或思考），不丢字符。
+- 顺带修掉同 chunk 内 `<think>想</think>答` 的静默错误：旧实现只处理开标签，会把 `</think>` 与正文一起当思考内容输出。
+- 原生 `delta.reasoning_content` 直接产 `thinking_delta`；首个正文事件之前补一次 `thinking_done`，流结束仍是思考态也兜底闭合。
+- 工具调用 id 为空时补 `call_{index}_{uuid8}`，避免 assistant(tool_calls) 与 tool 消息无法配对。
+- 6 条新单测；既有 thinking/usage 测试全部通过，全量 566 passed。
 
 ### H1.3 模型选择首轮生效与会话同步
 
