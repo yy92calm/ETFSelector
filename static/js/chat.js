@@ -179,6 +179,14 @@ const Chat = {
         });
     },
 
+    showTurnUsage(usage) {
+        const total = usage && Number(usage.total_tokens);
+        if (!total) return;
+        this.updateAiState('online', `在线 · 本次 ${total.toLocaleString()} tokens`);
+        clearTimeout(this._usageTimer);
+        this._usageTimer = setTimeout(() => this.updateAiState('online'), 5000);
+    },
+
     syncLauncher() {
         const sidebar = document.getElementById('wb-sidebar');
         const fab = document.getElementById('ai-fab');
@@ -482,7 +490,7 @@ const Chat = {
             this.addToolBubble(d.seq, d.tool, d.arguments);
             this.updateAiState('tool', `正在调用 ${d.tool}…`);
         } else if (t === 'tool_finished') {
-            this.updateToolBubble(d.seq, d.status, d.preview);
+            this.updateToolBubble(d.seq, d.status, d.preview, d.duration_ms);
             this.updateAiState('thinking', '正在整理工具结果…');
         } else if (t === 'thinking') {
             // 兼容非流式fallback
@@ -508,6 +516,7 @@ const Chat = {
             this.hideStopButton();
             this.refreshWorkbench(d.tool_calls);
             this.updateAiState('online');
+            this.showTurnUsage(d.usage);
             this.markNews();
         } else if (t === 'compacted') {
             this.addToolInfo('已整理上下文（历史摘要）');
@@ -610,6 +619,13 @@ const Chat = {
         }
     },
 
+    _formatDuration(ms) {
+        if (ms === null || ms === undefined) return '';
+        const value = Number(ms);
+        if (!Number.isFinite(value) || value < 0) return '';
+        return value < 1000 ? `${Math.round(value)}ms` : `${(value / 1000).toFixed(1)}s`;
+    },
+
     _toolBubbleHtml(toolName, argsStr, resultStr, running) {
         const head = running
             ? '<span class="tool-spinner"></span>'
@@ -648,7 +664,7 @@ const Chat = {
         this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
     },
 
-    updateToolBubble(seq, status, preview) {
+    updateToolBubble(seq, status, preview, durationMs) {
         const div = this._toolBubbles.get(seq);
         if (!div) return;
         div.classList.remove('running');
@@ -657,7 +673,10 @@ const Chat = {
         const spinner = div.querySelector('.tool-spinner');
         if (spinner) spinner.remove();
         const stateEl = div.querySelector('.tool-state');
-        if (stateEl) stateEl.textContent = isErr ? '失败' : '完成';
+        if (stateEl) {
+            const duration = this._formatDuration(durationMs);
+            stateEl.textContent = (isErr ? '失败' : '完成') + (duration ? ` · ${duration}` : '');
+        }
         const resEl = div.querySelector('.tool-result');
         if (resEl && preview != null) resEl.textContent = preview;
     },

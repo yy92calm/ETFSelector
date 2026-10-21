@@ -692,5 +692,132 @@ class TestContextFreshness(unittest.TestCase):
         self.assertNotIn("x" * 121, text)
 
 
+class TestToolMetricsUsage(unittest.TestCase):
+    """H1.5 - 工具耗时与跨轮累计 token 用量"""
+
+    def setUp(self):
+        self.db = make_db()
+        self.loop = make_loop(self.db)
+        self.sid = "h15-metrics"
+        clear_interrupt(self.sid)
+        self.loop.registry.get_tool.return_value = SimpleNamespace(risk_level="read")
+        self.loop.registry.execute.return_value = {"ok": True}
+
+    def tearDown(self):
+        clear_interrupt(self.sid)
+        self.db.close()
+
+    def _run(self, rounds):
+        from app.agent_core import provider as provider_mod
+
+        with patch("app.agent_core.loop.settings") as st, \
+             patch("app.agent_core.loop.SessionLocal"), \
+             patch.object(provider_mod, "stream_completion",
+                          side_effect=[iter(r) for r in rounds]):
+            patch_loop_settings(st)
+            return list(self.loop._iter_events("量一下", self.sid, self.db))
+
+    @staticmethod
+    def _tool_round(*pairs):
+        return [
+            {"type": "tool_calls", "tool_calls": [
+                {"id": call_id, "function": {"name": name, "arguments": "{}"}}
+                for name, call_id in pairs
+            ]},
+            {"type": "done"},
+        ]
+
+    @staticmethod
+    def _text_round(text, usage=None):
+        events = [{"type": "text_delta", "content": text}]
+        if usage is not None:
+            events.append({"type": "usage", "usage": usage, "finish_reason": "stop"})
+        events.append({"type": "done"})
+        return events
+
+    def test_single_tool_duration(self):
+        rounds = [self._tool_round(("read_a", "c1")), self._text_round("好")]
+
+        with patch("app.agent_core.loop.perf_counter", side_effect=[10.0, 10.123]):
+            events = self._run(rounds)
+
+        finished = next(ev for ev in events if ev["type"] == "tool_finished")
+        self.assertEqual(finished["data"]["duration_ms"], 123)
+        self.assertEqual(events[-1]["data"]["tool_calls"][0]["duration_ms"], 123)
+
+    def test_parallel_tools_timed_independently(self):
+        import time as _time
+
+        def exec_by_name(name, args, db):
+            _time.sleep(0.06 if name == "read_slow" else 0.01)
+            return {"ok": True}
+
+        self.loop.registry.execute.side_effect = exec_by_name
+        rounds = [self._tool_round(("read_slow", "c1"), ("read_fast", "c2")),
+                  self._text_round("好")]
+
+        events = self._run(rounds)
+
+        durations = {
+            ev["data"]["tool"]: ev["data"]["duration_ms"]
+            for ev in events if ev["type"] == "tool_finished"
+        }
+        self.assertGreaterEqual(durations["read_slow"], 50)
+        self.assertGreaterEqual(durations["read_fast"], 5)
+        self.assertGreater(durations["read_slow"], durations["read_fast"])
+
+    def _usage_rounds(self):
+        return [
+            self._tool_round(("read_a", "c1")),
+            self._text_round("结论", usage={"prompt_tokens": 150,
+                                            "completion_tokens": 20,
+                                            "total_tokens": 170}),
+        ]
+
+    def test_cross_round_usage_accumulates(self):
+        rounds = self._usage_rounds()
+        # 第一轮工具调用后也返回一次 usage
+        rounds[0] = rounds[0][:-1] + [
+            {"type": "usage", "usage": {"prompt_tokens": 100, "completion_tokens": 10,
+                                        "total_tokens": 110},
+             "finish_reason": "tool_calls"},
+            {"type": "done"},
+        ]
+
+        events = self._run(rounds)
+
+        usage_events = [ev["data"] for ev in events if ev["type"] == "usage"]
+        self.assertEqual([u["total"]["total_tokens"] for u in usage_events], [110, 280])
+        self.assertEqual(usage_events[-1]["total"]["prompt_tokens"], 250)
+        self.assertEqual(usage_events[-1]["total"]["completion_tokens"], 30)
+        self.assertEqual(events[-1]["data"]["usage"],
+                         {"prompt_tokens": 250, "completion_tokens": 30, "total_tokens": 280})
+
+    def test_final_message_persists_cumulative_usage(self):
+        rounds = self._usage_rounds()
+        rounds[0] = rounds[0][:-1] + [
+            {"type": "usage", "usage": {"prompt_tokens": 100, "completion_tokens": 10,
+                                        "total_tokens": 110},
+             "finish_reason": "tool_calls"},
+            {"type": "done"},
+        ]
+
+        self._run(rounds)
+
+        persisted = self.loop.memory.get_all_messages(self.sid, self.db)
+        final = persisted[-1]
+        self.assertEqual(final["content"], "结论")
+        self.assertEqual(final["usage"],
+                         {"prompt_tokens": 250, "completion_tokens": 30, "total_tokens": 280})
+
+    def test_no_usage_does_not_break(self):
+        events = self._run([self._text_round("直接回答")])
+
+        self.assertNotIn("error", [ev["type"] for ev in events])
+        self.assertIsNone(events[-1]["data"]["usage"])
+        persisted = self.loop.memory.get_all_messages(self.sid, self.db)
+        self.assertIsNone(persisted[-1]["usage"])
+
+
 if __name__ == "__main__":
     unittest.main()

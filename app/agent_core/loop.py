@@ -14,6 +14,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from time import perf_counter
 from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session
@@ -40,6 +41,30 @@ MAX_TOOL_ROUNDS = 10  # 防止无限循环（settings.chat_max_tool_rounds 未�
 def _max_tool_rounds() -> int:
     value = getattr(settings, "chat_max_tool_rounds", MAX_TOOL_ROUNDS)
     return value if isinstance(value, int) and value > 0 else MAX_TOOL_ROUNDS
+
+
+def _accumulate_usage(total: Dict[str, int], usage: Optional[dict]) -> Dict[str, int]:
+    """把单轮 usage 累加进总计；缺字段/非数字静默跳过（部分 provider 不返回用量）"""
+    if not isinstance(usage, dict):
+        return total
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    tokens = usage.get("total_tokens")
+    prompt = int(prompt) if isinstance(prompt, (int, float)) else 0
+    completion = int(completion) if isinstance(completion, (int, float)) else 0
+    if isinstance(tokens, (int, float)):
+        tokens = int(tokens)
+    else:
+        tokens = prompt + completion
+    total["prompt_tokens"] += prompt
+    total["completion_tokens"] += completion
+    total["total_tokens"] += tokens
+    return total
+
+
+def _usage_snapshot(total: Dict[str, int]) -> Optional[dict]:
+    """全零视为无用量，返回 None（避免落库无意义的零值）"""
+    return dict(total) if any(total.values()) else None
 
 # 会话级中断标志（POST /api/chat/stop 置位，_iter_events 在迭代边界检查）
 _INTERRUPT_FLAGS: Dict[str, bool] = {}
@@ -146,6 +171,7 @@ class AgentLoop:
                     "tool": ev["data"]["tool"],
                     "arguments": ev["data"].get("arguments", {}),
                     "result_preview": ev["data"].get("preview", ""),
+                    "duration_ms": ev["data"].get("duration_ms"),
                 })
             elif ev_type == "assistant_message":
                 final_content = ev["data"].get("content", "")
@@ -262,7 +288,8 @@ class AgentLoop:
         tool_calls_made = []
         final_content = ""
         seq = 0
-        round_usage = None
+        round_usage = {}
+        usage_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         max_rounds = _max_tool_rounds()
         round_limit_reached = False
@@ -274,6 +301,7 @@ class AgentLoop:
 
             # 流式LLM调用（参照deepseek-harness translate.ts模式）；
             # 瞬态错误有界重试：仅在未产出任何内容时，避免前端收到重复增量
+            round_usage = {}
             text_acc = ""
             thinking_acc = ""
             tool_calls_acc = {}
@@ -310,11 +338,13 @@ class AgentLoop:
                     elif etype == "tool_calls":
                         tool_calls_acc = {tc["id"]: tc for tc in ev["tool_calls"]}
                     elif etype == "usage":
-                        round_usage = {
-                            "usage": ev.get("usage") or {},
+                        round_usage = ev.get("usage") or {}
+                        _accumulate_usage(usage_totals, round_usage)
+                        yield {"type": "usage", "data": {
+                            "usage": round_usage,
+                            "total": dict(usage_totals),
                             "finish_reason": ev.get("finish_reason"),
-                        }
-                        yield {"type": "usage", "data": round_usage}
+                        }}
                     elif etype == "done":
                         break
                     elif etype == "error":
@@ -401,7 +431,9 @@ class AgentLoop:
                 def _exec_parallel(it):
                     tidb = SessionLocal()
                     try:
-                        return self.registry.execute(it["tool"], it["args"], tidb)
+                        t0 = perf_counter()
+                        res = self.registry.execute(it["tool"], it["args"], tidb)
+                        return res, max(0, round((perf_counter() - t0) * 1000))
                     finally:
                         tidb.close()
 
@@ -413,13 +445,16 @@ class AgentLoop:
             for it in prepared:
                 seq, tc = it["seq"], it["tc"]
                 tool_name, arguments = it["tool"], it["args"]
+                duration_ms = None
                 if check_interrupted(session_id):
                     # 中断：未执行工具回填 error，避免孤儿 tool_calls
                     result = {"error": "用户中断，工具未执行"}
                 elif id(it) in parallel_results:
-                    result = parallel_results[id(it)]
+                    result, duration_ms = parallel_results[id(it)]
                 else:
+                    t0 = perf_counter()
                     result = yield from self._exec_tool(tool_name, arguments, db, seq, session_id)
+                    duration_ms = max(0, round((perf_counter() - t0) * 1000))
 
                 result_str = json.dumps(result, ensure_ascii=False, default=str)
                 # 截断过长结果
@@ -440,6 +475,7 @@ class AgentLoop:
                         "tool": tool_name,
                         "arguments": arguments,
                         "status": status,
+                        "duration_ms": duration_ms,
                         "preview": result_str[:1500],
                     },
                 }
@@ -448,6 +484,7 @@ class AgentLoop:
                     "tool": tool_name,
                     "arguments": arguments,
                     "result_preview": result_str[:200],
+                    "duration_ms": duration_ms,
                 })
                 tool_results_for_db.append({
                     "tool_call_id": tc.id,
@@ -459,7 +496,7 @@ class AgentLoop:
             self.memory.save_message(
                 session_id, "assistant", assistant_msg.content,
                 tool_calls=tc_list, tool_results=tool_results_for_db,
-                usage=round_usage, db=db
+                usage=round_usage or None, db=db
             )
         else:
             # 跑满工具轮数仍未产出最终文本：补一次不带 tools 的收尾合成，
@@ -490,8 +527,13 @@ class AgentLoop:
                     elif etype == "thinking_done":
                         yield {"type": "thinking_done", "data": {"content": synthesis_thinking}}
                     elif etype == "usage":
-                        round_usage = ev["usage"]
-                        yield {"type": "usage", "data": round_usage}
+                        round_usage = ev.get("usage") or {}
+                        _accumulate_usage(usage_totals, round_usage)
+                        yield {"type": "usage", "data": {
+                            "usage": round_usage,
+                            "total": dict(usage_totals),
+                            "finish_reason": ev.get("finish_reason"),
+                        }}
                     elif etype == "done":
                         break
                     elif etype == "error":
@@ -509,14 +551,19 @@ class AgentLoop:
                 return
             final_content = synthesis_text
 
-        # 保存最终回复
+        # 保存最终回复（落累计用量：一轮对话可能经历多轮工具调用）
         if final_content:
-            self.memory.save_message(session_id, "assistant", final_content, usage=round_usage, db=db)
+            self.memory.save_message(session_id, "assistant", final_content,
+                                     usage=_usage_snapshot(usage_totals), db=db)
             # 自动更新会话标题
             self.memory.update_session_title(session_id, user_message, db)
 
         yield {"type": "assistant_message", "data": {"content": final_content}}
-        turn_end_data = {"session_id": session_id, "tool_calls": tool_calls_made}
+        turn_end_data = {
+            "session_id": session_id,
+            "tool_calls": tool_calls_made,
+            "usage": _usage_snapshot(usage_totals),
+        }
         if round_limit_reached:
             turn_end_data["round_limit_reached"] = True
         yield {"type": "turn_end", "data": turn_end_data}
